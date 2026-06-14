@@ -1,0 +1,56 @@
+[package]
+name = "underground-api"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "underground_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "underground-api"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-http = { version = "0.6", features = ["trace", "cors", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "1"
+dotenvy = "0.15"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "rust_decimal",
+    "json",
+    "macros",
+    "migrate",
+] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde"] }
+argon2 = "0.5"
+jsonwebtoken = "9"
+async-trait = "0.1"
+# Lemon Squeezy webhook signature verification (HMAC-SHA256).
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+opt-level = 3
+# Fat LTO + codegen-units=1 OOMs the 2 GiB colima build VM (SIGKILL during final rustc).
+# This API is I/O-bound (Postgres), so the runtime delta from dropping LTO is negligible while
+# the build now fits in 2 GiB. Bump colima memory + restore fat LTO if a perf-critical need arises.
+lto = false
+codegen-units = 16

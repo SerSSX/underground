@@ -1,0 +1,32 @@
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
+# Local tooling / logs / build artifacts
+.claude/
+*.log
+*.apk
+
+# Android secrets (FCM)
+**/google-services.json
+
+# Rust
+/api/target/
+
+# Env / dev volumes (rules §8.2) — .env.example IS committed
+.env
+/.dev-data/
+/.dev-temp/
+
+# Android / Gradle
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/.idea/
+*.iml
+
+# OS
+.DS_Store

@@ -1,0 +1,36 @@
+# One-command dev environment (rules §8.1). Ports are configurable via .env.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - ./.dev-data/pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./api
+    environment:
+      PORT: 8080
+      RUST_LOG: ${RUST_LOG}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET}
+      UPLOADS_DIR: /app/uploads
+      # LAN-friendly so uploaded posters load on the phone too (override in .env if IP changes).
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:${API_PORT}}
+    ports:
+      - "${API_PORT}:8080"
+    volumes:
+      - ./.dev-data/uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy

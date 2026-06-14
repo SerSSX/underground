@@ -1,0 +1,57 @@
+/* ============================================================================
+ * Underground — SHARED DESIGN TOKENS (single source of truth).
+ * Edit ONLY this file, then run `scripts/sync-tokens.sh` to propagate the
+ * generated copies into web/app/tokens.css and admin/app/tokens.css.
+ * Android mirrors these values in app/.../ui/theme/Tokens.kt — keep in sync.
+ * Reconciles the colours web/ and admin/ had drifted apart on (muted, surface2,
+ * error/danger). App-specific extras stay in each app's globals.css.
+ * ========================================================================== */
+:root {
+  /* base surfaces */
+  --bg: #0b0b0d;
+  --surface: #15151a;
+  --surface-2: #1b1b21;
+  --surface2: #1b1b21;        /* web alias of --surface-2 */
+  --surface-3: #16161c;
+  --border: #26262e;
+  --border-soft: #1f1f25;
+
+  /* text */
+  --text: #f3f3f5;
+  --muted: #a8a8b3;
+  --muted-2: #6f6f7a;
+
+  /* brand */
+  --accent: #2f6bff;
+  --accent-fg: #7da2ff;
+  --accent-soft: rgba(47, 107, 255, 0.13);
+
+  /* semantic status palette (authoritative — mirrored in StatusBadge.tsx / Android) */
+  --ok: #2fae5a;
+  --ok-bg: #12281c;
+  --ok-fg: #5fd08a;
+  --warn: #d9a441;
+  --warn-bg: #2a2113;
+  --warn-fg: #e6b860;
+  --danger: #e2553a;
+  --danger-bg: #2e1714;
+  --danger-fg: #f0816a;
+  --error: #e2553a;           /* web alias of --danger */
+  --neutral-bg: #23232b;
+  --neutral-fg: #b8b8c2;
+
+  /* spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+
+  /* radii */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+
+  /* layout */
+  --sidebar-w: 248px;
+}

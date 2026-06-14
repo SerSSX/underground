@@ -1,0 +1,4 @@
+
+# Firebase credentials (environment-specific, never commit)
+app/google-services.json
+google-services.json
