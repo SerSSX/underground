@@ -109,3 +109,93 @@ async fn create_validates_input(pool: PgPool) {
     let resp = app.oneshot(post_event(Some(&token), negative)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+// TASK-102 / BR-020 — event_timezone contract.
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_defaults_timezone_to_kyiv(pool: PgPool) {
+    let app = make_app(pool);
+    let token = register_token(&app).await;
+    let resp = app.oneshot(post_event(Some(&token), valid_event())).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let created: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        created["timezone"], "Europe/Kyiv",
+        "absent timezone defaults to launch market"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_accepts_valid_iana_timezone(pool: PgPool) {
+    let app = make_app(pool);
+    let token = register_token(&app).await;
+    let mut body = valid_event();
+    body["timezone"] = json!("Europe/London");
+    let resp = app.oneshot(post_event(Some(&token), body)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let created: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        created["timezone"], "Europe/London",
+        "valid IANA timezone stored + returned"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn create_rejects_invalid_timezone(pool: PgPool) {
+    let app = make_app(pool);
+    let token = register_token(&app).await;
+    let mut body = valid_event();
+    body["timezone"] = json!("Mars/Phobos");
+    let resp = app.oneshot(post_event(Some(&token), body)).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid IANA timezone → 422"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn update_event_timezone_valid_and_invalid(pool: PgPool) {
+    let app = make_app(pool);
+    let token = register_token(&app).await;
+    let created = app
+        .clone()
+        .oneshot(post_event(Some(&token), valid_event()))
+        .await
+        .unwrap();
+    let bytes = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+    let id = serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let put = |body: Value| {
+        Request::put(format!("/api/events/{id}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let ok = app
+        .clone()
+        .oneshot(put(json!({ "timezone": "Europe/London" })))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    let b = to_bytes(ok.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&b).unwrap()["timezone"],
+        "Europe/London",
+        "update sets a new event timezone"
+    );
+
+    let bad = app.oneshot(put(json!({ "timezone": "Bad/Zone" }))).await.unwrap();
+    assert_eq!(
+        bad.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "update rejects an invalid timezone"
+    );
+}

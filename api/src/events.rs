@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 pub const EVENT_COLS: &str = "id, organizer_id, title, description, poster_url, category, city, venue_address, \
      starts_at, ends_at, price, currency, tickets_left, status, cost_type, \
-     video_url, gallery_urls, links, sales_closed, country, lat, lng, age_rating";
+     video_url, gallery_urls, links, sales_closed, country, lat, lng, age_rating, timezone";
 
 /// Allowed minimum-age ratings (empty/NULL = no restriction).
 const AGE_RATINGS: [&str; 4] = ["13", "16", "18", "21"];
@@ -24,6 +24,19 @@ fn validate_age_rating(age_rating: Option<&str>) -> Result<(), AppError> {
     if let Some(a) = age_rating.filter(|s| !s.is_empty()) {
         if !AGE_RATINGS.contains(&a) {
             return Err(AppError::Validation("age_rating must be 13|16|18|21".into()));
+        }
+    }
+    Ok(())
+}
+
+/// Default timezone for events whose organizer doesn't specify one (launch market).
+const DEFAULT_TIMEZONE: &str = "Europe/Kyiv";
+
+/// Validate an optional IANA timezone name against the `chrono-tz` database (BR-020).
+fn validate_timezone(timezone: Option<&str>) -> Result<(), AppError> {
+    if let Some(t) = timezone.filter(|s| !s.is_empty()) {
+        if t.parse::<chrono_tz::Tz>().is_err() {
+            return Err(AppError::Validation("timezone must be a valid IANA name".into()));
         }
     }
     Ok(())
@@ -56,6 +69,8 @@ pub struct Event {
     pub lng: Option<f64>,
     /// Minimum-age rating (P1 #77): one of 13|16|18|21, or null for unrestricted.
     pub age_rating: Option<String>,
+    /// IANA timezone the event's local time is shown in (TASK-102 / BR-020). Times are stored UTC.
+    pub timezone: String,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +96,8 @@ pub struct CreateEventReq {
     pub status: Option<String>,
     /// Minimum-age rating: 13|16|18|21 (empty/absent = unrestricted).
     pub age_rating: Option<String>,
+    /// IANA timezone for the event's local time (default `Europe/Kyiv` when absent). TASK-102.
+    pub timezone: Option<String>,
 }
 
 /// Published events, soonest first. Parameterized query (no SQL string-building from input).
@@ -100,9 +117,9 @@ pub async fn insert_event(db: &PgPool, organizer_id: Uuid, req: &CreateEventReq)
     let sql = format!(
         "INSERT INTO events (organizer_id, title, description, category, city, venue_address, \
             starts_at, ends_at, price, currency, tickets_total, tickets_left, cost_type, status, \
-            poster_url, video_url, gallery_urls, links, country, lat, lng, age_rating) \
+            poster_url, video_url, gallery_urls, links, country, lat, lng, age_rating, timezone) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12, $20, \
-            $13, $14, $15, $16, $17, $18, $19, $21) \
+            $13, $14, $15, $16, $17, $18, $19, $21, $22) \
          RETURNING {EVENT_COLS}"
     );
     sqlx::query_as::<_, Event>(&sql)
@@ -132,6 +149,12 @@ pub async fn insert_event(db: &PgPool, organizer_id: Uuid, req: &CreateEventReq)
         .bind(geo.lng)
         .bind(req.status.as_deref().unwrap_or("published"))
         .bind(req.age_rating.as_deref().filter(|s| !s.is_empty()))
+        .bind(
+            req.timezone
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(DEFAULT_TIMEZONE),
+        )
         .fetch_one(db)
         .await
 }
@@ -189,12 +212,14 @@ pub async fn get_event(
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<Event>, AppError> {
     let sql = format!("SELECT {EVENT_COLS} FROM events WHERE id = $1 AND status = 'published'");
-    sqlx::query_as::<_, Event>(&sql)
+    let event = sqlx::query_as::<_, Event>(&sql)
         .bind(id)
         .fetch_optional(&st.db)
         .await?
-        .map(Json)
-        .ok_or(AppError::NotFound)
+        .ok_or(AppError::NotFound)?;
+    // Top-of-funnel: a detail open (UC-015). Anonymous views carry a null user.
+    crate::telemetry::log(&st.db, None, "event_view", serde_json::json!({ "event_id": id })).await;
+    Ok(Json(event))
 }
 
 /// `GET /api/me/events` — the caller's own events.
@@ -229,6 +254,7 @@ pub async fn create_event(
         return Err(AppError::Validation("status must be draft|published".into()));
     }
     validate_age_rating(req.age_rating.as_deref())?;
+    validate_timezone(req.timezone.as_deref())?;
     let event = insert_event(&st.db, user.id, &req).await?;
     // Drafts stay private; only a published event announces itself.
     if event.status == "published" {
@@ -281,6 +307,8 @@ pub struct UpdateEventReq {
     pub sales_closed: Option<bool>,
     /// Minimum-age rating: 13|16|18|21 (empty = unrestricted).
     pub age_rating: Option<String>,
+    /// IANA timezone for the event's local time (TASK-102). Null leaves the current value.
+    pub timezone: Option<String>,
 }
 
 async fn require_owner(db: &PgPool, event_id: Uuid, user_id: Uuid) -> Result<(), AppError> {
@@ -320,6 +348,7 @@ pub async fn update_event(
         }
     }
     validate_age_rating(req.age_rating.as_deref())?;
+    validate_timezone(req.timezone.as_deref())?;
     // Track a draft→published transition so publishing a draft announces it (once).
     let was_draft: bool = sqlx::query_scalar("SELECT status = 'draft' FROM events WHERE id = $1")
         .bind(id)
@@ -354,7 +383,8 @@ pub async fn update_event(
             lat = COALESCE($17, lat), \
             lng = COALESCE($18, lng), \
             currency = COALESCE($19, currency), \
-            age_rating = COALESCE($20, age_rating) \
+            age_rating = COALESCE($20, age_rating), \
+            timezone = COALESCE($21, timezone) \
          WHERE id = $1 \
          RETURNING {EVENT_COLS}"
     );
@@ -379,6 +409,7 @@ pub async fn update_event(
         .bind(geo.lng)
         .bind(req.currency.as_deref().filter(|c| !c.is_empty()))
         .bind(req.age_rating.as_deref().filter(|s| !s.is_empty()))
+        .bind(req.timezone.as_deref().filter(|s| !s.is_empty()))
         .fetch_one(&st.db)
         .await?;
     if was_draft && event.status == "published" {

@@ -1,5 +1,6 @@
 package com.underground.app.ui.events
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -140,6 +141,32 @@ fun EditEventScreen(
             ) {
                 Text("Зберегти")
             }
+            Text("Контроль на дверях", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Запроси помічника сканувати квитки саме на цю подію. Він не отримає доступу до грошей чи інших подій.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Muted,
+            )
+            OutlinedButton(
+                onClick = {
+                    vm.inviteStaff(
+                        event.id,
+                        event.title,
+                        onDone = { link ->
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, "Будь контролером на «${event.title}»: $link")
+                            }
+                            context.startActivity(Intent.createChooser(send, "Запросити контролера"))
+                        },
+                        onError = toast,
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Запросити контролера")
+            }
+
             OutlinedButton(
                 onClick = { confirmCancel = true },
                 colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(

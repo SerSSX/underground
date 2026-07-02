@@ -81,7 +81,10 @@ export default function EventCard({
           ].filter(Boolean).join(" · ")}
         </div>
         <div className="row spread">
-          <div className="price">{free ? tr(lang, "Безкоштовно", "Free") : fmtPrice(event.price, event.currency)}</div>
+          <div className="price">
+            {free ? tr(lang, "Безкоштовно", "Free") : fmtPrice(event.price, event.currency)}
+            {!free && <span className="pill ok" style={{ fontSize: 11, marginLeft: 6 }}>🛡 escrow</span>}
+          </div>
           {!!event.saves_count && event.saves_count > 0 && (
             <span className="muted" style={{ fontSize: 12 }}>{tr(lang, `${event.saves_count} цікавляться`, `${event.saves_count} interested`)}</span>
           )}

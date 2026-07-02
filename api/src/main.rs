@@ -13,6 +13,12 @@ use underground_api::{db, escrow, payments, reminders, routes};
 
 /// Remind going/interested users about events starting within this many hours.
 const REMINDER_WINDOW_HOURS: i32 = 24;
+/// Prompt attendees for a review of events that ended within this many days (TASK-199-D).
+const REVIEW_PROMPT_RECENCY_DAYS: i32 = 14;
+/// Nudge savers when a saved event's remaining stock drops to this fraction of its total (TASK-209).
+const SELLING_FAST_THRESHOLD: f64 = 0.15;
+/// Cap `selling_fast` nudges per user per rolling 24h so the trigger can't spam heavy savers (TASK-210).
+const SELLING_FAST_DAILY_CAP: i64 = 2;
 /// How often the reminder sweep runs.
 const REMINDER_INTERVAL_SECS: u64 = 15 * 60;
 /// How often the push outbox is drained.
@@ -90,6 +96,16 @@ async fn reminder_worker(pool: sqlx::PgPool) {
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "reminder sweep failed"),
         }
+        match reminders::review_prompt_sweep(&pool, REVIEW_PROMPT_RECENCY_DAYS).await {
+            Ok(n) if n > 0 => tracing::info!(review_prompts = n, "review-prompt sweep emitted notifications"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "review-prompt sweep failed"),
+        }
+        match reminders::selling_fast_sweep(&pool, SELLING_FAST_THRESHOLD, SELLING_FAST_DAILY_CAP).await {
+            Ok(n) if n > 0 => tracing::info!(selling_fast = n, "selling-fast sweep emitted notifications"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "selling-fast sweep failed"),
+        }
     }
 }
 
@@ -156,24 +172,36 @@ async fn email_worker(pool: sqlx::PgPool, cfg: EmailConfig) {
     let mut tick = tokio::time::interval(Duration::from_secs(EMAIL_INTERVAL_SECS));
     loop {
         tick.tick().await;
-        let batch = match email::pending(&pool, 100).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(error = %e, "email: failed to read outbox");
-                continue;
+        // Order-confirmation emails.
+        match email::pending(&pool, 100).await {
+            Ok(batch) if !batch.is_empty() => {
+                let ids: Vec<_> = batch.iter().map(|p| p.order_id).collect();
+                for p in &batch {
+                    let (subject, _body) = email::build_confirmation(p);
+                    // TODO(sendgrid): POST https://api.sendgrid.com/v3/mail/send (Bearer cfg.api_key, from cfg.from).
+                    tracing::info!(from = %cfg.from, to = %p.to_email, subject = %subject, "email.deliver");
+                }
+                if let Err(e) = email::mark_sent(&pool, &ids).await {
+                    tracing::warn!(error = %e, "email: failed to watermark order outbox");
+                }
             }
-        };
-        if batch.is_empty() {
-            continue;
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "email: failed to read order outbox"),
         }
-        let ids: Vec<_> = batch.iter().map(|p| p.order_id).collect();
-        for p in &batch {
-            let (subject, _body) = email::build_confirmation(p);
-            // TODO(sendgrid): POST https://api.sendgrid.com/v3/mail/send (Bearer cfg.api_key, from cfg.from).
-            tracing::info!(from = %cfg.from, to = %p.to_email, subject = %subject, "email.deliver");
-        }
-        if let Err(e) = email::mark_sent(&pool, &ids).await {
-            tracing::warn!(error = %e, "email: failed to watermark outbox");
+        // Retention notification emails (event_reminder, review_prompt) — TASK-199-D.
+        match email::pending_notifications(&pool, 100).await {
+            Ok(batch) if !batch.is_empty() => {
+                let ids: Vec<_> = batch.iter().map(|p| p.notification_id).collect();
+                for p in &batch {
+                    let (subject, _body) = email::build_notification_email(p);
+                    tracing::info!(from = %cfg.from, to = %p.to_email, subject = %subject, kind = %p.kind, "email.deliver");
+                }
+                if let Err(e) = email::mark_notifications_sent(&pool, &ids).await {
+                    tracing::warn!(error = %e, "email: failed to watermark notification outbox");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "email: failed to read notification outbox"),
         }
     }
 }

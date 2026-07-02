@@ -6,8 +6,8 @@ import org.junit.Test
 
 class FormatTest {
     @Test
-    fun eventDate_takesIsoDatePortion() {
-        assertEquals("2026-07-02", Format.eventDate("2026-07-02T17:00:00Z"))
+    fun eventDate_formatsDayAndUkrainianMonth() {
+        assertEquals("2 лип", Format.eventDate("2026-07-02T17:00:00Z"))
     }
 
     @Test
@@ -16,12 +16,12 @@ class FormatTest {
     }
 
     @Test
-    fun price_trimsZeroCents() {
-        assertEquals("650 UAH", Format.price("650.00", "UAH"))
+    fun price_trimsZeroCentsAndUsesCurrencySymbol() {
+        assertEquals("650 ₴", Format.price("650.00", "UAH"))
     }
 
     @Test
     fun price_keepsNonZeroCents() {
-        assertEquals("750.50 UAH", Format.price("750.50", "UAH"))
+        assertEquals("750.50 ₴", Format.price("750.50", "UAH"))
     }
 }

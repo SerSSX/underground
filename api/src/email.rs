@@ -63,6 +63,52 @@ pub async fn mark_sent(db: &PgPool, order_ids: &[Uuid]) -> Result<(), sqlx::Erro
     Ok(())
 }
 
+/// A retention/conversion notification awaiting its email (TASK-199-D). Only high-value,
+/// low-frequency kinds are emailed (event_reminder, review_prompt, selling_fast) — never the
+/// noisy match/organizer feeds.
+#[derive(sqlx::FromRow)]
+pub struct PendingNotificationEmail {
+    pub notification_id: Uuid,
+    pub to_email: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub kind: String,
+}
+
+/// Retention notifications not yet emailed (oldest first). Skips blocked users and any kind
+/// outside the retention allow-list, so the outbox never turns into a spam firehose.
+pub async fn pending_notifications(db: &PgPool, limit: i64) -> Result<Vec<PendingNotificationEmail>, sqlx::Error> {
+    sqlx::query_as::<_, PendingNotificationEmail>(
+        "SELECT n.id AS notification_id, u.email AS to_email, n.title, n.body, n.kind \
+         FROM notifications n JOIN users u ON u.id = n.user_id \
+         WHERE n.email_sent = false AND u.blocked = false \
+           AND n.kind IN ('event_reminder', 'review_prompt', 'selling_fast') \
+         ORDER BY n.created_at ASC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await
+}
+
+/// Watermark the given notifications as emailed (idempotent re-send guard).
+pub async fn mark_notifications_sent(db: &PgPool, notification_ids: &[Uuid]) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE notifications SET email_sent = true WHERE id = ANY($1)")
+        .bind(notification_ids)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// Build the (subject, body) of a retention-notification email (pure → unit-testable).
+pub fn build_notification_email(p: &PendingNotificationEmail) -> (String, String) {
+    let subject = p.title.clone();
+    let body = format!(
+        "{}\n\nВідкрий у застосунку underground.",
+        p.body.as_deref().unwrap_or(&p.title)
+    );
+    (subject, body)
+}
+
 /// Build the (subject, body) of an order-confirmation email (pure → unit-testable).
 pub fn build_confirmation(p: &PendingEmail) -> (String, String) {
     let subject = format!("Ваш квиток: {}", p.event_title);
@@ -97,6 +143,24 @@ mod tests {
     #[test]
     fn from_env_smoke() {
         let _ = EmailConfig::from_env();
+    }
+
+    #[test]
+    fn notification_template_uses_body_then_falls_back_to_title() {
+        let p = PendingNotificationEmail {
+            notification_id: Uuid::nil(),
+            to_email: "u@x.co".into(),
+            title: "Kadaitcha".into(),
+            body: Some("Подія скоро розпочнеться".into()),
+            kind: "event_reminder".into(),
+        };
+        let (subject, body) = build_notification_email(&p);
+        assert_eq!(subject, "Kadaitcha");
+        assert!(body.contains("Подія скоро розпочнеться"));
+        assert!(body.contains("underground"));
+        // Missing body → subject/title is used as the lede.
+        let p2 = PendingNotificationEmail { body: None, ..p };
+        assert!(build_notification_email(&p2).1.contains("Kadaitcha"));
     }
 
     #[test]

@@ -24,10 +24,20 @@ android {
         versionName = "0.1.0"
 
         // Configurable API base URL (no hard-coded URL in source — rules §10).
-        // With `adb reverse tcp:8080 tcp:8080`, localhost on the device reaches the dev API.
-        buildConfigField("String", "API_BASE_URL", "\"http://localhost:8080/\"")
-        // Public web client base — used for shareable event links (TASK-017 M3).
-        buildConfigField("String", "WEB_BASE_URL", "\"http://192.168.1.211:3001\"")
+        // Override per build with `-PapiBaseUrl=...`; with `adb reverse tcp:PORT tcp:PORT`,
+        // localhost on the device reaches the dev API on the Mac.
+        buildConfigField(
+            "String",
+            "API_BASE_URL",
+            "\"${(project.findProperty("apiBaseUrl") as String?) ?: "http://localhost:8080/"}\"",
+        )
+        // Public web client base — used for shareable event/gift links (TASK-017 M3, TASK-114).
+        // Configurable (no hard-coded URL/port in source — rules §10); override with `-PwebBaseUrl=...`.
+        buildConfigField(
+            "String",
+            "WEB_BASE_URL",
+            "\"${(project.findProperty("webBaseUrl") as String?) ?: "http://localhost:3001"}\"",
+        )
     }
 
     buildTypes {

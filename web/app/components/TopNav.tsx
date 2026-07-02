@@ -44,6 +44,7 @@ export default function TopNav() {
       <Link href="/" className="wordmark" style={{ color: "var(--text)" }}>UNDERGROUND</Link>
       {link("/", tr(lang, "Афіша", "Discover"))}
       {authed && link("/me/tickets", tr(lang, "Мої квитки", "My tickets"))}
+      {authed && link("/inbox", tr(lang, "Вхідні", "Inbox"))}
       {authed && link("/organizer", tr(lang, "Кабінет", "Cabinet"))}
       {authed && link("/account", tr(lang, "Акаунт", "Account"))}
       <span className="spacer" />

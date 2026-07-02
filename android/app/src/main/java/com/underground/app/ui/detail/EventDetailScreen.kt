@@ -59,6 +59,7 @@ import com.underground.app.data.EventDto
 import com.underground.app.data.isFree
 import com.underground.app.ui.theme.Accent
 import com.underground.app.ui.theme.Muted
+import com.underground.app.ui.theme.Ok
 import com.underground.app.util.Format
 import com.underground.app.util.Maps
 import com.underground.app.util.categoryColor
@@ -319,6 +320,13 @@ fun EventDetailScreen(
                     fontWeight = FontWeight.Bold,
                 )
                 Text("Залишилось ${event.ticketsLeft}", color = Muted, style = MaterialTheme.typography.bodyMedium)
+            }
+            if (!event.isFree) {
+                Text(
+                    "🛡 Захищена покупка · гроші в escrow до події",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Ok,
+                )
             }
             Button(
                 onClick = { if (event.isFree) onReserve(event.id) else onBuy(event.id) },

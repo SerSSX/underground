@@ -35,6 +35,8 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+# IANA timezone validation for the event_timezone contract (TASK-102 / BR-020).
+chrono-tz = "0.10"
 rust_decimal = { version = "1", features = ["serde"] }
 argon2 = "0.5"
 jsonwebtoken = "9"

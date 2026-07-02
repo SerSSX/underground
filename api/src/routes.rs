@@ -5,9 +5,9 @@ use tower_http::services::ServeDir;
 
 use crate::state::AppState;
 use crate::{
-    admin, audit, auth, cities, devices, discover, events, eventsocial, gdpr, kyc, messages, notifications, orders,
-    organizer, passwords, payments, payouts, posts, prefs, promos, reports, reviews, social, telemetry, tickets,
-    uploads, webhooks,
+    admin, audit, auth, cities, devices, discover, emailcode, events, eventsocial, gdpr, kyc, messages, notifications,
+    orders, organizer, passwords, payments, payouts, posts, prefs, promos, reports, reviews, social, staff, telemetry,
+    tickets, uploads, webhooks,
 };
 
 pub fn router(state: AppState) -> Router {
@@ -23,6 +23,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/me/events", get(events::my_events))
         .route("/api/discover", get(discover::discover))
+        .route("/api/discover/sections", get(discover::discover_sections))
         .route("/api/cities", get(cities::search))
         .route("/api/me/saves", get(discover::my_saves))
         .route(
@@ -77,6 +78,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tickets/validate", post(tickets::validate))
         .route("/api/tickets/:id/return", post(tickets::return_ticket))
         .route("/api/tickets/:id/transfer", post(tickets::transfer_ticket))
+        .route("/api/tickets/:id/qr", get(tickets::ticket_qr))
+        .route(
+            "/api/tickets/:id/gift",
+            post(tickets::gift_ticket).delete(tickets::revoke_gift),
+        )
+        .route("/api/tickets/claim", post(tickets::claim_ticket))
+        .route("/api/gifts/:token", get(tickets::gift_preview))
+        .route("/api/events/:id/staff/invite", post(staff::invite_staff))
+        .route("/api/staff/accept", post(staff::accept_invite))
+        .route("/api/events/:id/scan", post(staff::scan))
+        .route("/api/me/staff/events", get(staff::my_staff_events))
         .route("/api/organizer/stats", get(organizer::stats))
         .route("/api/organizer/analytics", get(organizer::analytics))
         .route("/api/organizer/payouts", get(organizer::my_payouts))
@@ -94,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/stats", get(admin::stats))
         .route("/api/admin/actions", get(audit::list_actions))
         .route("/api/admin/telemetry", get(telemetry::admin_telemetry))
+        .route("/api/admin/analytics/funnel", get(telemetry::analytics_funnel))
         .route("/api/admin/users", get(admin::users))
         .route("/api/admin/users/:id", axum::routing::patch(admin::patch_user))
         .route("/api/admin/events", get(admin::events))
@@ -109,6 +122,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/admin/users/:id/kyc", post(kyc::admin_set_kyc))
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/email/request-code", post(emailcode::request_code))
+        .route("/api/auth/email/verify-code", post(emailcode::verify_code))
         .route("/api/auth/forgot-password", post(passwords::forgot_password))
         .route("/api/auth/reset-password", post(passwords::reset_password))
         .route("/api/me", get(auth::me).patch(auth::patch_me).delete(gdpr::delete_me))

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG-ONLY override. Debug builds are never shipped, so they may talk cleartext to a
+     dev API on the LAN (e.g. http://<mac-lan-ip>:8091) without adb reverse — useful when the
+     camera scanner is in use and USB/adb drops. Release keeps the strict main config
+     (HTTPS + loopback only); this file is not merged into release builds. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

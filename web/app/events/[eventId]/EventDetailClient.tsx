@@ -272,6 +272,11 @@ export default function EventDetailClient({
         </span>
         <span className="muted">{tr(lang, `Залишилось ${event.tickets_left}`, `${event.tickets_left} left`)}</span>
       </div>
+      {!free && (
+        <div className="pill ok" style={{ display: "block", fontSize: 12, marginBottom: 8 }}>
+          {tr(lang, "🛡 Захищена покупка · кошти в escrow до події, повернення поки не завершилась", "🛡 Protected purchase · funds held in escrow until the event, refundable while uncleared")}
+        </div>
+      )}
       {ageMin > 0 && (
         <div className="muted" style={{ fontSize: 13 }}>
           {tr(lang, `Подія ${ageMin}+. Вік перевіряється за датою народження у профілі.`, `${ageMin}+ event. Age is verified by the date of birth in your profile.`)}
@@ -283,6 +288,9 @@ export default function EventDetailClient({
       {confirming ? (
         <div className="section" style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 12 }}>
           <div className="row spread"><span>{tr(lang, "До сплати", "Total")}</span><strong>{fmtPrice(event.price, event.currency)}</strong></div>
+          <div className="pill ok" style={{ display: "block", marginTop: 6 }}>
+            {tr(lang, "🛡 Гроші захищені: escrow тримає кошти до події", "🛡 Money protected: escrow holds funds until the event")}
+          </div>
           <p className="muted" style={{ fontSize: 13, marginTop: 6 }}>
             {tr(lang, "Кошти тримаються в escrow і переходять організатору лише після події (≈5 днів). Повернення — поки кошти не очищені.", "Funds are held in escrow and released to the organizer only after the event (~5 days). Refunds available while funds are uncleared.")}{" "}
             <Link className="link" href="/refunds">{tr(lang, "Політика повернення", "Refund policy")}</Link>

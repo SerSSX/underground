@@ -57,7 +57,7 @@ async fn free_event_id(app: &Router, token: &str) -> String {
     json_body(resp).await["id"].as_str().unwrap().to_string()
 }
 
-async fn reserve_qr(app: &Router, token: &str, event: &str) -> String {
+async fn reserve_ticket_id(app: &Router, token: &str, event: &str) -> String {
     let resp = app
         .clone()
         .oneshot(build(
@@ -68,7 +68,95 @@ async fn reserve_qr(app: &Router, token: &str, event: &str) -> String {
         ))
         .await
         .unwrap();
-    json_body(resp).await["qr_token"].as_str().unwrap().to_string()
+    json_body(resp).await["id"].as_str().unwrap().to_string()
+}
+
+/// Mint a signed door-QR for `tid` (BR-023).
+async fn mint_qr(app: &Router, token: &str, tid: &str) -> String {
+    let resp = app
+        .clone()
+        .oneshot(build("GET", &format!("/api/tickets/{tid}/qr"), Some(token), None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    json_body(resp).await["token"].as_str().unwrap().to_string()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn organizer_validates_signed_qr(pool: PgPool) {
+    let app = make_app(pool);
+    let org = token_for(&app, "org@x.co").await;
+    let event = free_event_id(&app, &org).await;
+    let tid = reserve_ticket_id(&app, &org, &event).await;
+    // The owner mints a signed, short-TTL QR; the organizer scans THAT (not the raw token).
+    let signed = mint_qr(&app, &org, &tid).await;
+
+    let v = json_body(
+        app.clone()
+            .oneshot(build(
+                "POST",
+                "/api/tickets/validate",
+                Some(&org),
+                Some(json!({ "qr_token": signed })),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(v["valid"], true);
+    assert_eq!(v["reason"], "ok");
+
+    let again = json_body(
+        app.oneshot(build(
+            "POST",
+            "/api/tickets/validate",
+            Some(&org),
+            Some(json!({ "qr_token": signed })),
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        again["reason"], "already_used",
+        "a scanned signed QR marks the ticket used"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn qr_endpoint_owner_only_and_active(pool: PgPool) {
+    let app = make_app(pool);
+    let org = token_for(&app, "org@x.co").await;
+    let stranger = token_for(&app, "s@x.co").await;
+    let event = free_event_id(&app, &org).await;
+    let tid = reserve_ticket_id(&app, &org, &event).await;
+
+    // [SEC] only the owner can mint a QR for their ticket.
+    let s = app
+        .clone()
+        .oneshot(build("GET", &format!("/api/tickets/{tid}/qr"), Some(&stranger), None))
+        .await
+        .unwrap();
+    assert_eq!(s.status(), StatusCode::NOT_FOUND);
+
+    // Owner + active → a token is minted.
+    assert!(mint_qr(&app, &org, &tid).await.len() > 20);
+
+    // Gifting locks the ticket (pending_claim) → no scannable QR.
+    app.clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/tickets/{tid}/gift"),
+            Some(&org),
+            Some(json!({ "email": "z@x.co" })),
+        ))
+        .await
+        .unwrap();
+    let inactive = app
+        .oneshot(build("GET", &format!("/api/tickets/{tid}/qr"), Some(&org), None))
+        .await
+        .unwrap();
+    assert_eq!(inactive.status(), StatusCode::CONFLICT, "a non-active ticket has no QR");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -76,7 +164,8 @@ async fn organizer_validates_then_marks_used(pool: PgPool) {
     let app = make_app(pool);
     let org = token_for(&app, "org@x.co").await;
     let event = free_event_id(&app, &org).await;
-    let qr = reserve_qr(&app, &org, &event).await;
+    let tid = reserve_ticket_id(&app, &org, &event).await;
+    let qr = mint_qr(&app, &org, &tid).await;
 
     let resp = app
         .clone()
@@ -114,7 +203,8 @@ async fn non_organizer_forbidden(pool: PgPool) {
     let org = token_for(&app, "org@x.co").await;
     let other = token_for(&app, "other@x.co").await;
     let event = free_event_id(&app, &org).await;
-    let qr = reserve_qr(&app, &org, &event).await;
+    let tid = reserve_ticket_id(&app, &org, &event).await;
+    let qr = mint_qr(&app, &org, &tid).await;
 
     let resp = app
         .oneshot(build(

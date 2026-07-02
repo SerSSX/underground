@@ -12,6 +12,12 @@ import org.junit.Test
 class EventDtoTest {
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** Minimal published event with only the fields these tests assert on. */
+    private fun ev(id: String, title: String, category: String) = EventDto(
+        id = id, title = title, category = category,
+        price = "0", currency = "UAH", ticketsLeft = 0, status = "published",
+    )
+
     @Test
     fun parsesSnakeCaseAndIgnoresUnknownFields() {
         val raw = """
@@ -38,21 +44,21 @@ class EventDtoTest {
 
     @Test
     fun reduceNonEmptyYieldsSuccess() {
-        val e = EventDto("1", "T", null, "Rock", null, null, null, null, "0", "UAH", 0, "published")
+        val e = ev("1", "T", "Rock")
         assertTrue(reduce(listOf(e)) is AfishaUiState.Success)
     }
 
     @Test
     fun filterByCategoryNullReturnsAll() {
-        val rock = EventDto("1", "R", null, "Rock", null, null, null, null, "0", "UAH", 0, "published")
-        val pop = EventDto("2", "P", null, "Pop", null, null, null, null, "0", "UAH", 0, "published")
+        val rock = ev("1", "R", "Rock")
+        val pop = ev("2", "P", "Pop")
         assertEquals(2, filterByCategory(listOf(rock, pop), null).size)
     }
 
     @Test
     fun filterByCategoryKeepsOnlyMatching() {
-        val rock = EventDto("1", "R", null, "Rock", null, null, null, null, "0", "UAH", 0, "published")
-        val pop = EventDto("2", "P", null, "Pop", null, null, null, null, "0", "UAH", 0, "published")
+        val rock = ev("1", "R", "Rock")
+        val pop = ev("2", "P", "Pop")
         val filtered = filterByCategory(listOf(rock, pop), "Rock")
         assertEquals(1, filtered.size)
         assertEquals("Rock", filtered[0].category)

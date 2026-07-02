@@ -50,6 +50,7 @@ fun MyEventsScreen(
     onManage: (String) -> Unit,
 ) {
     val events by vm.events.collectAsState()
+    val delegated by vm.delegatedEvents.collectAsState()
     val loading by vm.loading.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
@@ -73,7 +74,7 @@ fun MyEventsScreen(
         }
         when {
             loading -> Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) { CircularProgressIndicator() }
-            events.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) {
+            events.isEmpty() && delegated.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth(), Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Ще немає подій", color = Muted)
                     Spacer(Modifier.height(12.dp))
@@ -98,6 +99,22 @@ fun MyEventsScreen(
                                 Spacer(Modifier.width(6.dp))
                                 Text("Керувати")
                             }
+                        }
+                    }
+                }
+                if (delegated.isNotEmpty()) {
+                    item(key = "delegated-header") {
+                        Text(
+                            "Події, де ти контролер",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                    items(delegated, key = { "staff-${it.id}" }) { event ->
+                        Column {
+                            EventCard(event) { onOpen(event.id) }
+                            EventScanButton(event.id, Modifier.fillMaxWidth().padding(top = 6.dp))
                         }
                     }
                 }

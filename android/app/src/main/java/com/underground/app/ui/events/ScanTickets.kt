@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -25,6 +26,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.underground.app.UndergroundApp
 import com.underground.app.data.ValidateReq
+import com.underground.app.data.ValidateResp
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 
@@ -39,9 +41,25 @@ private fun scanOptions() = ScanOptions().apply {
     setCaptureActivity(PortraitCaptureActivity::class.java)
 }
 
-/** Organizer-facing: scan a ticket QR at the door and show the validation verdict. */
+private fun verdictUi(r: ValidateResp): ScanResultUi = when {
+    r.valid -> ScanResultUi(true, "✓ Дійсний", r.eventTitle)
+    r.reason == "already_used" -> ScanResultUi(false, "✗ Уже використаний", r.eventTitle)
+    r.reason == "wrong_event" -> ScanResultUi(false, "✗ Інша подія", "Цей квиток не на цю подію")
+    r.reason == "returned" -> ScanResultUi(false, "✗ Повернений", r.eventTitle)
+    r.reason == "not_found" -> ScanResultUi(false, "✗ Невідомий квиток", "QR не знайдено")
+    else -> ScanResultUi(false, "✗ Недійсний", r.eventTitle)
+}
+
+/**
+ * Camera-scan core shared by the organizer (non-scoped `validate`) and delegated door staff
+ * (event-scoped `scan`). [validate] performs the network call; [trigger] renders the UI that
+ * starts a scan when its lambda is invoked. Permission + result dialog are handled here.
+ */
 @Composable
-fun ScanTicketsButton(modifier: Modifier = Modifier) {
+private fun TicketScanner(
+    validate: suspend (String) -> ValidateResp,
+    trigger: @Composable (onClick: () -> Unit) -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var result by remember { mutableStateOf<ScanResultUi?>(null) }
@@ -50,17 +68,12 @@ fun ScanTicketsButton(modifier: Modifier = Modifier) {
         val qr = res.contents ?: return@rememberLauncherForActivityResult
         scope.launch {
             result = try {
-                val r = UndergroundApp.container.eventApi.validate(ValidateReq(qr))
-                when {
-                    r.valid -> ScanResultUi(true, "✓ Дійсний", r.eventTitle)
-                    r.reason == "already_used" -> ScanResultUi(false, "✗ Уже використаний", r.eventTitle)
-                    else -> ScanResultUi(false, "✗ Недійсний", r.eventTitle)
-                }
+                verdictUi(validate(qr))
             } catch (e: HttpException) {
                 when (e.code()) {
-                    403 -> ScanResultUi(false, "✗ Не ваша подія", "Цей квиток не на вашу подію")
+                    403 -> ScanResultUi(false, "✗ Немає доступу", "Ви не контролер цієї події")
                     404 -> ScanResultUi(false, "✗ Невідомий квиток", "QR не знайдено")
-                    401 -> ScanResultUi(false, "Потрібен вхід", "Увійдіть як організатор")
+                    401 -> ScanResultUi(false, "Потрібен вхід", "Увійдіть у застосунок")
                     else -> ScanResultUi(false, "Помилка", "Код ${e.code()}")
                 }
             } catch (e: Exception) {
@@ -81,9 +94,7 @@ fun ScanTicketsButton(modifier: Modifier = Modifier) {
         }
     }
 
-    IconButton(onClick = { startScan() }, modifier = modifier) {
-        Icon(Icons.Filled.QrCodeScanner, contentDescription = "Сканувати квиток")
-    }
+    trigger { startScan() }
 
     result?.let { r ->
         AlertDialog(
@@ -92,5 +103,28 @@ fun ScanTicketsButton(modifier: Modifier = Modifier) {
             title = { Text(r.title, color = if (r.ok) Color(0xFF2FAE5A) else Color(0xFFE2553A)) },
             text = { Text(r.message) },
         )
+    }
+}
+
+/** Organizer-facing: scan a ticket QR at the door for any of the current user's own events. */
+@Composable
+fun ScanTicketsButton(modifier: Modifier = Modifier) {
+    val api = UndergroundApp.container.eventApi
+    TicketScanner(validate = { api.validate(ValidateReq(it)) }) { onClick ->
+        IconButton(onClick = onClick, modifier = modifier) {
+            Icon(Icons.Filled.QrCodeScanner, contentDescription = "Сканувати квиток")
+        }
+    }
+}
+
+/** Delegated door staff: scan tickets scoped to a single [eventId] via the event-scoped endpoint. */
+@Composable
+fun EventScanButton(eventId: String, modifier: Modifier = Modifier) {
+    val api = UndergroundApp.container.eventApi
+    TicketScanner(validate = { api.scanEvent(eventId, ValidateReq(it)) }) { onClick ->
+        Button(onClick = onClick, modifier = modifier) {
+            Icon(Icons.Filled.QrCodeScanner, contentDescription = null)
+            Text("  Сканувати квитки")
+        }
     }
 }

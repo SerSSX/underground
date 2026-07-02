@@ -133,7 +133,10 @@ pub async fn register(
 }
 
 pub async fn login(State(st): State<AppState>, Json(req): Json<LoginReq>) -> Result<Json<AuthResp>, AppError> {
-    let creds = users::find_credentials(&st.db, &normalize_email(&req.email))
+    let email = normalize_email(&req.email);
+    // Throttle brute-force against a single account (BR-017): 10 attempts / 5 min per email.
+    crate::ratelimit::hit(&st.db, &format!("login:{email}"), 10, 300).await?;
+    let creds = users::find_credentials(&st.db, &email)
         .await?
         .ok_or(AppError::Unauthorized)?;
     let hash = creds.password_hash.ok_or(AppError::Unauthorized)?;

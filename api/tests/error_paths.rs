@@ -331,7 +331,14 @@ async fn validate_returned_ticket_is_inactive(pool: PgPool) {
         build("POST", &format!("/api/events/{event}/reserve"), Some(&org), None),
     )
     .await;
-    let (ticket_id, qr) = (ticket["id"].as_str().unwrap(), ticket["qr_token"].as_str().unwrap());
+    let ticket_id = ticket["id"].as_str().unwrap().to_string();
+    // Mint the signed door-QR while the ticket is still active (BR-023), then return it.
+    let (_, qr_resp) = send(
+        &app,
+        build("GET", &format!("/api/tickets/{ticket_id}/qr"), Some(&org), None),
+    )
+    .await;
+    let qr = qr_resp["token"].as_str().unwrap().to_string();
 
     let (status, _) = send(
         &app,

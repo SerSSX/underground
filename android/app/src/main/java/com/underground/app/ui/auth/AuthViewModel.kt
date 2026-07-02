@@ -37,6 +37,9 @@ class AuthViewModel : ViewModel() {
         bootstrap()
     }
 
+    /** Re-evaluate the session (e.g. after a deep-link gift claim signed the user in). */
+    fun refresh() = bootstrap()
+
     private fun bootstrap() {
         viewModelScope.launch {
             if (container.tokenStore.token == null) {

@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import EventDetailClient from "./EventDetailClient";
-import type { EventDto } from "../../../lib/api";
+import JsonLd from "../../components/JsonLd";
+import { eventJsonLd } from "../../../lib/seo";
+import { serverApiBase, type EventDto } from "../../../lib/api";
 
-const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+const API = serverApiBase();
 const SITE = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001";
 
 /** Server-side event fetch for SSR + metadata (public endpoint, no auth). */
@@ -37,5 +39,10 @@ export async function generateMetadata({ params }: { params: Promise<{ eventId: 
 export default async function EventPage({ params }: { params: Promise<{ eventId: string }> }) {
   const { eventId } = await params;
   const event = await fetchEvent(eventId);
-  return <EventDetailClient eventId={eventId} initialEvent={event} />;
+  return (
+    <>
+      {event && <JsonLd data={eventJsonLd(event)} />}
+      <EventDetailClient eventId={eventId} initialEvent={event} />
+    </>
+  );
 }

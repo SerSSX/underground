@@ -22,6 +22,7 @@ import com.underground.app.ui.theme.Ok
 fun StatusBadge(status: String) {
     val (label, color, glyph) = when (status) {
         "active" -> Triple("Активний", Ok, "✓")
+        "pending_claim" -> Triple("Очікує отримання", Muted, "⏳")
         "used" -> Triple("Використаний", Muted, "•")
         "returned" -> Triple("Повернений", Danger, "✕")
         "published" -> Triple("Опубліковано", Ok, "✓")

@@ -19,6 +19,8 @@ pub enum AppError {
     Conflict(String),
     #[error("{0}")]
     Validation(String),
+    #[error("забагато спроб, спробуйте пізніше")]
+    RateLimited,
     #[error("internal error")]
     Internal,
 }
@@ -36,6 +38,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         };
         // Body carries only a safe message — never internal details (SEC).
         (status, Json(json!({ "error": self.to_string() }))).into_response()
@@ -65,6 +68,7 @@ mod tests {
             status_of(AppError::Validation("y".into())),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+        assert_eq!(status_of(AppError::RateLimited), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[test]

@@ -72,3 +72,57 @@ pub async fn admin_telemetry(
     .await?;
     Ok(Json(stats))
 }
+
+#[derive(Serialize)]
+pub struct FunnelStep {
+    pub name: String,
+    pub count: i64,
+}
+
+/// North-star funnel + viral K-factor (TASK-117 / UC-015).
+#[derive(Serialize)]
+pub struct Funnel {
+    pub window_days: i64,
+    pub steps: Vec<FunnelStep>,
+    pub gift_created: i64,
+    pub ticket_claimed: i64,
+    /// Claims per gift over the window — a proxy for viral efficiency (share → claim).
+    pub k_factor: f64,
+}
+
+/// Ordered funnel step event names (top → bottom).
+const FUNNEL_STEPS: [&str; 5] = ["event_view", "signup", "ticket", "gift_created", "ticket_claimed"];
+
+/// `GET /api/admin/analytics/funnel` — conversion funnel + K-factor over the last 7 days (admin).
+pub async fn analytics_funnel(_admin: CurrentAdmin, State(st): State<AppState>) -> Result<Json<Funnel>, AppError> {
+    let names: Vec<String> = FUNNEL_STEPS.iter().map(|s| s.to_string()).collect();
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT name, count(*) FROM telemetry_events \
+         WHERE created_at >= now() - interval '7 days' AND name = ANY($1) GROUP BY name",
+    )
+    .bind(&names)
+    .fetch_all(&st.db)
+    .await?;
+    let count_of = |n: &str| rows.iter().find(|(name, _)| name == n).map_or(0, |(_, c)| *c);
+    let steps = FUNNEL_STEPS
+        .iter()
+        .map(|n| FunnelStep {
+            name: (*n).to_string(),
+            count: count_of(n),
+        })
+        .collect();
+    let gift = count_of("gift_created");
+    let claimed = count_of("ticket_claimed");
+    let k_factor = if gift > 0 {
+        ((claimed as f64 / gift as f64) * 1000.0).round() / 1000.0
+    } else {
+        0.0
+    };
+    Ok(Json(Funnel {
+        window_days: 7,
+        steps,
+        gift_created: gift,
+        ticket_claimed: claimed,
+        k_factor,
+    }))
+}

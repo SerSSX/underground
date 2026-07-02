@@ -17,6 +17,8 @@ next-env.d.ts
 
 # Env / dev volumes (rules §8.2) — .env.example IS committed
 .env
+.env.local
+.env*.local
 /.dev-data/
 /.dev-temp/
 

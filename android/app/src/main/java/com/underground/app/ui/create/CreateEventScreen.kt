@@ -1,5 +1,6 @@
 package com.underground.app.ui.create
 
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,7 +41,6 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,7 +55,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.underground.app.BuildConfig
 import com.underground.app.data.CreateEventReq
+import com.underground.app.ui.theme.Muted
 import com.underground.app.util.EVENT_CATEGORIES
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -105,12 +107,12 @@ fun CreateEventScreen(onDone: () -> Unit, onBack: () -> Unit, vm: CreateEventVie
 
     val busy by vm.busy.collectAsState()
     val error by vm.error.collectAsState()
-    val done by vm.done.collectAsState()
-    LaunchedEffect(done) { if (done) onDone() }
+    val created by vm.created.collectAsState()
 
     val dateMillis = dateState.selectedDateMillis
+    // Luma-mode: only a title (+ price/tickets) is required; the date is optional (TBA).
     val canSubmit = !busy && title.isNotBlank() && (isFree || price.isNotBlank()) &&
-        tickets.toIntOrNull() != null && dateMillis != null
+        tickets.toIntOrNull() != null
 
     Scaffold(
         topBar = {
@@ -295,6 +297,31 @@ fun CreateEventScreen(onDone: () -> Unit, onBack: () -> Unit, vm: CreateEventVie
             onDismissRequest = { showTime = false },
             confirmButton = { TextButton(onClick = { showTime = false }) { Text("OK") } },
             text = { TimePicker(state = timeState) },
+        )
+    }
+
+    // Post-publish viral hook: the moment the event is live, prompt to share its link.
+    created?.let { ev ->
+        val link = "${BuildConfig.WEB_BASE_URL}/events/${ev.id}"
+        AlertDialog(
+            onDismissRequest = onDone,
+            title = { Text("🎉 Опубліковано!") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Поділись лінком, щоб прийшло більше людей.")
+                    Text(link, style = MaterialTheme.typography.bodySmall, color = Muted)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, "Приходь на «${ev.title}»: $link")
+                    }
+                    context.startActivity(Intent.createChooser(send, "Поділитися подією"))
+                }) { Text("Поділитися") }
+            },
+            dismissButton = { TextButton(onClick = onDone) { Text("Готово") } },
         )
     }
 }

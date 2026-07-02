@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.underground.app.UndergroundApp
 import com.underground.app.data.CheckoutResp
+import com.underground.app.data.GiftReq
+import com.underground.app.data.GiftResp
 import com.underground.app.data.TicketDto
 import com.underground.app.data.TransferReq
 import com.underground.app.data.serverMessage
@@ -43,6 +45,14 @@ class TicketsViewModel : ViewModel() {
     }
 
     fun find(id: String): TicketDto? = _tickets.value.firstOrNull { it.id == id }
+
+    /** Mint a signed, short-TTL door-QR for [ticketId]; null on error. The e-ticket screen renders
+     *  this rotating token and refreshes it before expiry (TASK-118-B, BR-023). */
+    suspend fun fetchSignedQr(ticketId: String): String? = try {
+        api.ticketQr(ticketId).token
+    } catch (e: Exception) {
+        null
+    }
 
     fun reserve(eventId: String, onSuccess: (TicketDto) -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
@@ -125,6 +135,49 @@ class TicketsViewModel : ViewModel() {
                 onDone()
             } catch (e: HttpException) {
                 onError(e.serverMessage() ?: "Не вдалося відкрити спір (помилка ${e.code()})")
+            } catch (e: Exception) {
+                onError(e.message ?: "Помилка мережі")
+            }
+        }
+    }
+
+    /** Mint a single-use gift link for [ticketId] (recipient may have no account). Ticket → pending_claim. */
+    fun giftTicket(ticketId: String, email: String, onDone: (GiftResp) -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val resp = api.gift(ticketId, GiftReq(email.trim()))
+                fetch()
+                onDone(resp)
+            } catch (e: HttpException) {
+                onError(
+                    when (e.code()) {
+                        422 -> "Вкажіть email отримувача"
+                        409 -> e.serverMessage() ?: "Квиток не можна подарувати зараз"
+                        404 -> "Квиток недоступний"
+                        else -> "Помилка ${e.code()}"
+                    },
+                )
+            } catch (e: Exception) {
+                onError(e.message ?: "Помилка мережі")
+            }
+        }
+    }
+
+    /** Owner cancels an outstanding gift, reclaiming the ticket (pending_claim → active). */
+    fun revokeGift(ticketId: String, onDone: () -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                api.revokeGift(ticketId)
+                fetch()
+                onDone()
+            } catch (e: HttpException) {
+                onError(
+                    when (e.code()) {
+                        409 -> "Подарунок уже забрано або скасовано"
+                        404 -> "Квиток недоступний"
+                        else -> "Помилка ${e.code()}"
+                    },
+                )
             } catch (e: Exception) {
                 onError(e.message ?: "Помилка мережі")
             }

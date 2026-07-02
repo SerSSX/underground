@@ -1,6 +1,17 @@
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const TOKEN_KEY = "ug_web_token";
 
+/**
+ * API base for server-side (SSR) fetches. Node's fetch (undici) resolves `localhost` to IPv6
+ * `::1` first; a dev API bound to IPv4 `0.0.0.0` then refuses the connection, so SSR data comes
+ * back empty. Use `127.0.0.1` server-side. No-op for real production domains.
+ */
+export function serverApiBase(): string {
+  // Rewrite only a whole-host `localhost` (followed by port/path/end), never a substring like
+  // `api.mylocalhost.com`. No-op for real production domains.
+  return BASE.replace(/\/\/localhost(?=[:/]|$)/, "//127.0.0.1");
+}
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(TOKEN_KEY);
@@ -196,6 +207,14 @@ export async function forgotPassword(email: string): Promise<void> {
 export async function resetPassword(token: string, password: string): Promise<void> {
   await apiSend("POST", "/api/auth/reset-password", { token, password });
 }
+// Passwordless email one-time code (TASK-115). request → email a code; verify → app-JWT.
+export async function requestEmailCode(email: string): Promise<void> {
+  await apiSend("POST", "/api/auth/email/request-code", { email });
+}
+export async function verifyEmailCode(email: string, code: string): Promise<string> {
+  const data = await apiSend<{ token: string }>("POST", "/api/auth/email/verify-code", { email, code });
+  return data.token;
+}
 export async function getMe(): Promise<UserDto> {
   return apiGet<UserDto>("/api/me");
 }
@@ -224,8 +243,34 @@ export async function getEvent(id: string): Promise<EventDto> {
 export async function discoverEvents(): Promise<EventDto[]> {
   return apiGet<EventDto[]>("/api/discover");
 }
+export interface DiscoverSection {
+  key: string;
+  title: string;
+  events: EventDto[];
+}
+/** Time-aware sectioned Афіша (BR-024): soon / weekend / for_you / popular. */
+export async function discoverSections(): Promise<DiscoverSection[]> {
+  return apiGet<DiscoverSection[]>("/api/discover/sections");
+}
 export async function mySaves(): Promise<EventDto[]> {
   return apiGet<EventDto[]>("/api/me/saves");
+}
+
+// ---- notifications inbox (parity with Android «Вхідні») ----
+export interface NotificationDto {
+  id: string;
+  kind: string;
+  title: string;
+  body: string | null;
+  event_id: string | null;
+  read: boolean;
+  created_at: string;
+}
+export async function myNotifications(): Promise<NotificationDto[]> {
+  return apiGet<NotificationDto[]>("/api/me/notifications");
+}
+export async function markNotificationsRead(): Promise<void> {
+  await apiSend("POST", "/api/me/notifications/read", undefined);
 }
 export async function saveEvent(id: string): Promise<void> {
   await apiSend("POST", `/api/events/${id}/save`);
@@ -261,6 +306,43 @@ export async function transferTicket(ticketId: string, email: string): Promise<T
 }
 export async function disputeOrder(orderId: string): Promise<void> {
   await apiSend("POST", `/api/orders/${orderId}/dispute`, undefined);
+}
+
+// ---- gift / claim (TASK-110/114, WF-GiftClaim) ----
+export interface GiftPreviewDto {
+  from_name: string;
+  event_title: string;
+  event_starts_at: string | null;
+  event_city: string | null;
+  event_poster_url: string | null;
+  expires_at: string;
+}
+export interface GiftResp {
+  claim_token: string;
+  to_email: string;
+  expires_at: string;
+}
+/** Public preview of a gift by its claim token (no auth) — powers the claim landing. */
+export async function giftPreview(token: string): Promise<GiftPreviewDto> {
+  return apiGet<GiftPreviewDto>(`/api/gifts/${encodeURIComponent(token)}`);
+}
+export async function giftTicket(ticketId: string, email: string): Promise<GiftResp> {
+  return apiSend<GiftResp>("POST", `/api/tickets/${ticketId}/gift`, { email });
+}
+/** Owner cancels an outstanding (unclaimed) gift, reclaiming the ticket → active. */
+export async function revokeGift(ticketId: string): Promise<TicketDto> {
+  return apiSend<TicketDto>("DELETE", `/api/tickets/${ticketId}/gift`, undefined);
+}
+export interface QrResp {
+  token: string;
+  expires_at: string;
+}
+/** Mint a signed, short-TTL door-QR for the owner's active ticket (TASK-118-B, BR-023). */
+export async function ticketQr(ticketId: string): Promise<QrResp> {
+  return apiGet<QrResp>(`/api/tickets/${ticketId}/qr`);
+}
+export async function claimTicket(token: string): Promise<TicketDto> {
+  return apiSend<TicketDto>("POST", "/api/tickets/claim", { token });
 }
 
 // ---- prefs / onboarding (UX-R) ----

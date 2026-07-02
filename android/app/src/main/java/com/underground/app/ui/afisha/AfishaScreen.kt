@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.underground.app.ui.components.BrandHeader
 import com.underground.app.ui.components.CategoryChips
@@ -90,6 +91,30 @@ fun AfishaScreen(vm: AfishaViewModel, onOpen: (String) -> Unit) {
                             event = event,
                             saved = event.id in savedIds,
                             reason = if (mode == AfishaMode.ForYou) event.reason else null,
+                            onToggleSave = { vm.toggleSave(event.id) },
+                            onClick = { onOpen(event.id) },
+                        )
+                    }
+                }
+            }
+            is AfishaUiState.Sections -> LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                s.sections.forEach { section ->
+                    item(key = "hdr-${section.key}") {
+                        Text(
+                            section.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    items(section.events, key = { "${section.key}-${it.id}" }) { event ->
+                        EventCard(
+                            event = event,
+                            saved = event.id in savedIds,
+                            reason = event.reason,
                             onToggleSave = { vm.toggleSave(event.id) },
                             onClick = { onOpen(event.id) },
                         )

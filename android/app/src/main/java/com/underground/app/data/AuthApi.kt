@@ -64,12 +64,26 @@ data class ForgotPasswordReq(val email: String)
 @Serializable
 data class AuthResp(val token: String, val user: UserDto)
 
+// Passwordless email one-time code (TASK-115, WF-Auth).
+@Serializable
+data class RequestCodeReq(val email: String)
+
+@Serializable
+data class VerifyCodeReq(val email: String, val code: String)
+
 interface AuthApi {
     @POST("api/auth/register")
     suspend fun register(@Body req: RegisterReq): AuthResp
 
     @POST("api/auth/login")
     suspend fun login(@Body req: LoginReq): AuthResp
+
+    // Passwordless: request a one-time code, then verify it to sign in (account created on first use).
+    @POST("api/auth/email/request-code")
+    suspend fun requestEmailCode(@Body req: RequestCodeReq)
+
+    @POST("api/auth/email/verify-code")
+    suspend fun verifyEmailCode(@Body req: VerifyCodeReq): AuthResp
 
     // Password reset (structural bet): request a link; the reset itself completes on the web app.
     @POST("api/auth/forgot-password")

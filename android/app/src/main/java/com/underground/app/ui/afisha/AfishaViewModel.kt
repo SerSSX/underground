@@ -2,6 +2,7 @@ package com.underground.app.ui.afisha
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.underground.app.data.DiscoverSectionDto
 import com.underground.app.data.EventDto
 import com.underground.app.data.EventRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,6 +15,7 @@ sealed interface AfishaUiState {
     data object Loading : AfishaUiState
     data object Empty : AfishaUiState
     data class Success(val events: List<EventDto>) : AfishaUiState
+    data class Sections(val sections: List<DiscoverSectionDto>) : AfishaUiState
     data class Error(val message: String) : AfishaUiState
 }
 
@@ -23,6 +25,10 @@ enum class AfishaMode { ForYou, All }
 /** Pure reducer for the loaded list → testable without coroutines. */
 internal fun reduce(events: List<EventDto>): AfishaUiState =
     if (events.isEmpty()) AfishaUiState.Empty else AfishaUiState.Success(events)
+
+/** Pure reducer for the sectioned "For You" feed (TASK-200). */
+internal fun reduceSections(sections: List<DiscoverSectionDto>): AfishaUiState =
+    if (sections.isEmpty()) AfishaUiState.Empty else AfishaUiState.Sections(sections)
 
 /** Pure category filter (null = all). */
 internal fun filterByCategory(events: List<EventDto>, category: String?): List<EventDto> =
@@ -52,7 +58,8 @@ class AfishaViewModel : ViewModel() {
         _state.value = AfishaUiState.Loading
         viewModelScope.launch {
             _state.value = try {
-                reduce(if (_mode.value == AfishaMode.ForYou) repo.discover() else repo.published())
+                if (_mode.value == AfishaMode.ForYou) reduceSections(repo.discoverSections())
+                else reduce(repo.published())
             } catch (e: Exception) {
                 AfishaUiState.Error(e.message ?: "Network error")
             }
@@ -93,6 +100,9 @@ class AfishaViewModel : ViewModel() {
         _category.value = category
     }
 
-    fun find(id: String): EventDto? =
-        (state.value as? AfishaUiState.Success)?.events?.firstOrNull { it.id == id }
+    fun find(id: String): EventDto? = when (val s = state.value) {
+        is AfishaUiState.Success -> s.events.firstOrNull { it.id == id }
+        is AfishaUiState.Sections -> s.sections.flatMap { it.events }.firstOrNull { it.id == id }
+        else -> null
+    }
 }

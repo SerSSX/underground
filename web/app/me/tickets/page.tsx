@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
 import {
-  myTickets, returnTicket, transferTicket, disputeOrder, getToken, errorMessage, type TicketDto,
+  myTickets, returnTicket, transferTicket, giftTicket, revokeGift, ticketQr, disputeOrder, getToken, errorMessage, type TicketDto,
 } from "../../../lib/api";
 import { useLang, tr, fmtDateL } from "../../../lib/i18n";
 import EscrowTimeline from "../../components/EscrowTimeline";
@@ -14,6 +14,7 @@ const STATUS: Record<string, { uk: string; en: string; cls: string }> = {
   active: { uk: "✓ Активний", en: "✓ Active", cls: "pill ok" },
   used: { uk: "• Використаний", en: "• Used", cls: "pill" },
   returned: { uk: "✕ Повернений", en: "✕ Returned", cls: "pill bad" },
+  pending_claim: { uk: "⏳ Очікує отримання", en: "⏳ Pending claim", cls: "pill warn" },
 };
 
 function MyTicketsInner() {
@@ -28,18 +29,30 @@ function MyTicketsInner() {
   const [busy, setBusy] = useState<string | null>(null);
   const [transferFor, setTransferFor] = useState<string | null>(null);
   const [recipient, setRecipient] = useState("");
+  const [giftFor, setGiftFor] = useState<string | null>(null);
+  const [giftEmail, setGiftEmail] = useState("");
+  const [giftLink, setGiftLink] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<
     { title: string; body: string; cta: string; run: () => Promise<void> } | null
   >(null);
 
+  // Render a signed, short-TTL QR per active ticket (BR-023) — never the raw qr_token.
+  async function refreshQrs(list: TicketDto[]) {
+    const map: Record<string, string> = {};
+    for (const t of list) {
+      if (t.status !== "active") continue;
+      try {
+        const { token } = await ticketQr(t.id);
+        map[t.id] = await QRCode.toDataURL(token, { margin: 1, width: 220 });
+      } catch { /* transient — a later refresh retries */ }
+    }
+    setQr(map);
+  }
+
   async function load() {
     const list = await myTickets();
     setTickets(list);
-    const map: Record<string, string> = {};
-    for (const t of list) {
-      if (t.status === "active") map[t.id] = await QRCode.toDataURL(t.qr_token, { margin: 1, width: 220 });
-    }
-    setQr(map);
+    await refreshQrs(list);
   }
 
   useEffect(() => {
@@ -49,6 +62,13 @@ function MyTicketsInner() {
     }
     load().catch((e) => setError(errorMessage(e))).finally(() => setLoading(false));
   }, [router]);
+
+  // Rotate the QR before its TTL lapses so what's on screen is always scannable.
+  useEffect(() => {
+    if (tickets.length === 0) return;
+    const id = setInterval(() => { void refreshQrs(tickets); }, 100_000);
+    return () => clearInterval(id);
+  }, [tickets]);
 
   function doReturn(id: string) {
     setConfirmState({
@@ -66,6 +86,41 @@ function MyTicketsInner() {
         }
       },
     });
+  }
+
+  function doRevoke(id: string) {
+    setConfirmState({
+      title: tr(lang, "Скасувати подарунок?", "Cancel the gift?"),
+      body: tr(lang, "Посилання перестане діяти, а квиток повернеться до тебе.", "The link stops working and the ticket returns to you."),
+      cta: tr(lang, "Скасувати подарунок", "Cancel gift"),
+      run: async () => {
+        setBusy(id);
+        try {
+          await revokeGift(id);
+          await load();
+          setNotice(tr(lang, "Подарунок скасовано, квиток повернувся.", "Gift cancelled; the ticket is back."));
+        } finally {
+          setBusy(null);
+        }
+      },
+    });
+  }
+
+  async function doGift() {
+    const id = giftFor;
+    if (!id || !giftEmail.trim()) return;
+    setBusy(id);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await giftTicket(id, giftEmail.trim());
+      setGiftLink(`${window.location.origin}/g/${res.claim_token}`);
+      await load();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function doTransfer() {
@@ -146,10 +201,22 @@ function MyTicketsInner() {
                     {tr(lang, "Повернути", "Return")}
                   </button>
                   {t.escrow_status !== "frozen" && (
-                    <button className="btn ghost sm" onClick={() => { setRecipient(""); setTransferFor(t.id); }} disabled={busy === t.id}>
-                      {tr(lang, "Подарувати", "Transfer")}
-                    </button>
+                    <>
+                      <button className="btn ghost sm" onClick={() => { setGiftEmail(""); setGiftLink(null); setGiftFor(t.id); }} disabled={busy === t.id}>
+                        {tr(lang, "Подарувати лінком", "Gift by link")}
+                      </button>
+                      <button className="btn ghost sm" onClick={() => { setRecipient(""); setTransferFor(t.id); }} disabled={busy === t.id}>
+                        {tr(lang, "Передати", "Send")}
+                      </button>
+                    </>
                   )}
+                </div>
+              )}
+              {t.status === "pending_claim" && (
+                <div className="row gap" style={{ marginTop: 10 }}>
+                  <button className="btn ghost sm" onClick={() => doRevoke(t.id)} disabled={busy === t.id}>
+                    {tr(lang, "Скасувати подарунок", "Cancel gift")}
+                  </button>
                 </div>
               )}
               {/* Receipt + escrow lifecycle for paid tickets (WEB-2/3/4). */}
@@ -185,8 +252,51 @@ function MyTicketsInner() {
         </Modal>
       )}
 
+      {giftFor && (
+        <Modal title={tr(lang, "Подарувати лінком", "Gift by link")} onClose={() => setGiftFor(null)}>
+          {!giftLink ? (
+            <form className="form" onSubmit={(e) => { e.preventDefault(); doGift(); }}>
+              <input
+                className="input"
+                type="email"
+                placeholder={tr(lang, "Email отримувача", "Recipient email")}
+                value={giftEmail}
+                onChange={(e) => setGiftEmail(e.target.value)}
+                required
+                autoComplete="email"
+              />
+              <p className="muted" style={{ fontSize: 12 }}>
+                {tr(lang, "Працює, навіть якщо в людини ще немає акаунта.", "Works even if they don't have an account yet.")}
+              </p>
+              <button className="btn block" disabled={!giftEmail.trim() || busy === giftFor}>
+                {tr(lang, "Створити лінк", "Create link")}
+              </button>
+            </form>
+          ) : (
+            <div className="form">
+              <p className="muted" style={{ fontSize: 13 }}>
+                {tr(lang, "Надішли посилання — воно одноразове, діє 48 год.", "Share this one-time link (valid 48h).")}
+              </p>
+              <input className="input" readOnly value={giftLink} onFocus={(e) => e.currentTarget.select()} />
+              <div className="row gap">
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  onClick={() => { void navigator.clipboard?.writeText(giftLink); setNotice(tr(lang, "Посилання скопійовано.", "Link copied.")); }}
+                >
+                  {tr(lang, "Скопіювати", "Copy")}
+                </button>
+                <a className="btn ghost sm" target="_blank" rel="noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent(giftLink)}&text=${encodeURIComponent(tr(lang, "Дарую тобі квиток", "A ticket for you"))}`}>Telegram</a>
+                <a className="btn ghost sm" target="_blank" rel="noreferrer" href={`https://wa.me/?text=${encodeURIComponent(`${tr(lang, "Дарую тобі квиток", "A ticket for you")} ${giftLink}`)}`}>WhatsApp</a>
+              </div>
+              <button type="button" className="btn block" onClick={() => setGiftFor(null)}>{tr(lang, "Готово", "Done")}</button>
+            </div>
+          )}
+        </Modal>
+      )}
+
       {transferFor && (
-        <Modal title={tr(lang, "Подарувати квиток", "Transfer ticket")} onClose={() => setTransferFor(null)}>
+        <Modal title={tr(lang, "Передати квиток", "Send ticket")} onClose={() => setTransferFor(null)}>
           <form className="form" onSubmit={(e) => { e.preventDefault(); doTransfer(); }}>
             <input
               className="input"

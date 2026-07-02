@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.underground.app.UndergroundApp
 import com.underground.app.data.CreateEventReq
+import com.underground.app.data.EventDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,8 +23,9 @@ class CreateEventViewModel : ViewModel() {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    private val _done = MutableStateFlow(false)
-    val done: StateFlow<Boolean> = _done.asStateFlow()
+    /** The just-published event (drives the post-publish share screen); null until success. */
+    private val _created = MutableStateFlow<EventDto?>(null)
+    val created: StateFlow<EventDto?> = _created.asStateFlow()
 
     private val _uploading = MutableStateFlow(false)
     val uploading: StateFlow<Boolean> = _uploading.asStateFlow()
@@ -50,8 +52,7 @@ class CreateEventViewModel : ViewModel() {
             _busy.value = true
             _error.value = null
             try {
-                api.create(req)
-                _done.value = true
+                _created.value = api.create(req)
             } catch (e: HttpException) {
                 _error.value = if (e.code() == 422) "Перевірте поля форми" else "Помилка ${e.code()}"
             } catch (e: Exception) {

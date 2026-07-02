@@ -96,6 +96,24 @@ pub async fn meets_age(db: &PgPool, user_id: Uuid, age_rating: Option<&str>) -> 
     Ok(dob.is_some_and(|d| age_on(d, Utc::now().date_naive()) >= min))
 }
 
+/// Look up an active user by email (blocked users are invisible — TASK-115 passwordless login).
+pub async fn find_by_email(db: &PgPool, email: &str) -> Result<Option<User>, sqlx::Error> {
+    let sql = format!("SELECT {USER_COLS} FROM users WHERE email = $1 AND blocked = false");
+    sqlx::query_as::<_, User>(&sql).bind(email).fetch_optional(db).await
+}
+
+/// Create a passwordless user (Google / email-code sign-up) — `password_hash` stays NULL.
+/// The display name defaults to the email's local part. Fails on a duplicate email.
+pub async fn create_passwordless_user(db: &PgPool, email: &str) -> Result<User, sqlx::Error> {
+    let name = email.split('@').next().filter(|s| !s.is_empty()).unwrap_or("user");
+    let sql = format!("INSERT INTO users (email, name) VALUES ($1, $2) RETURNING {USER_COLS}");
+    sqlx::query_as::<_, User>(&sql)
+        .bind(email)
+        .bind(name)
+        .fetch_one(db)
+        .await
+}
+
 pub async fn find_credentials(db: &PgPool, email: &str) -> Result<Option<Credentials>, sqlx::Error> {
     sqlx::query_as::<_, Credentials>("SELECT id, password_hash FROM users WHERE email = $1 AND blocked = false")
         .bind(email)

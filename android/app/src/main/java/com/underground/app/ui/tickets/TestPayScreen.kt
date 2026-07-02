@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.underground.app.data.TicketDto
 import com.underground.app.ui.theme.Accent
 import com.underground.app.ui.theme.Muted
+import com.underground.app.ui.theme.Ok
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,6 +87,12 @@ fun TestPayScreen(
                 "Це симуляція оплати — справжні гроші не списуються.",
                 color = Muted,
                 textAlign = TextAlign.Center,
+            )
+            Text(
+                "🛡 Гроші захищені: escrow тримає кошти до події, повернення поки не завершилась",
+                color = Ok,
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyMedium,
             )
             Button(
                 onClick = {

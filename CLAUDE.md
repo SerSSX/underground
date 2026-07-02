@@ -15,10 +15,14 @@
 - **Android** — Kotlin + Jetpack Compose (`android/`, compileSdk/targetSdk 35, minSdk 24, AGP 8.5, Kotlin 2.0). Dark-only.
 - **API** — Rust + Axum + Tokio + SQLx/PostgreSQL (`api/`).
 - **Admin** — окремий Next.js/React веб-застосунок (`admin/`) поверх `/api/admin/*`.
-- **Auth** — тільки Google OAuth (ID-token → app-JWT). **Тема — завжди темна.**
-- **Платіж** — Lemon Squeezy (MoR), webhook-патерн як у SignalOps. Монетизація — комісійний маркетплейс
-  із **ескроу**: гроші утримуються до завершення події (`HELD→CLEARING→CLEARED→PAID_OUT`, гілки `DISPUTED`/`REFUNDED`),
-  потім виплачуються організатору. Уся грошова логіка — через єдиний seam `api/src/escrow.rs`.
+- **Auth** — Google OAuth (ID-token → app-JWT) як основний метод **+ passwordless email one-time code** як
+  задокументований виняток для claim/guest-контексту (identity-merge за email; див. `docs/spec.md` UC-001/UC-013, BR-007/016/017).
+  **Тема — завжди темна.** (Оновлено TASK-101; заміняє попереднє «тільки Google OAuth».)
+- **Платіж** — **product-first, payment last**: провайдер — змінний модуль (`trait PaymentProvider`, seam
+  `api/src/escrow.rs`); перший реліз (Simple Launch) працює на `NoopProvider`/`TestProvider` без реальних грошей.
+  Монетизація — комісійний маркетплейс із **ескроу** (`HELD→CLEARING→CLEARED→PAID_OUT`, гілки `DISPUTED`/`REFUNDED`),
+  provider-neutral. Реальний PSP (**Stripe Connect + Payoneer**, US-entity via Atlas) вмикається ОСТАННІМ (Фаза 3–4).
+  Уся грошова логіка — виключно через seam `api/src/escrow.rs` (BR-006, BR-021).
 
 ## Process (non-negotiable — see `docs/rules.md`)
 
