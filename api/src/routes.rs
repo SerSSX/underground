@@ -32,6 +32,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/events/:id/reserve", post(tickets::reserve))
         .route("/api/events/:id/checkout", post(orders::checkout))
+        .route("/api/orders/:id", get(orders::get_order))
         .route("/api/orders/:id/pay-test", post(orders::pay_test))
         .route("/api/orders/:id/dispute", post(orders::dispute))
         .route("/api/webhooks/lemonsqueezy", post(webhooks::lemonsqueezy))

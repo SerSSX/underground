@@ -131,9 +131,12 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
             sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
                 .execute(&mut *tx)
                 .await?;
-            // Idempotent: a duplicate delivery for an already-fulfilled order is a safe no-op.
-            orders::fulfill(&mut tx, order_id).await?;
+            // Idempotent: a duplicate delivery for an already-fulfilled order is a safe no-op,
+            // and a payment that can no longer be honoured is a queued refund — never a 4xx
+            // to the provider, which would only make it retry a state we own.
+            let outcome = orders::fulfill(&mut tx, order_id).await?;
             tx.commit().await?;
+            tracing::info!(%order_id, ?outcome, "webhook: payment applied");
             Ok(StatusCode::OK)
         }
         WebhookEvent::Refunded { order_ref } => {

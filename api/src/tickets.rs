@@ -56,6 +56,20 @@ pub async fn decrement_tickets(conn: &mut sqlx::PgConnection, event_id: Uuid) ->
     .await
 }
 
+/// Hand `n` seats back. The inverse of [`decrement_tickets`] and the ONLY place that adds to
+/// `tickets_left`: clamped to `tickets_total`, because an organiser can lower capacity after
+/// a sale and a return must not then create a seat that never existed. Every caller — a
+/// buyer's return, an admin refund, an expired hold, a failed charge — goes through here so
+/// the clamp cannot be forgotten at one of them.
+pub async fn release_seats(conn: &mut sqlx::PgConnection, event_id: Uuid, n: i32) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE events SET tickets_left = LEAST(tickets_total, tickets_left + $2) WHERE id = $1")
+        .bind(event_id)
+        .bind(n)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 /// Inserts an active ticket with a fresh QR token; returns its id.
 pub async fn mint_ticket(
     conn: &mut sqlx::PgConnection,
@@ -266,10 +280,7 @@ pub async fn return_ticket(
         .bind(ticket_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE events SET tickets_left = tickets_left + 1 WHERE id = $1")
-        .bind(event_id)
-        .execute(&mut *tx)
-        .await?;
+    release_seats(&mut tx, event_id, 1).await?;
     // Refund escrow while funds are still recallable (held or mid-clearing).
     sqlx::query(
         "UPDATE orders SET escrow_status = 'refunded' WHERE ticket_id = $1 AND escrow_status IN ('held', 'clearing')",

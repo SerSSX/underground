@@ -9,7 +9,7 @@ use underground_api::config::Config;
 use underground_api::email::{self, EmailConfig};
 use underground_api::push::{self, FcmConfig};
 use underground_api::state::AppState;
-use underground_api::{db, escrow, payments, reminders, routes};
+use underground_api::{db, escrow, orders, payments, reminders, routes};
 
 /// Remind going/interested users about events starting within this many hours.
 const REMINDER_WINDOW_HOURS: i32 = 24;
@@ -27,6 +27,9 @@ const PUSH_INTERVAL_SECS: u64 = 30;
 const ESCROW_INTERVAL_SECS: u64 = 60 * 60;
 /// How often the transactional-email outbox is drained.
 const EMAIL_INTERVAL_SECS: u64 = 60;
+/// How often lapsed checkout holds are released back to sale (PAY-3). A minute of slack on a
+/// 15-minute hold is invisible to buyers and keeps the sweep cheap.
+const HOLD_INTERVAL_SECS: u64 = 60;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -52,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
     // outbox worker only starts when FCM credentials are configured.
     tokio::spawn(reminder_worker(pool.clone()));
     tokio::spawn(escrow_worker(pool.clone()));
+    tokio::spawn(hold_worker(pool.clone()));
     match FcmConfig::from_env() {
         Some(cfg) => {
             tracing::info!(project = %cfg.project_id, "push: FCM configured — starting delivery worker");
@@ -111,6 +115,20 @@ async fn reminder_worker(pool: sqlx::PgPool) {
 
 /// Periodically advances escrow: held → clearing once an event is over, then → cleared
 /// once the configured clearing window has elapsed. Frozen (disputed) orders are skipped.
+/// Puts seats from lapsed checkouts back on sale (PAY-3). Without it an abandoned payment
+/// page keeps its seat forever and a popular event sells out to people who never paid.
+async fn hold_worker(pool: sqlx::PgPool) {
+    let mut tick = tokio::time::interval(Duration::from_secs(HOLD_INTERVAL_SECS));
+    loop {
+        tick.tick().await;
+        match orders::expire_holds(&pool).await {
+            Ok(events) if events > 0 => tracing::info!(events, "holds: released lapsed seats"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "holds: expiry sweep failed"),
+        }
+    }
+}
+
 async fn escrow_worker(pool: sqlx::PgPool) {
     let mut tick = tokio::time::interval(Duration::from_secs(ESCROW_INTERVAL_SECS));
     loop {

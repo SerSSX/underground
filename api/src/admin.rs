@@ -295,10 +295,7 @@ pub async fn escrow_action(
                         .execute(&mut *tx)
                         .await?;
                 if returned.rows_affected() > 0 {
-                    sqlx::query("UPDATE events SET tickets_left = tickets_left + 1 WHERE id = $1")
-                        .bind(event_id)
-                        .execute(&mut *tx)
-                        .await?;
+                    crate::tickets::release_seats(&mut tx, event_id, 1).await?;
                     // The fulfilled order counted its promo use at payment — give it back.
                     if let Some(code) = &promo_code {
                         sqlx::query(

@@ -1,9 +1,16 @@
-//! Paid checkout + test-mode payment simulation. Real Lemon Squeezy live flow
-//! (hosted checkout + webhook) plugs in here once configured via admin.
+//! Paid checkout, the seat hold that protects it, and fulfilment once a provider says "paid".
+//!
+//! Money order of operations (PAY-3): the seat is taken at checkout, inside the same
+//! transaction as the order row, for [`HOLD_MINUTES`]. Payment then either arrives in time
+//! (ticket minted, seat already ours), arrives late (seat taken again if any is left), or
+//! never arrives (the hold lapses and the seat goes back on sale). Nothing on the payment
+//! path can fail after the buyer has been charged: when no ticket can be issued the order
+//! becomes `refund_due` and the money goes back through `refund_jobs`.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -14,6 +21,10 @@ use crate::payments;
 use crate::state::AppState;
 use crate::tickets::{self, Ticket};
 
+/// How long a checkout keeps its seat while the buyer pays. Long enough for a card form and
+/// a 3-D Secure round trip; short enough that an abandoned tab does not sell out an event.
+pub const HOLD_MINUTES: i32 = 15;
+
 #[derive(Serialize)]
 pub struct CheckoutResp {
     pub order_id: Uuid,
@@ -21,9 +32,37 @@ pub struct CheckoutResp {
     pub amount: Decimal,
     pub currency: String,
     pub test_mode: bool,
-    /// Lemon Squeezy hosted-checkout URL (live mode only); the order id rides along as
-    /// custom data so the webhook can match the payment back to this order.
+    /// Where the buyer goes to pay (hosted checkout); `None` for providers that settle inline.
     pub checkout_url: Option<String>,
+    /// Until when the seat is held for this order. Clients show a countdown from it.
+    pub hold_expires_at: DateTime<Utc>,
+}
+
+/// `GET /api/orders/:id` — the buyer's own order, for the payment screen and its countdown.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct OrderView {
+    pub id: Uuid,
+    pub event_id: Uuid,
+    pub status: String,
+    pub escrow_status: String,
+    pub amount: Decimal,
+    pub currency: String,
+    pub hold_expires_at: Option<DateTime<Utc>>,
+    pub ticket_id: Option<Uuid>,
+    pub checkout_url: Option<String>,
+}
+
+/// What [`fulfill`] did with a payment. It never fails on business grounds — see the module
+/// doc — so a webhook handler can answer 200 on every arm.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FulfillOutcome {
+    /// A ticket was issued.
+    Fulfilled(Uuid),
+    /// The order was already paid, failed, or otherwise terminal. A replayed delivery.
+    AlreadyHandled,
+    /// The money arrived but no ticket could be issued (sold out, or the promo code was
+    /// exhausted by an earlier payer). A refund has been queued.
+    RefundDue,
 }
 
 #[derive(Deserialize)]
@@ -109,9 +148,35 @@ pub async fn checkout(
     // Our commission, snapshotted now. `platform_fee_bps` can change before this order is
     // refunded, and a refund must return what was actually taken.
     let fee = (amount * Decimal::from(settings.platform_fee_bps) / Decimal::from(10_000)).round_dp(2);
-    let order_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO orders (event_id, buyer_id, amount, currency, provider, promo_code, application_fee) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+
+    // The reservation and the order row commit together, or not at all.
+    let mut tx = st.db.begin().await?;
+    // One buyer never holds two seats: an earlier unpaid checkout of theirs on this event is
+    // closed and its seat handed back before a new one is taken. A buyer who reloads the
+    // payment page gets a fresh hold, not a second one. If their old session still completes
+    // at the provider, the late-payment path in `fulfill` handles it like any lapsed hold.
+    let superseded: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE orders SET status = 'expired' \
+         WHERE event_id = $1 AND buyer_id = $2 AND status = 'pending' AND hold_expires_at IS NOT NULL \
+         RETURNING id",
+    )
+    .bind(event_id)
+    .bind(user.id)
+    .fetch_all(&mut *tx)
+    .await?;
+    if !superseded.is_empty() {
+        tickets::release_seats(&mut tx, event_id, superseded.len() as i32).await?;
+    }
+    // THE gate. A conditional atomic decrement is the only check that survives two buyers
+    // arriving in the same millisecond; the `tickets_left <= 0` read above is a courtesy that
+    // gives a clean message on the common path. Dropping `tx` here rolls everything back.
+    if tickets::decrement_tickets(&mut tx, event_id).await?.is_none() {
+        return Err(AppError::Conflict("квитки закінчились".into()));
+    }
+    let (order_id, hold_expires_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
+        "INSERT INTO orders (event_id, buyer_id, amount, currency, provider, promo_code, application_fee, hold_expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(mins => $8)) \
+         RETURNING id, hold_expires_at",
     )
     .bind(event_id)
     .bind(user.id)
@@ -120,12 +185,15 @@ pub async fn checkout(
     .bind(provider.name())
     .bind(&applied_promo)
     .bind(fee)
-    .fetch_one(&st.db)
+    .bind(HOLD_MINUTES)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
 
-    // Ask the provider to collect. The order row exists first because its id is the
-    // reference we hand the provider (metadata + idempotency key) and the handle a refund
-    // will later need.
+    // Ask the provider to collect — AFTER the commit, so a slow or hung provider call never
+    // holds a database transaction (and its connection) open. The order row exists first
+    // because its id is the reference we hand the provider (metadata + idempotency key) and
+    // the handle a refund will later need.
     let charge = provider
         .create_charge(crate::provider::ChargeReq {
             order_id,
@@ -141,18 +209,25 @@ pub async fn checkout(
     let charge = match charge {
         Ok(c) => c,
         Err(e) => {
-            // Never leave a pending row the buyer could later be charged against: the order
-            // is closed out here, and the provider's own message goes back to the caller.
-            sqlx::query("UPDATE orders SET status = 'failed' WHERE id = $1 AND status = 'pending'")
+            // Never leave a pending row the buyer could later be charged against — and give
+            // the seat back, since this order will never be paid. Keyed on rows_affected so a
+            // concurrent expiry cannot make us release the same seat twice.
+            let mut tx = st.db.begin().await?;
+            let closed = sqlx::query("UPDATE orders SET status = 'failed' WHERE id = $1 AND status = 'pending'")
                 .bind(order_id)
-                .execute(&st.db)
+                .execute(&mut *tx)
                 .await?;
+            if closed.rows_affected() > 0 {
+                tickets::release_seats(&mut tx, event_id, 1).await?;
+            }
+            tx.commit().await?;
             return Err(AppError::Conflict(format!("оплату не вдалося створити: {e}")));
         }
     };
-    sqlx::query("UPDATE orders SET provider_ref = $2 WHERE id = $1")
+    sqlx::query("UPDATE orders SET provider_ref = $2, checkout_url = $3 WHERE id = $1")
         .bind(order_id)
         .bind(&charge.provider_ref)
+        .bind(&charge.checkout_url)
         .execute(&st.db)
         .await?;
 
@@ -165,37 +240,113 @@ pub async fn checkout(
             currency,
             test_mode,
             checkout_url: charge.checkout_url,
+            hold_expires_at,
         }),
     ))
 }
 
-/// Fulfill a pending order: decrement stock, mint the ticket, move to paid + escrow `held`.
-/// Returns the new ticket id, or `None` if the order is no longer pending (idempotent — a
-/// duplicate webhook or double-submit is a safe no-op). Caller owns the transaction.
-pub async fn fulfill(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<Option<Uuid>, AppError> {
-    // (event_id, buyer_id, amount, status, promo_code) for the locked pending order.
-    type FulfillRow = (Uuid, Uuid, Decimal, String, Option<String>);
-    let order: Option<FulfillRow> =
-        sqlx::query_as("SELECT event_id, buyer_id, amount, status, promo_code FROM orders WHERE id = $1 FOR UPDATE")
-            .bind(order_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let (event_id, buyer_id, amount, status, promo_code) = order.ok_or(AppError::NotFound)?;
-    if status != "pending" {
-        return Ok(None);
-    }
-    if tickets::decrement_tickets(conn, event_id).await?.is_none() {
-        return Err(AppError::Conflict("квитки закінчились".into()));
-    }
-    let ticket_id = tickets::mint_ticket(conn, event_id, buyer_id, amount).await?;
-    sqlx::query("UPDATE orders SET status = 'paid', escrow_status = 'held', ticket_id = $2 WHERE id = $1")
+/// `GET /api/orders/:id` — buyer-scoped. An order that is not yours does not exist (404, not
+/// 403), so the endpoint cannot be used to probe which ids are real.
+pub async fn get_order(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Path(order_id): Path<Uuid>,
+) -> Result<Json<OrderView>, AppError> {
+    let order: Option<OrderView> = sqlx::query_as(
+        "SELECT id, event_id, status, escrow_status, amount, currency, hold_expires_at, ticket_id, checkout_url \
+         FROM orders WHERE id = $1 AND buyer_id = $2",
+    )
+    .bind(order_id)
+    .bind(user.id)
+    .fetch_optional(&st.db)
+    .await?;
+    Ok(Json(order.ok_or(AppError::NotFound)?))
+}
+
+/// Lapse every hold whose time is up and put its seat back on sale.
+///
+/// One statement, so a row cannot be counted twice: the orders flip and the seats return
+/// under the same lock. A payment that races this — `fulfill` takes `FOR UPDATE` on the same
+/// row — either lands before (order still pending, seat kept) or after (order expired, seat
+/// re-taken if one is left). `hold_expires_at IS NOT NULL` excludes orders that predate the
+/// hold and never reserved anything.
+pub async fn expire_holds(db: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
+    let res = sqlx::query(
+        "WITH lapsed AS ( \
+             UPDATE orders SET status = 'expired' \
+             WHERE status = 'pending' AND hold_expires_at IS NOT NULL AND hold_expires_at < now() \
+             RETURNING event_id \
+         ), per_event AS ( \
+             SELECT event_id, count(*)::int AS n FROM lapsed GROUP BY event_id \
+         ) \
+         UPDATE events e SET tickets_left = LEAST(e.tickets_total, e.tickets_left + p.n) \
+         FROM per_event p WHERE e.id = p.event_id",
+    )
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected())
+}
+
+/// The money is in, the ticket is not coming: record the debt and queue the return.
+/// Exactly one job per order, however many deliveries arrive (`refund_jobs.order_id` is unique).
+async fn refund_due(
+    conn: &mut sqlx::PgConnection,
+    order_id: Uuid,
+    amount: Decimal,
+    currency: &str,
+    reason: &str,
+) -> Result<FulfillOutcome, AppError> {
+    sqlx::query("UPDATE orders SET status = 'paid', escrow_status = 'refund_due' WHERE id = $1")
         .bind(order_id)
-        .bind(ticket_id)
         .execute(&mut *conn)
         .await?;
+    sqlx::query(
+        "INSERT INTO refund_jobs (order_id, amount, currency, reason) VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (order_id) DO NOTHING",
+    )
+    .bind(order_id)
+    .bind(amount)
+    .bind(currency)
+    .bind(reason)
+    .execute(&mut *conn)
+    .await?;
+    tracing::warn!(%order_id, reason, "payment landed with no ticket to issue — refund queued");
+    Ok(FulfillOutcome::RefundDue)
+}
+
+/// Apply a payment to an order: mint the ticket, move to paid + escrow `held`.
+///
+/// Never fails on business grounds. The seat was reserved at checkout; if the hold lapsed
+/// and the seat is gone, or the promo code was used up by an earlier payer, the outcome is
+/// [`FulfillOutcome::RefundDue`] — the buyer was charged, so the only honest answer is to
+/// give the money back, not to tell the provider its delivery failed. Idempotent: a replayed
+/// delivery for a handled order is [`FulfillOutcome::AlreadyHandled`]. Caller owns the
+/// transaction.
+pub async fn fulfill(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<FulfillOutcome, AppError> {
+    // (event_id, buyer_id, amount, currency, status, promo_code) for the locked order.
+    type FulfillRow = (Uuid, Uuid, Decimal, String, String, Option<String>);
+    let order: Option<FulfillRow> = sqlx::query_as(
+        "SELECT event_id, buyer_id, amount, currency, status, promo_code FROM orders WHERE id = $1 FOR UPDATE",
+    )
+    .bind(order_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let (event_id, buyer_id, amount, currency, status, promo_code) = order.ok_or(AppError::NotFound)?;
+    let seat_held = match status.as_str() {
+        // Reserved at checkout; still ours.
+        "pending" => true,
+        // The hold lapsed and its seat went back on sale. The buyer paid anyway (a slow 3-DS
+        // page, a tab reopened an hour later) — take a seat now if one is left.
+        "expired" => tickets::decrement_tickets(conn, event_id).await?.is_some(),
+        _ => return Ok(FulfillOutcome::AlreadyHandled),
+    };
+    if !seat_held {
+        return refund_due(conn, order_id, amount, &currency, "місць не залишилось").await;
+    }
     // Count the promo use at payment, atomically enforcing max_uses while the order row is
-    // locked. If the code was exhausted since checkout (e.g. another buyer paid first), the
-    // whole fulfillment rolls back — no ticket, no stock loss — and the caller sees 409.
+    // locked. Claimed BEFORE minting: if the code was exhausted since checkout (another buyer
+    // paid first) the seat we hold goes back and the money goes back — no ticket at a price
+    // the organiser did not agree to.
     // NOTE: we deliberately do NOT re-check `expires_at` here. The discount was validated and
     // locked when the order was created (apply_promo); honouring it at payment respects a
     // committed transaction. Only max_uses must be atomic, to prevent over-issuing the code.
@@ -211,10 +362,17 @@ pub async fn fulfill(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<Op
         .fetch_optional(&mut *conn)
         .await?;
         if claimed.is_none() {
-            return Err(AppError::Conflict("промокод вичерпано".into()));
+            tickets::release_seats(conn, event_id, 1).await?;
+            return refund_due(conn, order_id, amount, &currency, "промокод вичерпано").await;
         }
     }
-    Ok(Some(ticket_id))
+    let ticket_id = tickets::mint_ticket(conn, event_id, buyer_id, amount).await?;
+    sqlx::query("UPDATE orders SET status = 'paid', escrow_status = 'held', ticket_id = $2 WHERE id = $1")
+        .bind(order_id)
+        .bind(ticket_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(FulfillOutcome::Fulfilled(ticket_id))
 }
 
 /// `POST /api/orders/:id/pay-test` — simulates a successful payment (test mode only):
@@ -229,21 +387,34 @@ pub async fn pay_test(
         return Err(AppError::Conflict("тестова оплата доступна лише в test-режимі".into()));
     }
     // Authorize: only the buyer may pay-test their own order (unknown/other order → 404).
-    let owner: Option<Uuid> = sqlx::query_scalar("SELECT buyer_id FROM orders WHERE id = $1")
+    let row: Option<(Uuid, String)> = sqlx::query_as("SELECT buyer_id, status FROM orders WHERE id = $1")
         .bind(order_id)
         .fetch_optional(&st.db)
         .await?;
-    if owner != Some(user.id) {
+    let Some((owner, status)) = row else {
         return Err(AppError::NotFound);
+    };
+    if owner != user.id {
+        return Err(AppError::NotFound);
+    }
+    // A human paying in test mode is paying NOW. A lapsed hold means "start over", the same
+    // thing the real payment page tells them — the late-payment path is for a provider
+    // delivering a payment the buyer completed before the hold ran out.
+    if status == "expired" {
+        return Err(AppError::Conflict("час бронювання минув, спробуйте ще раз".into()));
     }
 
     let mut tx = st.db.begin().await?;
-    let ticket_id = fulfill(&mut tx, order_id)
-        .await?
-        .ok_or_else(|| AppError::Conflict("замовлення вже оброблене".into()))?;
+    let outcome = fulfill(&mut tx, order_id).await?;
     tx.commit().await?;
-    let ticket = tickets::fetch_ticket(&st.db, ticket_id).await?;
-    Ok((StatusCode::CREATED, Json(ticket)))
+    match outcome {
+        FulfillOutcome::Fulfilled(ticket_id) => {
+            let ticket = tickets::fetch_ticket(&st.db, ticket_id).await?;
+            Ok((StatusCode::CREATED, Json(ticket)))
+        }
+        FulfillOutcome::AlreadyHandled => Err(AppError::Conflict("замовлення вже оброблене".into())),
+        FulfillOutcome::RefundDue => Err(AppError::Conflict("місць не залишилось — гроші повертаються".into())),
+    }
 }
 
 /// `POST /api/orders/:id/dispute` — the buyer opens a dispute; freezes escrow so the

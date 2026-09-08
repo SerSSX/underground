@@ -4,7 +4,7 @@
 |---|---|
 | **Фаза** | Фаза 1 — гроші |
 | **Estimation** | L |
-| **Status** | `INTAKE` |
+| **Status** | `IN PROGRESS` — код і 14 AC/SEC-тестів (`api/tests/orders_hold.rs`) зелені; `DONE` після незалежного рев'ю |
 | **Критичний шлях до першого платежу** | так |
 | **Depends on** | PAY-1 |
 
