@@ -122,44 +122,76 @@ async fn post_webhook(app: &Router, payload: &Value, secret_for_sig: Option<&str
         .status()
 }
 
+/// [SEC] This test used to assert that a signed Lemon Squeezy `order_paid` FULFILLED the order
+/// it named. That was the exploit the review found: `custom_data.order_id` is a URL parameter
+/// the buyer edits in their own browser, so a signed LS webhook could fulfil ANY pending order
+/// — pay 5 €, name the 500 € order. The contract is now the opposite: a delivery is applied
+/// only to an order placed with THAT provider, on the object we created for it. No order is
+/// ever placed with `lemonsqueezy` any more (PAY-1 retired it), so the route is an
+/// authenticated, de-duplicated no-op — and this test proves it cannot mint.
 #[sqlx::test(migrations = "./migrations")]
-async fn webhook_fulfills_order_on_valid_signature(pool: PgPool) {
+async fn ls_webhook_is_authenticated_recorded_and_cannot_fulfil_an_order_it_did_not_charge(pool: PgPool) {
     let app = make_app(pool.clone());
     let admin = make_admin(&app, &pool, "admin@x.co").await;
     let maker = register(&app, "m@x.co").await;
     let buyer = register(&app, "b@x.co").await;
     set_webhook_secret(&app, &admin, "whsec_test").await;
     let event = paid_event(&app, &maker).await;
+    // A real pending order — placed with the `test` provider, as every order is today.
     let order = checkout(&app, &buyer, &event).await;
 
-    let payload = json!({ "meta": { "event_name": "order_paid", "custom_data": { "order_id": order } } });
+    let payload = json!({ "meta": { "event_name": "order_paid", "webhook_id": "wh_evt_1",
+                                    "custom_data": { "order_id": order } } });
 
-    // Tampered signature (wrong secret) → 401.
+    // Tampered signature (wrong secret) → 401, nothing recorded.
     assert_eq!(
         post_webhook(&app, &payload, Some("wrong-secret")).await,
         StatusCode::UNAUTHORIZED
     );
     // Missing signature header → 401.
     assert_eq!(post_webhook(&app, &payload, None).await, StatusCode::UNAUTHORIZED);
-    // Valid signature → 200, order fulfilled.
-    assert_eq!(post_webhook(&app, &payload, Some("whsec_test")).await, StatusCode::OK);
+    let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM webhook_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        recorded, 0,
+        "a rejected delivery leaves no trace that could block a real one"
+    );
 
-    // The order is now paid + escrow held, and the buyer has a ticket.
+    // Valid signature → 200 (acknowledged so LS stops retrying) — but the order it names was
+    // not placed with lemonsqueezy, so NOTHING moves.
+    assert_eq!(post_webhook(&app, &payload, Some("whsec_test")).await, StatusCode::OK);
     let (_, orders) = send(&app, build("GET", "/api/admin/orders", Some(&admin), None)).await;
     let o = orders.as_array().unwrap().iter().find(|o| o["id"] == order).unwrap();
-    assert_eq!(o["status"], "paid");
-    assert_eq!(o["escrow_status"], "held");
+    assert_eq!(
+        o["status"], "pending",
+        "a signed LS webhook must not fulfil a test-provider order"
+    );
     let (_, tickets) = send(&app, build("GET", "/api/me/tickets", Some(&buyer), None)).await;
-    assert_eq!(tickets.as_array().unwrap().len(), 1);
+    assert_eq!(tickets.as_array().unwrap().len(), 0, "no ticket minted");
 
-    // Duplicate delivery is idempotent (still 200, still one ticket).
+    // The delivery IS recorded, under its own delivery id — and a replay is a duplicate.
+    let recorded: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM webhook_events WHERE provider = 'lemonsqueezy' AND event_id = 'wh_evt_1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(recorded, 1);
     assert_eq!(post_webhook(&app, &payload, Some("whsec_test")).await, StatusCode::OK);
-    let (_, tickets2) = send(&app, build("GET", "/api/me/tickets", Some(&buyer), None)).await;
-    assert_eq!(tickets2.as_array().unwrap().len(), 1, "no double-mint");
+    let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM webhook_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(recorded, 1, "replay of the same delivery id is not a second row");
 }
 
+/// Lemon Squeezy is retired (PAY-1 / PAY-12). This test used to assert that live+lemonsqueezy
+/// returned a hosted-checkout URL; the product no longer does that, and the honest contract is
+/// a refusal BEFORE any order row exists — never a pending order nobody can pay.
 #[sqlx::test(migrations = "./migrations")]
-async fn checkout_live_returns_lemonsqueezy_url(pool: PgPool) {
+async fn checkout_with_retired_lemonsqueezy_is_refused_before_any_order(pool: PgPool) {
     let app = make_app(pool.clone());
     let admin = make_admin(&app, &pool, "admin@x.co").await;
     let maker = register(&app, "m@x.co").await;
@@ -182,14 +214,21 @@ async fn checkout_live_returns_lemonsqueezy_url(pool: PgPool) {
         build("POST", &format!("/api/events/{event}/checkout"), Some(&buyer), None),
     )
     .await;
-    assert_eq!(st, StatusCode::CREATED);
-    assert_eq!(c["test_mode"], false);
-    let url = c["checkout_url"].as_str().expect("live checkout returns a URL");
-    assert!(url.contains("mystore.lemonsqueezy.com/buy/var123"), "got {url}");
-    assert!(
-        url.contains(c["order_id"].as_str().unwrap()),
-        "URL carries the order id"
+    assert_eq!(st, StatusCode::CONFLICT, "retired provider → 409, got {c}");
+    let orders: i64 = sqlx::query_scalar("SELECT count(*) FROM orders")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        orders, 0,
+        "no order row is created for a provider that cannot take payment"
     );
+    let left: i32 = sqlx::query_scalar("SELECT tickets_left FROM events WHERE id = $1::uuid")
+        .bind(&event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 5, "and no seat is held");
 }
 
 #[sqlx::test(migrations = "./migrations")]

@@ -58,9 +58,24 @@ pub enum WebhookEvent {
         /// session with a PaymentIntent once paid, and only the PaymentIntent is refundable,
         /// so the id we stored at checkout is not the one we will need.
         provider_ref: Option<String>,
+        /// The id WE stored on the order at checkout (Stripe: the Checkout Session). This is
+        /// the binding: `order_ref` comes from metadata, which the payer can influence, so a
+        /// payment is applied only when the object it arrived on is the one we created for
+        /// that order. Without this, paying for a cheap order with a forged `order_id` in
+        /// metadata fulfils an expensive one.
+        charge_ref: Option<String>,
+        /// What was actually paid, in the provider's minor units — compared against the order
+        /// before minting, so a tampered or partial amount never yields a full ticket.
+        amount_minor: Option<i64>,
+        currency: Option<String>,
     },
     Refunded {
         order_ref: String,
+        /// How much has come back so far vs the charge total, in minor units. A partial
+        /// refund is a bookkeeping entry, not a returned ticket; only `refunded == total`
+        /// closes the order.
+        refunded_minor: Option<i64>,
+        total_minor: Option<i64>,
     },
     /// The buyer charged back. Terminal for the money: the ticket must not be honoured and
     /// the escrow row freezes until an admin resolves it.
@@ -160,6 +175,10 @@ pub struct RefundReq {
     /// Give our commission back too. True for a full refund: otherwise we keep a fee on
     /// money the buyer no longer paid.
     pub refund_application_fee: bool,
+    /// Sent as the provider's idempotency key. A retried refund — ours or the network's —
+    /// must return the SAME refund, not issue a second one; without a key a timeout on the
+    /// first attempt and a retry is money out twice.
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,16 +285,36 @@ impl PaymentProvider for TestProvider {
     }
 }
 
+/// Which environment a Stripe secret key belongs to, read off its prefix.
+pub fn stripe_key_kind(key: &str) -> Option<&'static str> {
+    let k = key.trim();
+    if k.starts_with("sk_live_") || k.starts_with("rk_live_") {
+        Some("live")
+    } else if k.starts_with("sk_test_") || k.starts_with("rk_test_") {
+        Some("test")
+    } else {
+        None
+    }
+}
+
 /// Select the active provider from the stored settings.
 ///
-/// Stripe is chosen only when it is BOTH selected and has a secret key: a half-configured
-/// Stripe would otherwise fail at the network boundary on every checkout, which reads to a
-/// buyer as the product being broken rather than as the operator having unfinished setup.
-/// Everything else falls back to `Test`, so the domain never accidentally moves real money.
+/// Every refusal here is deliberate and loud, because the alternative is quiet money damage:
+/// - an unknown name is an error, never a fallback to `Test` (a typo must stop checkout, not
+///   sell tickets nobody can be charged for);
+/// - `lemonsqueezy` is retired (PAY-12) — selecting it refuses rather than pretending;
+/// - Stripe requires a key, AND the key's environment must match `mode`. A live key under
+///   `mode = test` would take real money on the demo stand while every screen says "test";
+///   a test key under `mode = live` charges nobody while every screen says "paid".
 pub fn resolve(settings: &crate::payments::PaymentSettings) -> Result<Box<dyn PaymentProvider>, ProviderError> {
-    match settings.provider.as_str() {
-        "noop" => Ok(Box::new(NoopProvider)),
-        "test" | "lemonsqueezy" => Ok(Box::new(TestProvider)),
+    let provider: Box<dyn PaymentProvider> = match settings.provider.as_str() {
+        "noop" => Box::new(NoopProvider),
+        "test" => Box::new(TestProvider),
+        "lemonsqueezy" => {
+            return Err(ProviderError::Invalid(
+                "lemonsqueezy is retired — select stripe or test".into(),
+            ))
+        }
         "stripe" => {
             let key = settings
                 .stripe_secret_key
@@ -283,22 +322,43 @@ pub fn resolve(settings: &crate::payments::PaymentSettings) -> Result<Box<dyn Pa
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| ProviderError::Invalid("stripe selected but no secret key configured".into()))?;
-            Ok(Box::new(crate::stripe::StripeProvider::new(
+            match (stripe_key_kind(key), settings.mode.as_str()) {
+                (Some("live"), "live") | (Some("test"), "test") => {}
+                (Some(kind), mode) => {
+                    return Err(ProviderError::Invalid(format!(
+                        "stripe key is {kind} but payment mode is {mode}"
+                    )))
+                }
+                (None, _) => return Err(ProviderError::Invalid("stripe key has no recognised prefix".into())),
+            }
+            Box::new(crate::stripe::StripeProvider::new(
                 key,
                 settings.stripe_webhook_secret.clone(),
-                crate::stripe::base_url(),
-            )))
+                crate::stripe::base_url()?,
+            ))
         }
-        other => Err(ProviderError::Invalid(format!("unknown payment provider: {other}"))),
+        other => return Err(ProviderError::Invalid(format!("unknown payment provider: {other}"))),
+    };
+    // Live mode means real money. A provider that moves none (`test`, `noop`) under
+    // `mode = live` would create orders every screen calls paid while nobody was charged —
+    // the exact hazard the old "live without a variant" guard existed for, now stated once
+    // for every provider instead of once per provider.
+    if settings.mode == "live" && !provider.moves_real_money() {
+        return Err(ProviderError::Invalid(format!(
+            "provider '{}' moves no real money and cannot run in live mode",
+            provider.name()
+        )));
     }
+    Ok(provider)
 }
 
 /// Select by bare name, for call sites that have no settings row (unit tests, tooling).
-/// Same contract as [`resolve`]: an unknown name is an error, never a silent fallback.
+/// Same contract as [`resolve`]: an unknown or retired name is an error, never a fallback.
 pub fn resolve_by_name(provider: &str) -> Result<Box<dyn PaymentProvider>, ProviderError> {
     match provider {
         "noop" => Ok(Box::new(NoopProvider)),
-        "test" | "lemonsqueezy" => Ok(Box::new(TestProvider)),
+        "test" => Ok(Box::new(TestProvider)),
+        "lemonsqueezy" => Err(ProviderError::Invalid("lemonsqueezy is retired".into())),
         other => Err(ProviderError::Invalid(format!("unknown payment provider: {other}"))),
     }
 }
@@ -337,6 +397,7 @@ mod tests {
             reason: None,
             connected_account: None,
             refund_application_fee: false,
+            idempotency_key: None,
         }
     }
 
@@ -409,11 +470,77 @@ mod tests {
     fn resolve_by_name_maps_known_providers() {
         assert_eq!(resolve_by_name("noop").unwrap().name(), "noop");
         assert_eq!(resolve_by_name("test").unwrap().name(), "test");
-        assert_eq!(
-            resolve_by_name("lemonsqueezy").unwrap().name(),
-            "test",
-            "the legacy provider stays demoable on Test until PAY-12 removes it"
+        // Retired, not aliased: mapping it to Test created pending orders nobody could pay
+        // (review of PAY-1, finding M7). A retired provider refuses at resolve time.
+        assert!(
+            matches!(resolve_by_name("lemonsqueezy"), Err(ProviderError::Invalid(_))),
+            "lemonsqueezy is retired and must refuse, not fall back"
         );
+    }
+
+    fn settings(provider: &str, mode: &str, key: Option<&str>) -> crate::payments::PaymentSettings {
+        crate::payments::PaymentSettings {
+            mode: mode.into(),
+            provider: provider.into(),
+            ls_api_key: None,
+            ls_store_id: None,
+            ls_variant_id: None,
+            ls_webhook_secret: None,
+            stripe_secret_key: key.map(str::to_string),
+            stripe_publishable_key: None,
+            stripe_webhook_secret: None,
+            stripe_last_webhook_at: None,
+            stripe_webhook_rejections: 0,
+            platform_fee_bps: 1000,
+            clearing_window_days: 7,
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    /// [SEC] The key's environment and the payment mode must agree in BOTH directions. A live
+    /// key under test mode is the dangerous one: real charges on the demo stand while every
+    /// screen says "test".
+    #[test]
+    fn resolve_refuses_stripe_key_that_disagrees_with_mode() {
+        assert!(matches!(
+            resolve(&settings("stripe", "test", Some("sk_live_abc"))),
+            Err(ProviderError::Invalid(_))
+        ));
+        assert!(matches!(
+            resolve(&settings("stripe", "live", Some("sk_test_abc"))),
+            Err(ProviderError::Invalid(_))
+        ));
+        assert!(matches!(
+            resolve(&settings("stripe", "live", Some("garbage"))),
+            Err(ProviderError::Invalid(_))
+        ));
+        assert_eq!(
+            resolve(&settings("stripe", "test", Some("sk_test_abc")))
+                .unwrap()
+                .name(),
+            "stripe"
+        );
+        assert_eq!(
+            resolve(&settings("stripe", "live", Some("sk_live_abc")))
+                .unwrap()
+                .name(),
+            "stripe"
+        );
+    }
+
+    /// [SEC] Live mode with a provider that moves no money would sell tickets nobody paid for.
+    #[test]
+    fn resolve_refuses_money_free_providers_in_live_mode() {
+        assert!(matches!(
+            resolve(&settings("test", "live", None)),
+            Err(ProviderError::Invalid(_))
+        ));
+        assert!(matches!(
+            resolve(&settings("noop", "live", None)),
+            Err(ProviderError::Invalid(_))
+        ));
+        assert_eq!(resolve(&settings("test", "test", None)).unwrap().name(), "test");
+        assert_eq!(resolve(&settings("noop", "test", None)).unwrap().name(), "noop");
     }
 
     // The previous contract silently substituted Test for anything unknown. That is the

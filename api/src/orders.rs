@@ -142,8 +142,13 @@ pub async fn checkout(
     // operator error, and PAY-1 makes it loud: we no longer substitute the test provider
     // silently, because that either sells tickets nobody can pay for or — worse, once a real
     // key is present — takes money through a path nobody configured.
-    let provider = crate::provider::resolve(&settings)
-        .map_err(|e| AppError::Conflict(format!("платіжний провайдер не налаштований: {e}")))?;
+    // The provider's reason is for the operator's log, not the buyer's screen: it names our
+    // configuration state ("stripe selected but no secret key configured"), and a buyer is
+    // nobody who should learn that.
+    let provider = crate::provider::resolve(&settings).map_err(|e| {
+        tracing::error!(error = %e, "checkout: payment provider unavailable");
+        AppError::Conflict("платіжна система тимчасово недоступна, спробуйте за хвилину".into())
+    })?;
     let (amount, applied_promo) = apply_promo(&st.db, event_id, price, q.promo.as_deref()).await?;
     // Our commission, snapshotted now. `platform_fee_bps` can change before this order is
     // refunded, and a refund must return what was actually taken.
@@ -221,7 +226,16 @@ pub async fn checkout(
                 tickets::release_seats(&mut tx, event_id, 1).await?;
             }
             tx.commit().await?;
-            return Err(AppError::Conflict(format!("оплату не вдалося створити: {e}")));
+            // Same rule: the provider's text goes to the log. An `Invalid` from our own
+            // pre-checks (below the currency minimum, fee ≥ amount) IS buyer-actionable and
+            // contains nothing about us, so it is passed through; transport and upstream
+            // failures are not.
+            tracing::error!(%order_id, error = %e, "checkout: provider refused the charge");
+            let msg = match &e {
+                crate::provider::ProviderError::Invalid(m) => m.clone(),
+                _ => "платіжна система тимчасово недоступна, спробуйте за хвилину".to_string(),
+            };
+            return Err(AppError::Conflict(msg));
         }
     };
     sqlx::query("UPDATE orders SET provider_ref = $2, checkout_url = $3 WHERE id = $1")
@@ -285,6 +299,54 @@ pub async fn expire_holds(db: &sqlx::PgPool) -> Result<u64, sqlx::Error> {
     .execute(db)
     .await?;
     Ok(res.rows_affected())
+}
+
+/// The provider says the buyer has their money back in full: undo the sale on our side.
+///
+/// One routine for every refund path (webhook, admin, buyer return) so the four side effects
+/// cannot drift apart: the ticket is no longer valid at the door, the seat is back on sale,
+/// the promo use is returned, and the escrow row stops advancing toward a payout of money
+/// that has already gone back. Idempotent — keyed on the ticket flip's `rows_affected`, a
+/// second full-refund notice changes nothing.
+pub async fn apply_full_refund(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<(), AppError> {
+    type Row = (Uuid, Option<Uuid>, Option<String>, Decimal);
+    let row: Option<Row> =
+        sqlx::query_as("SELECT event_id, ticket_id, promo_code, amount FROM orders WHERE id = $1 FOR UPDATE")
+            .bind(order_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let Some((event_id, ticket_id, promo_code, amount)) = row else {
+        return Ok(());
+    };
+    if let Some(ticket_id) = ticket_id {
+        let returned =
+            sqlx::query("UPDATE tickets SET status = 'returned' WHERE id = $1 AND status IN ('active','used')")
+                .bind(ticket_id)
+                .execute(&mut *conn)
+                .await?;
+        if returned.rows_affected() > 0 {
+            tickets::release_seats(conn, event_id, 1).await?;
+            if let Some(code) = &promo_code {
+                sqlx::query(
+                    "UPDATE promo_codes SET used_count = used_count - 1 \
+                     WHERE event_id = $1 AND lower(code) = lower($2) AND used_count > 0",
+                )
+                .bind(event_id)
+                .bind(code)
+                .execute(&mut *conn)
+                .await?;
+            }
+        }
+    }
+    sqlx::query(
+        "UPDATE orders SET escrow_status = 'refunded', refunded_amount = $2, \
+            terminal_event_seen = COALESCE(terminal_event_seen, 'refunded') WHERE id = $1",
+    )
+    .bind(order_id)
+    .bind(amount)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
 }
 
 /// The money is in, the ticket is not coming: record the debt and queue the return.

@@ -22,6 +22,12 @@ pub struct PaymentSettings {
     pub stripe_secret_key: Option<String>,
     pub stripe_publishable_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
+    /// When a Stripe delivery last passed signature verification. `None` since the last
+    /// secret change means the endpoint has never been proven to work — which the readiness
+    /// checklist must say, because a wrong secret otherwise looks identical to a right one.
+    pub stripe_last_webhook_at: Option<DateTime<Utc>>,
+    /// Deliveries rejected for a bad signature since the secret was last changed.
+    pub stripe_webhook_rejections: i64,
     pub platform_fee_bps: i32,
     pub clearing_window_days: i32,
     pub updated_at: DateTime<Utc>,
@@ -31,11 +37,33 @@ pub async fn load_settings(db: &PgPool) -> Result<PaymentSettings, sqlx::Error> 
     sqlx::query_as::<_, PaymentSettings>(
         "SELECT mode, provider, ls_api_key, ls_store_id, ls_variant_id, ls_webhook_secret, \
             stripe_secret_key, stripe_publishable_key, stripe_webhook_secret, \
+            stripe_last_webhook_at, stripe_webhook_rejections, \
             platform_fee_bps, clearing_window_days, updated_at \
          FROM payment_settings WHERE id = TRUE",
     )
     .fetch_one(db)
     .await
+}
+
+/// A Stripe delivery passed verification: stamp the time and reset the rejection count, so
+/// the checklist distinguishes "wrong secret" (rejections climbing, no success) from a
+/// healthy endpoint.
+pub async fn note_webhook_ok(db: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE payment_settings SET stripe_last_webhook_at = now(), stripe_webhook_rejections = 0 WHERE id = TRUE",
+    )
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+pub async fn note_webhook_rejected(db: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE payment_settings SET stripe_webhook_rejections = stripe_webhook_rejections + 1 WHERE id = TRUE",
+    )
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -113,6 +141,10 @@ pub struct ReadinessView {
     pub provider_recognised: bool,
     /// Every credential the SELECTED provider needs for live mode is present.
     pub ready_for_live: bool,
+    /// Last Stripe delivery that passed verification, and rejections since the secret was
+    /// last saved. "Secret stored" is not "secret correct"; these two are.
+    pub stripe_last_webhook_at: Option<DateTime<Utc>>,
+    pub stripe_webhook_rejections: i64,
 }
 
 /// `GET /api/admin/payment-readiness` (admin only) — pre-launch checklist for live mode.
@@ -145,6 +177,8 @@ pub async fn readiness(_admin: CurrentAdmin, State(st): State<AppState>) -> Resu
         stripe_webhook_secret_set: swh,
         provider_recognised,
         ready_for_live,
+        stripe_last_webhook_at: s.stripe_last_webhook_at,
+        stripe_webhook_rejections: s.stripe_webhook_rejections,
     }))
 }
 
@@ -220,6 +254,18 @@ pub async fn update_settings(
             ));
         }
     }
+    // The mirror image, and the more dangerous one: a live key under test mode takes REAL
+    // money on the demo stand while every screen says "test" and pay-test mints free tickets
+    // beside it. Refused at save time here, and again at resolve time in provider.rs, so a
+    // row edited by hand cannot slip past.
+    if eff_mode == "test" && eff_provider == "stripe" {
+        let eff_key = req.stripe_secret_key.clone().or(cur.stripe_secret_key.clone());
+        if key_kind(&eff_key).as_deref() == Some("live") {
+            return Err(AppError::Validation(
+                "у тестовому режимі не можна зберігати live-ключ Stripe (sk_live_…)".into(),
+            ));
+        }
+    }
     if eff_mode == "live" && eff_provider == "lemonsqueezy" {
         let mut missing = Vec::new();
         if !eff_present(&req.ls_store_id, &cur.ls_store_id) {
@@ -270,6 +316,8 @@ pub async fn update_settings(
             stripe_secret_key = COALESCE($9, stripe_secret_key), \
             stripe_publishable_key = COALESCE($10, stripe_publishable_key), \
             stripe_webhook_secret = COALESCE($11, stripe_webhook_secret), \
+            stripe_webhook_rejections = CASE WHEN $11 IS NOT NULL THEN 0 ELSE stripe_webhook_rejections END, \
+            stripe_last_webhook_at   = CASE WHEN $11 IS NOT NULL THEN NULL ELSE stripe_last_webhook_at END, \
             updated_at = now() \
          WHERE id = TRUE",
     )
@@ -319,7 +367,17 @@ pub async fn stripe_test(_admin: CurrentAdmin, State(st): State<AppState>) -> Re
             message: "секретний ключ Stripe не збережено".into(),
         }));
     };
-    let provider = crate::stripe::StripeProvider::new(key, s.stripe_webhook_secret.clone(), crate::stripe::base_url());
+    let base = match crate::stripe::base_url() {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Json(ConnectionCheck {
+                ok: false,
+                account_id: None,
+                message: e.to_string(),
+            }))
+        }
+    };
+    let provider = crate::stripe::StripeProvider::new(key, s.stripe_webhook_secret.clone(), base);
     match provider.check_connection().await {
         Ok(id) => Ok(Json(ConnectionCheck {
             ok: true,

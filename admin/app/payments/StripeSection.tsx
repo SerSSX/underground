@@ -76,6 +76,31 @@ export default function StripeSection({
     }
   }
 
+  // Revocation. "Empty means leave as is" protects a working key from an accidental save,
+  // but it also meant a leaked key could only be removed by hand in the database. The server
+  // clears on an explicit "" — this is the only path that sends one, and it asks first.
+  async function clearKey(field: "stripe_secret_key" | "stripe_webhook_secret") {
+    const what = field === "stripe_secret_key" ? "секретний ключ" : "секрет вебхука";
+    if (!window.confirm(`Видалити ${what}? Платежі через Stripe зупиняться, доки не введете новий.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const s = await updateSettings({ [field]: "" });
+      onSaved(s);
+      setCheck(null);
+      setReadiness(await getReadiness());
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const lastWebhook = readiness?.stripe_last_webhook_at
+    ? new Date(readiness.stripe_last_webhook_at).toLocaleString("uk-UA")
+    : null;
+  const rejections = readiness?.stripe_webhook_rejections ?? 0;
+
   const mismatch =
     settings.stripe_key_kind !== null &&
     settings.stripe_key_kind !== "unknown" &&
@@ -91,6 +116,17 @@ export default function StripeSection({
       label: "Секрет вебхука збережено",
       ok: settings.stripe_webhook_secret_set,
       hint: "без нього ми не дізнаємось, що покупець заплатив",
+    },
+    {
+      // A stored secret that is WRONG rejects every delivery with 401 — silently, forever.
+      // Only a delivery that actually passed verification proves the endpoint works.
+      label: "Вебхук підтверджений",
+      ok: lastWebhook !== null,
+      hint: lastWebhook
+        ? `остання валідна доставка ${lastWebhook}` + (rejections ? `, відхилено після неї: ${rejections}` : "")
+        : rejections
+          ? `жодної валідної доставки, відхилено ${rejections} — секрет не той або годинник поїхав`
+          : "ще не було жодної доставки від Stripe",
     },
     {
       label: "Провайдер розпізнаний",
@@ -184,6 +220,16 @@ export default function StripeSection({
           >
             Перевірити зв'язок
           </button>
+          {settings.stripe_secret_key_set && (
+            <button className="btn secondary" type="button" onClick={() => clearKey("stripe_secret_key")} disabled={busy}>
+              Видалити секретний ключ
+            </button>
+          )}
+          {settings.stripe_webhook_secret_set && (
+            <button className="btn secondary" type="button" onClick={() => clearKey("stripe_webhook_secret")} disabled={busy}>
+              Видалити секрет вебхука
+            </button>
+          )}
         </div>
       </form>
 

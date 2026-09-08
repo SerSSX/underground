@@ -14,7 +14,7 @@ use tower::ServiceExt;
 use underground_api::orders::{self, FulfillOutcome};
 use underground_api::routes::router;
 use underground_api::state::AppState;
-use underground_api::webhooks;
+use underground_api::stripe::sign_payload;
 use uuid::Uuid;
 
 fn make_app(pool: PgPool) -> Router {
@@ -235,37 +235,43 @@ async fn webhook_paid_answers_200_when_sold_out_and_queues_the_refund(pool: PgPo
     let owner = token_for(&app, "owner@x.co").await;
     let a = token_for(&app, "a@x.co").await;
     let b = token_for(&app, "b@x.co").await;
-    let admin = token_for(&app, "admin@x.co").await;
-    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    let resp = app
-        .clone()
-        .oneshot(build(
-            "PUT",
-            "/api/admin/payment-settings",
-            Some(&admin),
-            Some(json!({ "ls_webhook_secret": "whsec_test" })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
 
+    // Orders are placed on the `test` provider (no network), then A is re-labelled as the
+    // Stripe order checkout would have written: provider `stripe`, provider_ref = the session.
     let event = create_event(&app, &owner, 1).await;
     let (_, va) = checkout(&app, &a, event, None).await;
     let order_a = order_id(&va).await;
     lapse(&pool, order_a).await;
     orders::expire_holds(&pool).await.unwrap();
     assert_eq!(checkout(&app, &b, event, None).await.0, StatusCode::CREATED);
+    sqlx::query("UPDATE orders SET provider = 'stripe', provider_ref = 'cs_A' WHERE id = $1")
+        .bind(order_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE payment_settings SET provider = 'stripe', mode = 'test', \
+            stripe_secret_key = 'sk_test_x', stripe_webhook_secret = 'whsec_test' WHERE id = TRUE",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
-    // The provider reports A paid, through the real route with a real signature.
-    let raw = json!({"meta":{"event_name":"order_paid","custom_data":{"order_id":order_a.to_string()}}}).to_string();
+    // Stripe reports A paid — on the object we created, for the amount we asked — through the
+    // real route with a real signature. Sold out meanwhile: the answer is still 200.
+    let raw = json!({"id":"evt_late","type":"checkout.session.completed","data":{"object":{
+        "id":"cs_A","payment_intent":"pi_A","payment_status":"paid","amount_total":10000,"currency":"uah",
+        "metadata":{"order_id":order_a.to_string()}}}})
+    .to_string();
+    let ts = chrono::Utc::now().timestamp();
     let req = Request::builder()
         .method("POST")
-        .uri("/api/webhooks/lemonsqueezy")
+        .uri("/api/webhooks/stripe")
         .header("content-type", "application/json")
-        .header("x-signature", webhooks::sign("whsec_test", raw.as_bytes()))
+        .header(
+            "stripe-signature",
+            format!("t={ts},v1={}", sign_payload("whsec_test", ts, raw.as_bytes())),
+        )
         .body(Body::from(raw))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();

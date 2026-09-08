@@ -31,13 +31,53 @@ pub const DEFAULT_BASE_URL: &str = "https://api.stripe.com";
 /// The API root to talk to. Overridable ONLY through the environment, so a test can point
 /// the adapter at a local mock; nothing in the request path can redirect it, which keeps a
 /// compromised settings row from exfiltrating the secret key to another host.
-pub fn base_url() -> String {
-    std::env::var("STRIPE_API_BASE")
+///
+/// The override must be `https://…`, or loopback `http://` for a local mock: the secret key
+/// travels as a bearer header, and a typo like `http://internal-proxy` in a compose file would
+/// send it in clear. An unusable override is refused, not silently replaced with the default
+/// — an operator who set it meant something, and the wrong host quietly is worse than none.
+pub fn base_url() -> Result<String, ProviderError> {
+    let Some(raw) = std::env::var("STRIPE_API_BASE")
         .ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+    else {
+        return Ok(DEFAULT_BASE_URL.to_string());
+    };
+    let loopback =
+        raw.starts_with("http://127.0.0.1") || raw.starts_with("http://localhost") || raw.starts_with("http://[::1]");
+    if raw.starts_with("https://") || loopback {
+        Ok(raw)
+    } else {
+        Err(ProviderError::Invalid(
+            "STRIPE_API_BASE must be https:// (or http:// on loopback for a local mock)".into(),
+        ))
+    }
 }
+
+/// One HTTP client for the process. `provider::resolve` runs on every checkout and every
+/// webhook; building a client each time meant a fresh connection pool and TLS handshake per
+/// payment, and idle sockets piling up under load.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        // A timeout is not optional: without one a hung Stripe call holds the request task
+        // (and its database connection) until the client gives up.
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .expect("reqwest client builds with default TLS")
+    })
+}
+
+/// Attempts for a request that is safe to repeat (it carries an idempotency key). Stripe
+/// asks for backoff on 429 and 5xx; three tries covers a blip without turning a real outage
+/// into a minute of hung checkouts.
+const MAX_ATTEMPTS: u32 = 3;
+
+/// Largest response body we will parse. Stripe objects are kilobytes; a megabyte from a host
+/// we were misrouted to is not a response, it is an attack surface.
+const MAX_RESPONSE_BYTES: usize = 1 << 20;
 
 /// How far a webhook's own timestamp may be from our clock. Stripe's documented default;
 /// without it a captured-and-replayed delivery stays valid forever, because the signature
@@ -83,6 +123,11 @@ pub fn to_minor(amount: Decimal, currency: &str) -> Result<i64, ProviderError> {
         .ok_or_else(|| ProviderError::Invalid("amount out of range".into()))?;
     // Three-decimal currencies must end in 0; round down so we never charge more than shown.
     Ok(if exp == 3 { minor - minor % 10 } else { minor })
+}
+
+/// The inverse of [`to_minor`]: a provider-reported amount back into the domain's decimal.
+pub fn from_minor(minor: i64, currency: &str) -> Decimal {
+    Decimal::from(minor) / Decimal::from(10_i64.pow(exponent(currency)))
 }
 
 /// Stripe's documented per-currency minimum charge, in minor units, for the currencies we
@@ -155,6 +200,10 @@ pub fn checkout_session_form(req: &ChargeReq, minor: i64, fee_minor: i64) -> For
         .put("mode", "payment")
         .put("client_reference_id", req.order_id.to_string())
         .put("metadata[order_id]", req.order_id.to_string())
+        // Session metadata is NOT copied to the PaymentIntent or the Charge. Every later
+        // event — refund, dispute — arrives on those objects, so without this line none of
+        // them can ever be traced back to an order and the whole terminal branch is dead.
+        .put("payment_intent_data[metadata][order_id]", req.order_id.to_string())
         .put("line_items[0][quantity]", "1")
         .put("line_items[0][price_data][currency]", &currency)
         .put("line_items[0][price_data][unit_amount]", minor.to_string())
@@ -276,12 +325,33 @@ pub fn map_event(raw: &[u8]) -> Result<InboundWebhook, ProviderError> {
                 (true, Some(order_ref)) => WebhookEvent::Paid {
                     order_ref,
                     provider_ref: obj["payment_intent"].as_str().map(str::to_string),
+                    // The session id is what checkout stored on the order; the consumer binds
+                    // on it, not on metadata.
+                    charge_ref: obj["id"].as_str().map(str::to_string),
+                    amount_minor: obj["amount_total"].as_i64(),
+                    currency: obj["currency"].as_str().map(str::to_string),
                 },
                 _ => WebhookEvent::Ignored,
             }
         }
-        "charge.refunded" | "refund.succeeded" => match order_ref.clone() {
-            Some(order_ref) => WebhookEvent::Refunded { order_ref },
+        // Arrives on the Charge. `amount_refunded` is cumulative, so a second partial refund
+        // reports the running total, not the increment.
+        "charge.refunded" => match order_ref.clone() {
+            Some(order_ref) => WebhookEvent::Refunded {
+                order_ref,
+                refunded_minor: obj["amount_refunded"].as_i64(),
+                total_minor: obj["amount"].as_i64(),
+            },
+            None => WebhookEvent::Ignored,
+        },
+        // Arrives on the Refund object, which knows its own amount but not the charge total;
+        // the consumer treats "total unknown" as "not proven full".
+        "refund.succeeded" => match order_ref.clone() {
+            Some(order_ref) => WebhookEvent::Refunded {
+                order_ref,
+                refunded_minor: obj["amount"].as_i64(),
+                total_minor: None,
+            },
             None => WebhookEvent::Ignored,
         },
         // A chargeback. Terminal for the money and not reversible by us — the escrow row
@@ -342,17 +412,16 @@ impl StripeProvider {
             secret_key: secret_key.into(),
             webhook_secret,
             base_url: base_url.into(),
-            // A timeout is not optional: without one a hung Stripe call holds the request
-            // task (and its database connection) until the client gives up.
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(20))
-                .build()
-                .expect("reqwest client builds with default TLS"),
+            http: http_client().clone(),
         }
     }
 
     /// POST a form body and return the parsed JSON, or a provider error carrying Stripe's own
     /// message. Stripe's error text is safe to surface: it never contains our key.
+    ///
+    /// Retries — bounded, backed off, jittered — happen ONLY when an idempotency key is
+    /// present: repeating a request without one could charge or refund twice. 429 and 5xx are
+    /// retried; a 4xx is Stripe telling us we are wrong, and asking again will not change that.
     async fn post(
         &self,
         path: &str,
@@ -360,35 +429,63 @@ impl StripeProvider {
         connected_account: Option<&str>,
         idempotency_key: Option<&str>,
     ) -> Result<serde_json::Value, ProviderError> {
-        let mut rb = self
-            .http
-            .post(format!("{}{}", self.base_url, path))
-            .bearer_auth(&self.secret_key)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(form.encode());
-        if let Some(acct) = connected_account {
-            rb = rb.header("Stripe-Account", acct);
+        let body = form.encode();
+        let attempts = if idempotency_key.is_some() { MAX_ATTEMPTS } else { 1 };
+        let mut last = ProviderError::Transport("no attempt made".into());
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                // 200ms, 400ms … plus up to 100ms of jitter so a burst of retries spreads out.
+                let jitter = u64::from(std::process::id() ^ attempt) % 100;
+                tokio::time::sleep(std::time::Duration::from_millis(200 * (1 << (attempt - 1)) + jitter)).await;
+            }
+            let mut rb = self
+                .http
+                .post(format!("{}{}", self.base_url, path))
+                .bearer_auth(&self.secret_key)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(body.clone());
+            if let Some(acct) = connected_account {
+                rb = rb.header("Stripe-Account", acct);
+            }
+            if let Some(key) = idempotency_key {
+                rb = rb.header("Idempotency-Key", key);
+            }
+            let resp = match rb.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last = ProviderError::Transport(format!("stripe request failed: {e}"));
+                    continue;
+                }
+            };
+            let status = resp.status();
+            // Cap what we are willing to parse: Stripe's own responses are a few KB, and an
+            // unbounded read on a compromised or misrouted host is a memory sink.
+            let bytes = match resp.bytes().await {
+                Ok(b) if b.len() <= MAX_RESPONSE_BYTES => b,
+                Ok(_) => return Err(ProviderError::Transport("stripe response too large".into())),
+                Err(e) => {
+                    last = ProviderError::Transport(format!("stripe response unreadable: {e}"));
+                    continue;
+                }
+            };
+            let parsed: serde_json::Value = match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                Err(e) => return Err(ProviderError::Transport(format!("stripe response not json: {e}"))),
+            };
+            if status.is_success() {
+                return Ok(parsed);
+            }
+            let msg = parsed["error"]["message"]
+                .as_str()
+                .unwrap_or("stripe rejected the request")
+                .to_string();
+            if status.as_u16() == 429 || status.is_server_error() {
+                last = ProviderError::Upstream(msg);
+                continue;
+            }
+            return Err(ProviderError::Upstream(msg));
         }
-        if let Some(key) = idempotency_key {
-            rb = rb.header("Idempotency-Key", key);
-        }
-        let resp = rb
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(format!("stripe request failed: {e}")))?;
-        let status = resp.status();
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::Transport(format!("stripe response not json: {e}")))?;
-        if status.is_success() {
-            return Ok(body);
-        }
-        let msg = body["error"]["message"]
-            .as_str()
-            .unwrap_or("stripe rejected the request")
-            .to_string();
-        Err(ProviderError::Upstream(msg))
+        Err(last)
     }
 
     /// `GET /v1/account` — used by the admin "перевірити зв'язок" button. Returns the account
@@ -508,7 +605,12 @@ impl PaymentProvider for StripeProvider {
             form = form.put("refund_application_fee", "true");
         }
         let body = self
-            .post("/v1/refunds", form, req.connected_account.as_deref(), None)
+            .post(
+                "/v1/refunds",
+                form,
+                req.connected_account.as_deref(),
+                req.idempotency_key.as_deref(),
+            )
             .await?;
         let id = body["id"]
             .as_str()
@@ -749,7 +851,30 @@ mod tests {
             hook.event,
             WebhookEvent::Paid {
                 order_ref: "o-1".into(),
-                provider_ref: Some("pi_1".into())
+                provider_ref: Some("pi_1".into()),
+                charge_ref: None,
+                amount_minor: None,
+                currency: None,
+            }
+        );
+    }
+
+    /// The consumer binds on the session id and the paid amount; both must come through.
+    #[test]
+    fn completed_session_carries_the_binding_fields() {
+        let raw = event(
+            "checkout.session.completed",
+            serde_json::json!({"id":"cs_9","payment_status":"paid","payment_intent":"pi_9","amount_total":25000,
+                               "currency":"uah","metadata":{"order_id":"o-9"}}),
+        );
+        assert_eq!(
+            map_event(&raw).unwrap().event,
+            WebhookEvent::Paid {
+                order_ref: "o-9".into(),
+                provider_ref: Some("pi_9".into()),
+                charge_ref: Some("cs_9".into()),
+                amount_minor: Some(25_000),
+                currency: Some("uah".into()),
             }
         );
     }
@@ -771,7 +896,9 @@ mod tests {
         assert_eq!(
             map_event(&refunded).unwrap().event,
             WebhookEvent::Refunded {
-                order_ref: "o-2".into()
+                order_ref: "o-2".into(),
+                refunded_minor: None,
+                total_minor: None,
             }
         );
         let disputed = event(
@@ -860,7 +987,9 @@ mod tests {
         assert_eq!(
             map_event(&raw).unwrap().event,
             WebhookEvent::Refunded {
-                order_ref: "pi_9".into()
+                order_ref: "pi_9".into(),
+                refunded_minor: None,
+                total_minor: None,
             }
         );
     }
@@ -908,11 +1037,28 @@ mod tests {
     #[test]
     fn base_url_defaults_to_stripe_and_trims_an_override() {
         std::env::remove_var("STRIPE_API_BASE");
-        assert_eq!(base_url(), DEFAULT_BASE_URL);
+        assert_eq!(base_url().unwrap(), DEFAULT_BASE_URL);
         std::env::set_var("STRIPE_API_BASE", "http://localhost:1234/");
-        assert_eq!(base_url(), "http://localhost:1234");
+        assert_eq!(
+            base_url().unwrap(),
+            "http://localhost:1234",
+            "loopback http is allowed for a mock"
+        );
+        std::env::set_var("STRIPE_API_BASE", "https://stripe-mock.internal");
+        assert_eq!(base_url().unwrap(), "https://stripe-mock.internal");
         std::env::set_var("STRIPE_API_BASE", "   ");
-        assert_eq!(base_url(), DEFAULT_BASE_URL, "blank override falls back");
+        assert_eq!(base_url().unwrap(), DEFAULT_BASE_URL, "blank override falls back");
+        // [SEC] The secret key rides as a bearer header. Plain http to a non-loopback host
+        // would send it in clear; a typo in a compose file must be refused, not obeyed.
+        std::env::set_var("STRIPE_API_BASE", "http://internal-proxy:8080");
+        assert!(matches!(base_url(), Err(ProviderError::Invalid(_))));
         std::env::remove_var("STRIPE_API_BASE");
+    }
+
+    #[test]
+    fn from_minor_inverts_to_minor_for_each_exponent() {
+        assert_eq!(from_minor(25_000, "uah"), Decimal::from_str("250.00").unwrap());
+        assert_eq!(from_minor(1_000, "jpy"), Decimal::from(1_000));
+        assert_eq!(from_minor(9_990, "kwd"), Decimal::from_str("9.990").unwrap());
     }
 }

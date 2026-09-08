@@ -56,6 +56,9 @@ export interface PaymentReadiness {
   stripe_key_kind: string | null;
   provider_recognised: boolean;
   ready_for_live: boolean;
+  // "Secret stored" is not "secret correct". These two tell them apart.
+  stripe_last_webhook_at: string | null;
+  stripe_webhook_rejections: number;
 }
 
 export interface ConnectionCheck {
@@ -94,13 +97,10 @@ export interface UpdateSettings {
 }
 
 export async function updateSettings(body: UpdateSettings): Promise<PaymentSettings> {
-  const res = await fetch(`${BASE}/api/admin/payment-settings`, {
-    method: "PUT",
-    headers: { ...authHeaders(), "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`Помилка ${res.status}`);
-  return (await res.json()) as PaymentSettings;
+  // Through check(): the server names exactly which field is missing for live mode
+  // ("live mode requires: stripe_webhook_secret"), and swallowing that left the operator
+  // staring at "Помилка 422" with nothing to act on.
+  return apiSend<PaymentSettings>("PUT", "/api/admin/payment-settings", body);
 }
 
 export function errorMessage(e: unknown): string {
