@@ -28,3 +28,14 @@ pub async fn hit(db: &PgPool, bucket: &str, max: i64, window_secs: i32) -> Resul
         .await?;
     Ok(())
 }
+
+/// Drop attempt rows older than `older_than_secs`. Nothing else deletes from `rate_events`,
+/// and every unauthenticated hit on a limited route is a row — without a sweep the table is
+/// an unbounded, attacker-fed write path.
+pub async fn sweep(db: &PgPool, older_than_secs: i32) -> Result<u64, sqlx::Error> {
+    let r = sqlx::query("DELETE FROM rate_events WHERE created_at < now() - ($1 * interval '1 second')")
+        .bind(older_than_secs)
+        .execute(db)
+        .await?;
+    Ok(r.rows_affected())
+}

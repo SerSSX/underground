@@ -313,10 +313,13 @@ async fn a_paid_event_names_another_order_in_metadata_and_is_ignored(pool: PgPoo
         "and the cheap one was not named, so nothing minted"
     );
     assert_eq!(count(&pool, "SELECT count(*) FROM tickets").await, 0);
+    // NOT recorded: the refusal is rolled back with everything else, so the event id is not
+    // burned and a corrected resend of it (a fixed stored ref) is applied, not deduplicated
+    // away. Nothing is lost by re-evaluating a forgery — it fails the same binding again.
     assert_eq!(
         count(&pool, "SELECT count(*) FROM webhook_events").await,
-        1,
-        "recorded, not applied"
+        0,
+        "refused deliveries leave no dedup row"
     );
 }
 
@@ -507,4 +510,176 @@ async fn a_dispute_without_metadata_is_traced_through_the_payment_intent_and_fre
     let (_, escrow, _, terminal) = order_state(&pool, order).await;
     assert_eq!(escrow, "frozen", "money is contested — the sweep must not pay it out");
     assert_eq!(terminal.as_deref(), Some("disputed"));
+}
+
+// ---------------------------------------------------------------- control-presence + abuse
+
+/// Control-presence for "dedup shares the side effect's transaction": inject a failure AFTER
+/// the delivery is recorded and assert the record is rolled back with it — so the retry that
+/// follows is applied, not thrown away as a duplicate. Removing the shared transaction makes
+/// the second half of this test go red (the event id would already be burned).
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failure_after_dedup_does_not_burn_the_event_id(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let buyer = token_for(&app, "b@x.co").await;
+    let (order, _) = stripe_order(&app, &pool, &buyer, "cs_A").await;
+    let payload = stripe_event(
+        "evt_once",
+        "checkout.session.completed",
+        paid_session("cs_A", order, 10_000),
+    );
+
+    // Make the fulfilment fail after the dedup row would have been written. One statement per
+    // call: sqlx prepares every query, and a prepared statement holds exactly one command.
+    sqlx::query(
+        "CREATE FUNCTION boom() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected'; END $$",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("CREATE TRIGGER boom_on_ticket BEFORE INSERT ON tickets FOR EACH ROW EXECUTE FUNCTION boom()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(post(&app, &payload, SECRET).await, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        count(&pool, "SELECT count(*) FROM webhook_events").await,
+        0,
+        "rolled back together"
+    );
+    assert_eq!(order_state(&pool, order).await.0, "pending");
+
+    // The provider retries the SAME event id; it must be applied this time.
+    sqlx::query("DROP TRIGGER boom_on_ticket ON tickets")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP FUNCTION boom()").execute(&pool).await.unwrap();
+    assert_eq!(post(&app, &payload, SECRET).await, StatusCode::OK);
+    assert_eq!(tickets_for(&pool, order).await, 1);
+    assert_eq!(count(&pool, "SELECT count(*) FROM webhook_events").await, 1);
+}
+
+/// [SEC] A flood of anonymous, unsigned POSTs must never make a real, signed delivery wait.
+/// The limit applies to REJECTED deliveries only.
+#[sqlx::test(migrations = "./migrations")]
+async fn an_anonymous_flood_cannot_block_a_signed_delivery(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let buyer = token_for(&app, "b@x.co").await;
+    let (order, _) = stripe_order(&app, &pool, &buyer, "cs_A").await;
+    let payload = stripe_event(
+        "evt_ok",
+        "checkout.session.completed",
+        paid_session("cs_A", order, 10_000),
+    );
+
+    // 600 rejected deliveries in the last minute — seeded directly, because 600 real requests
+    // through the test database take longer than the 60 s window and the earliest roll off.
+    // What is under test is the bucket the route counts and WHICH path pays for it.
+    sqlx::query("INSERT INTO rate_events (bucket) SELECT 'webhook:stripe:rejected' FROM generate_series(1, 600)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/webhooks/stripe")
+        .body(Body::from("{}"))
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the 601st garbage POST is throttled"
+    );
+
+    // …and the genuine delivery still lands.
+    assert_eq!(post(&app, &payload, SECRET).await, StatusCode::OK);
+    assert_eq!(tickets_for(&pool, order).await, 1);
+}
+
+/// [SEC] The buyer re-checked out; their OLD payment page then completes. That money must come
+/// back — the seat it held was handed to the new order — never become a second ticket.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_payment_on_a_superseded_checkout_is_refunded_not_ticketed(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let buyer = token_for(&app, "b@x.co").await;
+    let (first, event) = stripe_order(&app, &pool, &buyer, "cs_first").await;
+    // Re-checkout on the same event: `first` becomes superseded.
+    sqlx::query("UPDATE payment_settings SET provider = 'test' WHERE id = TRUE")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/events/{event}/checkout"),
+            Some(&buyer),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    sqlx::query("UPDATE payment_settings SET provider = 'stripe' WHERE id = TRUE")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, _, _, marker) = order_state(&pool, first).await;
+    assert_eq!(marker.as_deref(), Some("superseded"));
+
+    // The old session pays anyway (session id and amount both match the old order).
+    let late = stripe_event(
+        "evt_late",
+        "checkout.session.completed",
+        paid_session("cs_first", first, 10_000),
+    );
+    assert_eq!(post(&app, &late, SECRET).await, StatusCode::OK);
+    let (status, escrow, _, _) = order_state(&pool, first).await;
+    assert_eq!((status.as_str(), escrow.as_str()), ("refund_due", "refund_due"));
+    assert_eq!(tickets_for(&pool, first).await, 0, "no ticket for the superseded order");
+    assert_eq!(
+        count(
+            &pool,
+            &format!("SELECT count(*) FROM refund_jobs WHERE order_id = '{first}'")
+        )
+        .await,
+        1
+    );
+    let left: i32 = sqlx::query_scalar("SELECT tickets_left FROM events WHERE id = $1")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        left, 1,
+        "2 seats: one held by the new order, one free — the old order took nothing"
+    );
+}
+
+/// A forged or unbindable delivery is NOT recorded: a later genuine resend of the same event id
+/// (e.g. from the Stripe dashboard after we fix a stored ref) must still be applied.
+#[sqlx::test(migrations = "./migrations")]
+async fn an_ignored_delivery_does_not_burn_its_event_id(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let buyer = token_for(&app, "b@x.co").await;
+    let (order, _) = stripe_order(&app, &pool, &buyer, "cs_A").await;
+    // First delivery: wrong amount → ignored, and NOT recorded.
+    let short = stripe_event(
+        "evt_same",
+        "checkout.session.completed",
+        paid_session("cs_A", order, 100),
+    );
+    assert_eq!(post(&app, &short, SECRET).await, StatusCode::OK);
+    assert_eq!(count(&pool, "SELECT count(*) FROM webhook_events").await, 0);
+    // Same event id, now correct → applied.
+    let good = stripe_event(
+        "evt_same",
+        "checkout.session.completed",
+        paid_session("cs_A", order, 10_000),
+    );
+    assert_eq!(post(&app, &good, SECRET).await, StatusCode::OK);
+    assert_eq!(tickets_for(&pool, order).await, 1);
 }

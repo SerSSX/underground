@@ -70,6 +70,14 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
+/// Tests that mutate `STRIPE_API_BASE` and tests that call `resolve()` (which reads it) run in
+/// parallel threads of one binary; without this lock the money gate is flaky by construction.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static std::sync::Mutex<()> {
+    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &L
+}
+
 /// Attempts for a request that is safe to repeat (it carries an idempotency key). Stripe
 /// asks for backoff on 429 and 5xx; three tries covers a blip without turning a real outage
 /// into a minute of hung checkouts.
@@ -625,6 +633,22 @@ impl PaymentProvider for StripeProvider {
         })
     }
 
+    async fn cancel_charge(&self, provider_ref: &str) -> Result<(), ProviderError> {
+        // Only a Checkout Session can be expired. A PaymentIntent id means the payment already
+        // completed; the order-side marker handles that case.
+        if !provider_ref.starts_with("cs_") {
+            return Ok(());
+        }
+        self.post(
+            &format!("/v1/checkout/sessions/{provider_ref}/expire"),
+            Form::new(),
+            None,
+            None,
+        )
+        .await
+        .map(|_| ())
+    }
+
     fn verify_webhook(&self, headers: &HeaderMap, raw: &[u8]) -> Result<InboundWebhook, ProviderError> {
         let secret = self
             .webhook_secret
@@ -1036,6 +1060,7 @@ mod tests {
 
     #[test]
     fn base_url_defaults_to_stripe_and_trims_an_override() {
+        let _env = test_env_lock().lock().unwrap();
         std::env::remove_var("STRIPE_API_BASE");
         assert_eq!(base_url().unwrap(), DEFAULT_BASE_URL);
         std::env::set_var("STRIPE_API_BASE", "http://localhost:1234/");

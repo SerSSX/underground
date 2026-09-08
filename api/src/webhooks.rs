@@ -33,9 +33,10 @@ use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Deliveries accepted per minute per route, all senders together. Stripe sends a handful a
-/// minute at most; this only has to stop an anonymous flood from turning every request into
-/// an HMAC computation and a database write.
+/// REJECTED deliveries tolerated per minute per route before further unverified requests get
+/// 429. Verified deliveries are never limited — Stripe treats 429 as a failed delivery and
+/// stops retrying after ~3 days, so limiting the success path would let an anonymous flood
+/// silently turn paid orders into unpaid ones.
 const WEBHOOK_RATE_MAX: i64 = 600;
 const WEBHOOK_RATE_WINDOW_SECS: i32 = 60;
 
@@ -153,7 +154,9 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                     order_ref,
                     "webhook: paid event names no order of this provider"
                 );
-                tx.commit().await?;
+                // Rolled back, not committed: the delivery is NOT recorded, so a corrected resend
+                // of the same event id is applied instead of dropped as a duplicate.
+                tx.rollback().await?;
                 return Ok(StatusCode::OK);
             };
             // (provider_ref, amount, currency, terminal_event_seen) — everything the binding needs.
@@ -171,7 +174,7 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
             if let Some(charge_ref) = charge_ref.as_deref() {
                 if stored_ref.as_deref() != Some(charge_ref) {
                     tracing::warn!(%order_id, charge_ref, ?stored_ref, "webhook: paid event is not for the object we created — ignored");
-                    tx.commit().await?;
+                    tx.rollback().await?;
                     return Ok(StatusCode::OK);
                 }
             }
@@ -181,14 +184,29 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                 let expected = crate::stripe::to_minor(amount, &order_currency).ok();
                 if expected != Some(paid) || !cur.eq_ignore_ascii_case(&order_currency) {
                     tracing::warn!(%order_id, paid, ?expected, cur, %order_currency, "webhook: paid amount does not match the order — ignored");
-                    tx.commit().await?;
+                    tx.rollback().await?;
                     return Ok(StatusCode::OK);
                 }
             }
             // A terminal event already arrived out of order — the money is gone, so the ticket
             // must not be issued. Checked before any minting rather than after.
             if let Some(marker) = terminal {
-                tracing::warn!(%order_id, marker, "webhook: paid arrived after a terminal event, not minting");
+                if marker == "superseded" {
+                    // The buyer re-checked out and this is the OLD payment page paying. The seat
+                    // this order held went back at re-checkout — so does the money, never a
+                    // second ticket (BR-016).
+                    tracing::warn!(%order_id, "webhook: paid on a superseded checkout — refund queued");
+                    orders::refund_due(
+                        &mut tx,
+                        order_id,
+                        amount,
+                        &order_currency,
+                        "замовлення замінено новим checkout",
+                    )
+                    .await?;
+                } else {
+                    tracing::warn!(%order_id, marker, "webhook: paid arrived after a terminal event, not minting");
+                }
                 tx.commit().await?;
                 return Ok(StatusCode::OK);
             }
@@ -287,13 +305,6 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
 /// delivery a recorded no-op. The `custom_data.order_id` it carries was always a URL parameter
 /// the buyer could edit — which is exactly why the binding exists.
 pub async fn lemonsqueezy(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> Result<StatusCode, AppError> {
-    crate::ratelimit::hit(
-        &st.db,
-        "webhook:lemonsqueezy",
-        WEBHOOK_RATE_MAX,
-        WEBHOOK_RATE_WINDOW_SECS,
-    )
-    .await?;
     let settings = payments::load_settings(&st.db).await?;
     let secret = settings
         .ls_webhook_secret
@@ -303,25 +314,22 @@ pub async fn lemonsqueezy(State(st): State<AppState>, headers: HeaderMap, body: 
         .and_then(|v| v.to_str().ok())
         .ok_or(AppError::Unauthorized)?;
     if !verify_signature(&secret, &body, signature) {
+        // Only REJECTED deliveries are rate-limited: a verified one is never told to wait.
+        crate::ratelimit::hit(
+            &st.db,
+            "webhook:lemonsqueezy:rejected",
+            WEBHOOK_RATE_MAX,
+            WEBHOOK_RATE_WINDOW_SECS,
+        )
+        .await?;
         return Err(AppError::Unauthorized);
     }
     let payload: serde_json::Value =
         serde_json::from_slice(&body).map_err(|_| AppError::Validation("invalid json".into()))?;
     let kind = payload["meta"]["event_name"].as_str().unwrap_or_default().to_string();
-    let event = if kind == "order_paid" {
-        match payload["meta"]["custom_data"]["order_id"].as_str() {
-            Some(order_ref) => WebhookEvent::Paid {
-                order_ref: order_ref.to_string(),
-                provider_ref: None,
-                charge_ref: None,
-                amount_minor: None,
-                currency: None,
-            },
-            None => WebhookEvent::Ignored,
-        }
-    } else {
-        WebhookEvent::Ignored
-    };
+    // Never `Paid`: an LS event carries no charge_ref and no amount, so the binding in `apply`
+    // would have nothing to bind on. Recorded and acknowledged, never applied.
+    let event = WebhookEvent::Ignored;
     // The DELIVERY id, not the order id: `data.id` is the same for every event about one order,
     // so using it made the first event permanently block all later ones.
     let id = payload["meta"]["webhook_id"].as_str().map(str::to_string);
@@ -336,7 +344,6 @@ pub async fn lemonsqueezy(State(st): State<AppState>, headers: HeaderMap, body: 
 /// signature check is counted, so an operator can see a wrong secret from the checklist
 /// instead of from a buyer's complaint.
 pub async fn stripe(State(st): State<AppState>, headers: HeaderMap, body: Bytes) -> Result<StatusCode, AppError> {
-    crate::ratelimit::hit(&st.db, "webhook:stripe", WEBHOOK_RATE_MAX, WEBHOOK_RATE_WINDOW_SECS).await?;
     let settings = payments::load_settings(&st.db).await?;
     let provider = crate::provider::resolve(&settings)
         .map_err(|_| AppError::Conflict("платіжний провайдер не налаштований".into()))?;
@@ -350,6 +357,16 @@ pub async fn stripe(State(st): State<AppState>, headers: HeaderMap, body: Bytes)
             // failed. Count it, so a misconfigured secret is visible.
             tracing::warn!(error = %e, "stripe webhook rejected");
             payments::note_webhook_rejected(&st.db).await?;
+            // Only REJECTED deliveries are rate-limited. Counting before verification let 600
+            // anonymous POSTs make a real, signed Stripe delivery 429 — and Stripe gives up
+            // retrying after ~3 days, which is money taken and no ticket (REVIEW-2 N1).
+            crate::ratelimit::hit(
+                &st.db,
+                "webhook:stripe:rejected",
+                WEBHOOK_RATE_MAX,
+                WEBHOOK_RATE_WINDOW_SECS,
+            )
+            .await?;
             return Err(AppError::Unauthorized);
         }
     };

@@ -262,7 +262,14 @@ pub struct EscrowActionReq {
 }
 
 /// An order row locked for escrow control: (escrow_status, ticket_id, event_id, promo_code).
-type EscrowOrderRow = (Option<String>, Option<Uuid>, Uuid, Option<String>);
+type EscrowOrderRow = (
+    Option<String>,
+    Option<Uuid>,
+    Uuid,
+    Option<String>,
+    String,
+    Option<chrono::DateTime<chrono::Utc>>,
+);
 
 /// `POST /api/admin/orders/:id/escrow` — manual escrow control.
 /// refund: money back, ticket returned, seat freed. freeze: dispute hold.
@@ -275,11 +282,11 @@ pub async fn escrow_action(
 ) -> Result<Json<AdminOrder>, AppError> {
     let mut tx = st.db.begin().await?;
     let row: Option<EscrowOrderRow> =
-        sqlx::query_as("SELECT escrow_status, ticket_id, event_id, promo_code FROM orders WHERE id = $1 FOR UPDATE")
+        sqlx::query_as("SELECT escrow_status, ticket_id, event_id, promo_code, status, hold_expires_at FROM orders WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
-    let (escrow, ticket_id, event_id, promo_code) = row.ok_or(AppError::NotFound)?;
+    let (escrow, ticket_id, event_id, promo_code, order_status, hold_expires_at) = row.ok_or(AppError::NotFound)?;
     if escrow.as_deref() == Some("paid_out") {
         return Err(AppError::Conflict("кошти вже виплачені організатору".into()));
     }
@@ -308,6 +315,10 @@ pub async fn escrow_action(
                         .await?;
                     }
                 }
+            } else if order_status == "pending" && hold_expires_at.is_some() {
+                // A pending order holds a seat with no ticket yet. Refunding it must hand the
+                // seat back — once 'refunded', the expiry sweep never sees it again (REVIEW-2 N4).
+                crate::tickets::release_seats(&mut tx, event_id, 1).await?;
             }
             sqlx::query("UPDATE orders SET status = 'refunded' WHERE id = $1")
                 .bind(id)

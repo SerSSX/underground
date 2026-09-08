@@ -4,7 +4,7 @@
 |---|---|
 | **Фаза** | Фаза 1 — гроші |
 | **Estimation** | L |
-| **Status** | `IN PROGRESS` — код і 14 AC/SEC-тестів (`api/tests/orders_hold.rs`) зелені; `DONE` після незалежного рев'ю |
+| **Status** | `IN PROGRESS` — код і 19 AC/SEC-тестів (`api/tests/orders_hold.rs`) зелені; REVIEW-2 знайшов 3 MAJOR (N2 legacy-pending, N3 refund_due≠paid, N4 адмін-рефанд pending) — виправлені; `DONE` після третього незалежного рев'ю |
 | **Критичний шлях до першого платежу** | так |
 | **Depends on** | PAY-1 |
 

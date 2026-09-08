@@ -214,7 +214,12 @@ async fn late_payment_with_no_seat_left_queues_a_refund_instead_of_failing(pool:
     // A's money arrives anyway. The old code returned 409 here — money taken, no ticket.
     let out = fulfill_now(&pool, order_a).await;
     assert_eq!(out, FulfillOutcome::RefundDue);
-    assert_eq!(order_status(&pool, order_a).await, ("paid".into(), "refund_due".into()));
+    // A status of its own — NOT `paid`: the buyer has no ticket and the money is going back, so
+    // it must never read as revenue or trigger the ticket email (REVIEW-2 N3).
+    assert_eq!(
+        order_status(&pool, order_a).await,
+        ("refund_due".into(), "refund_due".into())
+    );
     assert_eq!(refund_jobs_for(&pool, order_a).await, 1, "exactly one refund per order");
     let minted: i64 = sqlx::query_scalar("SELECT count(*) FROM tickets WHERE event_id = $1")
         .bind(event)
@@ -485,8 +490,10 @@ async fn sec_expiry_sweep_leaves_paid_orders_alone(pool: PgPool) {
     );
 }
 
-/// Control-presence: the sweep's `hold_expires_at IS NOT NULL` guard. Orders from before
-/// PAY-3 never reserved a seat; releasing one for them would create capacity from nothing.
+/// Behaviour, not control-presence: orders from before PAY-3 never reserved a seat, and the
+/// sweep must not hand one back for them. (The explicit `IS NOT NULL` in the sweep is
+/// documentation — SQL's `NULL < now()` is already NULL, so removing it changes nothing. A
+/// review caught the earlier comment claiming otherwise.)
 #[sqlx::test(migrations = "./migrations")]
 async fn sec_expiry_sweep_skips_orders_that_never_held_a_seat(pool: PgPool) {
     let app = make_app(pool.clone());
@@ -536,4 +543,185 @@ async fn sec_failed_charge_closes_the_order_and_returns_the_seat(pool: PgPool) {
         "no pending row a buyer could later be charged against"
     );
     assert_eq!(tickets_left(&pool, event).await, 1, "the seat taken for it came back");
+}
+
+/// The capacity ceiling as a DATABASE control: `release_seats` clamps with LEAST, so the
+/// CHECK only matters for a write that bypasses it. This is the write that bypasses it.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_direct_write_above_capacity_is_refused_by_the_database(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let event = create_event(&app, &owner, 3).await;
+    let res = sqlx::query("UPDATE events SET tickets_left = tickets_total + 1 WHERE id = $1")
+        .bind(event)
+        .execute(&pool)
+        .await;
+    assert!(
+        res.is_err(),
+        "CHECK events_left_le_total must reject tickets_left > tickets_total"
+    );
+    assert_eq!(tickets_left(&pool, event).await, 3);
+}
+
+/// [SEC] An order from before the hold existed (hold_expires_at NULL) never took a seat. Paying
+/// it must take one NOW — and when none is left, the money goes back, never a ticket without
+/// capacity. Found by the second review: the old code minted with no decrement.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_legacy_pending_order_takes_a_seat_at_payment_or_is_refunded(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let b = token_for(&app, "b@x.co").await;
+    let event = create_event(&app, &owner, 1).await;
+    let (_, v) = checkout(&app, &a, event, None).await;
+    let order = order_id(&v).await;
+    // Rewind to the pre-migration shape: no hold, and the seat it "took" back on sale.
+    sqlx::query("UPDATE orders SET hold_expires_at = NULL WHERE id = $1")
+        .bind(order)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE events SET tickets_left = 1 WHERE id = $1")
+        .bind(event)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Seat available: payment takes it. The stock MUST drop.
+    assert!(matches!(fulfill_now(&pool, order).await, FulfillOutcome::Fulfilled(_)));
+    assert_eq!(
+        tickets_left(&pool, event).await,
+        0,
+        "a legacy order consumes capacity like any other"
+    );
+
+    // Second legacy order, no seat left → refund, not a ticket from thin air.
+    sqlx::query("UPDATE events SET tickets_left = 1 WHERE id = $1")
+        .bind(event)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, vb) = checkout(&app, &b, event, None).await;
+    let order_b = order_id(&vb).await;
+    sqlx::query("UPDATE orders SET hold_expires_at = NULL WHERE id = $1")
+        .bind(order_b)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // tickets_left is 0 now (B's checkout took the seat, then we detached B from its hold).
+    assert_eq!(fulfill_now(&pool, order_b).await, FulfillOutcome::RefundDue);
+    let live: i64 = sqlx::query_scalar("SELECT count(*) FROM tickets WHERE event_id = $1 AND status = 'active'")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(live, 1, "one seat, one ticket — never two");
+}
+
+/// `refund_due` is not `paid`: the buyer has no ticket and the money is going back, so it
+/// must not be the organiser's revenue, the platform's GMV, or a "Ваш квиток" email.
+#[sqlx::test(migrations = "./migrations")]
+async fn refund_due_orders_are_not_revenue_and_get_no_ticket_email(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let b = token_for(&app, "b@x.co").await;
+    let event = create_event(&app, &owner, 1).await;
+    let (_, va) = checkout(&app, &a, event, None).await;
+    let order_a = order_id(&va).await;
+    lapse(&pool, order_a).await;
+    orders::expire_holds(&pool).await.unwrap();
+    assert_eq!(checkout(&app, &b, event, None).await.0, StatusCode::CREATED);
+    assert_eq!(fulfill_now(&pool, order_a).await, FulfillOutcome::RefundDue);
+    assert_eq!(
+        order_status(&pool, order_a).await.0,
+        "refund_due",
+        "a status of its own, not 'paid'"
+    );
+
+    let emails = underground_api::email::pending(&pool, 100).await.unwrap();
+    assert!(
+        emails.iter().all(|e| e.order_id != order_a),
+        "no confirmation email for money that is going back"
+    );
+    let resp = app
+        .clone()
+        .oneshot(build("GET", "/api/organizer/stats", Some(&owner), None))
+        .await
+        .unwrap();
+    let stats = json_body(resp).await;
+    assert_eq!(
+        stats["revenue"].as_str().unwrap_or("0"),
+        "0",
+        "not the organiser's money: {stats}"
+    );
+    assert_eq!(stats["tickets_sold"], 0);
+}
+
+/// [SEC] An admin refund of a PENDING order (seat held, no ticket yet) must hand the seat back;
+/// once the order is 'refunded' the expiry sweep will never see it again.
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_refund_of_a_pending_order_returns_its_seat(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let admin = token_for(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = create_event(&app, &owner, 1).await;
+    let (_, v) = checkout(&app, &a, event, None).await;
+    let order = order_id(&v).await;
+    assert_eq!(tickets_left(&pool, event).await, 0);
+
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/admin/orders/{order}/escrow"),
+            Some(&admin),
+            Some(json!({"action":"refund"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(tickets_left(&pool, event).await, 1, "the held seat is back on sale");
+    assert_eq!(order_status(&pool, order).await.0, "refunded");
+    // The sweep must not release it a second time.
+    lapse(&pool, order).await;
+    orders::expire_holds(&pool).await.unwrap();
+    assert_eq!(tickets_left(&pool, event).await, 1);
+}
+
+/// [SEC] Re-checkout on the LAST seat: the buyer already holds it, so the second checkout must
+/// hand it back and take it again — one order, one seat — not answer "квитки закінчились".
+#[sqlx::test(migrations = "./migrations")]
+async fn sec_rechecking_out_on_the_last_seat_succeeds_and_supersedes(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let event = create_event(&app, &owner, 1).await;
+    let (s1, v1) = checkout(&app, &a, event, None).await;
+    assert_eq!(s1, StatusCode::CREATED);
+    let first = order_id(&v1).await;
+    let (s2, v2) = checkout(&app, &a, event, None).await;
+    assert_eq!(
+        s2,
+        StatusCode::CREATED,
+        "the buyer's own seat is re-taken, not refused: {v2}"
+    );
+    assert_eq!(tickets_left(&pool, event).await, 0);
+    let (status, _) = order_status(&pool, first).await;
+    assert_eq!(status, "expired");
+    let (marker,): (Option<String>,) = sqlx::query_as("SELECT terminal_event_seen FROM orders WHERE id = $1")
+        .bind(first)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        marker.as_deref(),
+        Some("superseded"),
+        "a late payment on it becomes a refund, never a ticket"
+    );
 }

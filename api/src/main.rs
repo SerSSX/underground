@@ -9,7 +9,7 @@ use underground_api::config::Config;
 use underground_api::email::{self, EmailConfig};
 use underground_api::push::{self, FcmConfig};
 use underground_api::state::AppState;
-use underground_api::{db, escrow, orders, payments, reminders, routes};
+use underground_api::{db, escrow, orders, payments, ratelimit, reminders, routes};
 
 /// Remind going/interested users about events starting within this many hours.
 const REMINDER_WINDOW_HOURS: i32 = 24;
@@ -125,6 +125,10 @@ async fn hold_worker(pool: sqlx::PgPool) {
             Ok(events) if events > 0 => tracing::info!(events, "holds: released lapsed seats"),
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "holds: expiry sweep failed"),
+        }
+        // Rate-limit rows are written by anonymous callers; keep a day, drop the rest.
+        if let Err(e) = ratelimit::sweep(&pool, 86_400).await {
+            tracing::warn!(error = %e, "ratelimit: sweep failed");
         }
     }
 }

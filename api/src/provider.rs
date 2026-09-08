@@ -204,6 +204,13 @@ pub trait PaymentProvider: Send + Sync {
 
     /// Decode + authenticate an inbound webhook into a normalized event.
     fn verify_webhook(&self, headers: &HeaderMap, raw: &[u8]) -> Result<InboundWebhook, ProviderError>;
+
+    /// Void a not-yet-paid charge (a superseded checkout). Best effort: a session that already
+    /// completed cannot be voided, and the caller logs and moves on — the order-side
+    /// `superseded` marker is what stops the money from becoming a ticket.
+    async fn cancel_charge(&self, _provider_ref: &str) -> Result<(), ProviderError> {
+        Ok(())
+    }
 }
 
 /// Free / RSVP provider: only zero-amount charges, no money ever moves.
@@ -502,6 +509,7 @@ mod tests {
     /// screen says "test".
     #[test]
     fn resolve_refuses_stripe_key_that_disagrees_with_mode() {
+        let _env = crate::stripe::test_env_lock().lock().unwrap();
         assert!(matches!(
             resolve(&settings("stripe", "test", Some("sk_live_abc"))),
             Err(ProviderError::Invalid(_))
@@ -531,6 +539,7 @@ mod tests {
     /// [SEC] Live mode with a provider that moves no money would sell tickets nobody paid for.
     #[test]
     fn resolve_refuses_money_free_providers_in_live_mode() {
+        let _env = crate::stripe::test_env_lock().lock().unwrap();
         assert!(matches!(
             resolve(&settings("test", "live", None)),
             Err(ProviderError::Invalid(_))

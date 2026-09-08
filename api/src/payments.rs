@@ -199,14 +199,11 @@ pub struct UpdateSettingsReq {
 
 /// Which Stripe environment a secret key belongs to, from its documented prefix.
 fn key_kind(key: &Option<String>) -> Option<String> {
+    // One definition of "which environment is this key" for the whole crate. A second copy
+    // here lagged behind (`rk_` restricted keys): an rk_live_ key saved under test mode read
+    // as "unknown" and the mismatch banner stayed silent.
     let k = key.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
-    Some(if k.starts_with("sk_live_") {
-        "live".to_string()
-    } else if k.starts_with("sk_test_") {
-        "test".to_string()
-    } else {
-        "unknown".to_string()
-    })
+    Some(crate::provider::stripe_key_kind(k).unwrap_or("unknown").to_string())
 }
 
 /// `PUT /api/admin/payment-settings` (admin only). Partial update via COALESCE.
@@ -232,6 +229,14 @@ pub async fn update_settings(
     let cur = load_settings(&st.db).await?;
     let eff_mode = req.mode.clone().unwrap_or(cur.mode.clone());
     let eff_provider = req.provider.clone().unwrap_or(cur.provider.clone());
+    // Live mode with a provider that moves no money would mark every order paid while nobody
+    // was charged. `resolve` refuses it at checkout; refusing here too gives the operator the
+    // reason at save time instead of a 409 on every sale.
+    if eff_mode == "live" && matches!(eff_provider.as_str(), "test" | "noop") {
+        return Err(AppError::Validation(
+            "live-режим потребує провайдера, що рухає реальні гроші (stripe); test/noop працюють лише в test".into(),
+        ));
+    }
     if eff_mode == "live" && eff_provider == "stripe" {
         let mut missing = Vec::new();
         if !eff_present(&req.stripe_secret_key, &cur.stripe_secret_key) {

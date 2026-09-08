@@ -116,7 +116,7 @@ pub async fn checkout(
     .bind(event_id)
     .fetch_optional(&st.db)
     .await?;
-    let (title, price, currency, cost_type, tickets_left, sales_closed, past, age_rating) =
+    let (title, price, currency, cost_type, _tickets_left, sales_closed, past, age_rating) =
         row.ok_or(AppError::NotFound)?;
     if past {
         return Err(AppError::Conflict("подія вже завершилась".into()));
@@ -129,9 +129,9 @@ pub async fn checkout(
             "безкоштовна подія — отримайте квиток без оплати".into(),
         ));
     }
-    if tickets_left <= 0 {
-        return Err(AppError::Conflict("квитки закінчились".into()));
-    }
+    // No early `tickets_left <= 0` refusal here: a buyer re-checking out on the LAST seat is
+    // holding that seat themselves, and the supersede step below hands it back before the
+    // atomic decrement — which is the real gate and gives the same 409 when truly sold out.
     if !crate::users::meets_age(&st.db, user.id, age_rating.as_deref()).await? {
         return Err(AppError::Conflict("ця подія має вікове обмеження".into()));
     }
@@ -160,10 +160,10 @@ pub async fn checkout(
     // closed and its seat handed back before a new one is taken. A buyer who reloads the
     // payment page gets a fresh hold, not a second one. If their old session still completes
     // at the provider, the late-payment path in `fulfill` handles it like any lapsed hold.
-    let superseded: Vec<Uuid> = sqlx::query_scalar(
-        "UPDATE orders SET status = 'expired' \
+    let superseded: Vec<(Uuid, Option<String>)> = sqlx::query_as(
+        "UPDATE orders SET status = 'expired', terminal_event_seen = 'superseded' \
          WHERE event_id = $1 AND buyer_id = $2 AND status = 'pending' AND hold_expires_at IS NOT NULL \
-         RETURNING id",
+         RETURNING id, provider_ref",
     )
     .bind(event_id)
     .bind(user.id)
@@ -194,6 +194,17 @@ pub async fn checkout(
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
+
+    // The superseded checkouts may still have a live payment page open somewhere. Void them at
+    // the provider so that page stops accepting money; best effort — the `superseded` marker
+    // on the order is what actually turns a late payment into a refund rather than a ticket.
+    for (old_id, old_ref) in &superseded {
+        if let Some(r) = old_ref.as_deref() {
+            if let Err(e) = provider.cancel_charge(r).await {
+                tracing::warn!(order_id = %old_id, error = %e, "checkout: could not void superseded session");
+            }
+        }
+    }
 
     // Ask the provider to collect — AFTER the commit, so a slow or hung provider call never
     // holds a database transaction (and its connection) open. The order row exists first
@@ -339,7 +350,7 @@ pub async fn apply_full_refund(conn: &mut sqlx::PgConnection, order_id: Uuid) ->
         }
     }
     sqlx::query(
-        "UPDATE orders SET escrow_status = 'refunded', refunded_amount = $2, \
+        "UPDATE orders SET status = 'refunded', escrow_status = 'refunded', refunded_amount = $2, \
             terminal_event_seen = COALESCE(terminal_event_seen, 'refunded') WHERE id = $1",
     )
     .bind(order_id)
@@ -351,14 +362,16 @@ pub async fn apply_full_refund(conn: &mut sqlx::PgConnection, order_id: Uuid) ->
 
 /// The money is in, the ticket is not coming: record the debt and queue the return.
 /// Exactly one job per order, however many deliveries arrive (`refund_jobs.order_id` is unique).
-async fn refund_due(
+pub async fn refund_due(
     conn: &mut sqlx::PgConnection,
     order_id: Uuid,
     amount: Decimal,
     currency: &str,
     reason: &str,
 ) -> Result<FulfillOutcome, AppError> {
-    sqlx::query("UPDATE orders SET status = 'paid', escrow_status = 'refund_due' WHERE id = $1")
+    // A distinct status, not `paid`: `paid` is what the confirmation email, organiser revenue
+    // and platform GMV all key on, and none of those may count money that is going back.
+    sqlx::query("UPDATE orders SET status = 'refund_due', escrow_status = 'refund_due' WHERE id = $1")
         .bind(order_id)
         .execute(&mut *conn)
         .await?;
@@ -386,20 +399,31 @@ async fn refund_due(
 /// transaction.
 pub async fn fulfill(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<FulfillOutcome, AppError> {
     // (event_id, buyer_id, amount, currency, status, promo_code) for the locked order.
-    type FulfillRow = (Uuid, Uuid, Decimal, String, String, Option<String>);
+    type FulfillRow = (
+        Uuid,
+        Uuid,
+        Decimal,
+        String,
+        String,
+        Option<String>,
+        Option<DateTime<Utc>>,
+    );
     let order: Option<FulfillRow> = sqlx::query_as(
-        "SELECT event_id, buyer_id, amount, currency, status, promo_code FROM orders WHERE id = $1 FOR UPDATE",
+        "SELECT event_id, buyer_id, amount, currency, status, promo_code, hold_expires_at FROM orders WHERE id = $1 FOR UPDATE",
     )
     .bind(order_id)
     .fetch_optional(&mut *conn)
     .await?;
-    let (event_id, buyer_id, amount, currency, status, promo_code) = order.ok_or(AppError::NotFound)?;
+    let (event_id, buyer_id, amount, currency, status, promo_code, hold_expires_at) =
+        order.ok_or(AppError::NotFound)?;
     let seat_held = match status.as_str() {
-        // Reserved at checkout; still ours.
-        "pending" => true,
+        // Reserved at checkout; still ours. ONLY with a hold: an order from before the hold
+        // existed (hold_expires_at NULL) never took a seat, so treating it as reserved would
+        // mint a ticket without consuming capacity (BR-015, REVIEW-2 N2).
+        "pending" if hold_expires_at.is_some() => true,
         // The hold lapsed and its seat went back on sale. The buyer paid anyway (a slow 3-DS
         // page, a tab reopened an hour later) — take a seat now if one is left.
-        "expired" => tickets::decrement_tickets(conn, event_id).await?.is_some(),
+        "pending" | "expired" => tickets::decrement_tickets(conn, event_id).await?.is_some(),
         _ => return Ok(FulfillOutcome::AlreadyHandled),
     };
     if !seat_held {
