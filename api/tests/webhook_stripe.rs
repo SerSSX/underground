@@ -389,7 +389,7 @@ async fn a_refund_that_arrives_before_the_payment_blocks_the_late_payment(pool: 
     let app = make_app(pool.clone());
     stripe_settings(&pool).await;
     let buyer = token_for(&app, "b@x.co").await;
-    let (order, _) = stripe_order(&app, &pool, &buyer, "cs_A").await;
+    let (order, event) = stripe_order(&app, &pool, &buyer, "cs_A").await;
 
     let refunded = stripe_event(
         "evt_r",
@@ -401,6 +401,14 @@ async fn a_refund_that_arrives_before_the_payment_blocks_the_late_payment(pool: 
     let (_, escrow, _, terminal) = order_state(&pool, order).await;
     assert_eq!(escrow, "refunded");
     assert_eq!(terminal.as_deref(), Some("refunded"));
+    // The refunded order was pending with a HELD seat and no ticket: the seat must come back
+    // here, because once the order is 'refunded' the expiry sweep never sees it (REVIEW-3 #2).
+    let left: i32 = sqlx::query_scalar("SELECT tickets_left FROM events WHERE id = $1")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 2, "a refund that overtakes its payment must not leak the seat");
 
     let paid = stripe_event(
         "evt_p",
@@ -412,6 +420,15 @@ async fn a_refund_that_arrives_before_the_payment_blocks_the_late_payment(pool: 
         tickets_for(&pool, order).await,
         0,
         "money already went back — no ticket"
+    );
+    assert_eq!(
+        count(
+            &pool,
+            &format!("SELECT count(*) FROM refund_jobs WHERE order_id = '{order}'")
+        )
+        .await,
+        0,
+        "the provider already returned the money — never a second refund"
     );
 }
 
@@ -592,6 +609,13 @@ async fn an_anonymous_flood_cannot_block_a_signed_delivery(pool: PgPool) {
         StatusCode::TOO_MANY_REQUESTS,
         "the 601st garbage POST is throttled"
     );
+    // Throttled means throttled: past the limit a request must not still write the rejection
+    // counter on the settings row — that write contends with genuine deliveries (REVIEW-3 #3).
+    let rejections: i64 = sqlx::query_scalar("SELECT stripe_webhook_rejections FROM payment_settings WHERE id = TRUE")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rejections, 0, "a throttled request leaves no trace on the settings row");
 
     // …and the genuine delivery still lands.
     assert_eq!(post(&app, &payload, SECRET).await, StatusCode::OK);
@@ -674,6 +698,17 @@ async fn an_ignored_delivery_does_not_burn_its_event_id(pool: PgPool) {
     );
     assert_eq!(post(&app, &short, SECRET).await, StatusCode::OK);
     assert_eq!(count(&pool, "SELECT count(*) FROM webhook_events").await, 0);
+    // …but the refusal itself is on record — the trail survives the rollback (REVIEW-3 #7).
+    let (n, reason): (i64, Option<String>) =
+        sqlx::query_as("SELECT count(*), max(reason) FROM webhook_refusals WHERE event_id = 'evt_same'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+    assert!(
+        reason.as_deref().unwrap_or("").contains("amount"),
+        "reason names the binding that failed: {reason:?}"
+    );
     // Same event id, now correct → applied.
     let good = stripe_event(
         "evt_same",

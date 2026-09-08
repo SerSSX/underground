@@ -39,15 +39,6 @@ async fn json_body(resp: axum::response::Response) -> Value {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn a_transport_failure_shows_the_buyer_a_fixed_line_and_frees_the_seat(pool: PgPool) {
-    // Nothing listens here; the adapter gets a connection error (ProviderError::Transport).
-    std::env::set_var("STRIPE_API_BASE", "http://127.0.0.1:9");
-    sqlx::query(
-        "UPDATE payment_settings SET provider = 'stripe', mode = 'test', \
-            stripe_secret_key = 'sk_test_x', stripe_webhook_secret = 'whsec_x' WHERE id = TRUE",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
     let app = make_app(pool.clone());
     let resp = app
         .clone()
@@ -66,12 +57,41 @@ async fn a_transport_failure_shows_the_buyer_a_fixed_line_and_frees_the_seat(poo
             "POST",
             "/api/events",
             Some(&token),
-            Some(json!({"title":"Gig","category":"Rock","price":"100","currency":"UAH","tickets_total":1,"cost_type":"paid"})),
+            Some(json!({"title":"Gig","category":"Rock","price":"100","currency":"UAH","tickets_total":2,"cost_type":"paid"})),
         ))
         .await
         .unwrap();
     let event = json_body(resp).await["id"].as_str().unwrap().to_string();
 
+    // An earlier checkout of the same buyer, still pending, with a provider session to void.
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/events/{event}/checkout"),
+            Some(&token),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let old = json_body(resp).await["order_id"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE orders SET provider = 'stripe', provider_ref = 'cs_old' WHERE id = $1::uuid")
+        .bind(&old)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Nothing listens here; the adapter gets a connection error (ProviderError::Transport) —
+    // both for voiding the old session (best effort, logged) and for creating the new one.
+    std::env::set_var("STRIPE_API_BASE", "http://127.0.0.1:9");
+    sqlx::query(
+        "UPDATE payment_settings SET provider = 'stripe', mode = 'test', \
+            stripe_secret_key = 'sk_test_x', stripe_webhook_secret = 'whsec_x' WHERE id = TRUE",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let resp = app
         .clone()
         .oneshot(build(
@@ -90,14 +110,27 @@ async fn a_transport_failure_shows_the_buyer_a_fixed_line_and_frees_the_seat(poo
         !msg.contains("stripe") && !msg.contains("127.0.0.1"),
         "[SEC] no infrastructure detail leaks: {msg}"
     );
+    // Let the spawned best-effort void run and fail (it is off the request path on purpose).
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // The seat the checkout took is back, and the order is closed — nobody can pay it later.
+    // Both seats are back: the superseded hold was handed back, and the failed checkout's
+    // seat too. Neither order can be paid later.
     let left: i32 = sqlx::query_scalar("SELECT tickets_left FROM events WHERE id = $1::uuid")
         .bind(&event)
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(left, 1);
+    assert_eq!(left, 2);
+    let (old_status, marker): (String, Option<String>) =
+        sqlx::query_as("SELECT status, terminal_event_seen FROM orders WHERE id = $1::uuid")
+            .bind(&old)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (old_status.as_str(), marker.as_deref()),
+        ("expired", Some("superseded"))
+    );
     let (status,): (String,) = sqlx::query_as("SELECT status FROM orders ORDER BY created_at DESC LIMIT 1")
         .fetch_one(&pool)
         .await

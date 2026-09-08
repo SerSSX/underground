@@ -326,3 +326,38 @@ async fn invalid_amounts_never_reach_the_network() {
         Err(ProviderError::Invalid(_))
     ));
 }
+
+/// Voiding a superseded checkout: only a Checkout Session can be expired; a PaymentIntent id
+/// means the payment already completed and there is nothing to void — and no request to make.
+#[tokio::test]
+async fn cancel_charge_expires_a_checkout_session_and_leaves_payment_intents_alone() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions/cs_old/expire"))
+        .and(header("authorization", "Bearer sk_test_unit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "cs_old", "status": "expired"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    provider(&server).cancel_charge("cs_old").await.unwrap();
+    provider(&server).cancel_charge("pi_done").await.unwrap();
+}
+
+/// A session that already completed cannot be expired: Stripe refuses, we report the refusal,
+/// and the caller (checkout) logs and moves on — the order-side marker is the real control.
+#[tokio::test]
+async fn cancel_charge_reports_a_session_that_can_no_longer_be_expired() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/checkout/sessions/cs_paid/expire"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": { "message": "You cannot expire a Checkout Session that is not open." }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let err = provider(&server).cancel_charge("cs_paid").await.unwrap_err();
+    assert!(matches!(err, ProviderError::Upstream(_)), "{err:?}");
+}

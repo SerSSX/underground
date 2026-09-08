@@ -111,6 +111,26 @@ async fn resolve_order(conn: &mut PgConnection, provider: &str, order_ref: &str)
     Ok(by_ref)
 }
 
+/// A refused delivery leaves a trail even though its dedup row is rolled back on purpose:
+/// what arrived, which order it named, why it was not applied. Written on its own connection
+/// AFTER the rollback so the trail survives the refusal (REVIEW-3 #7).
+async fn record_refusal(
+    db: &sqlx::PgPool,
+    provider: &str,
+    event_id: Option<&str>,
+    order_ref: &str,
+    reason: &str,
+) -> Result<(), AppError> {
+    sqlx::query("INSERT INTO webhook_refusals (provider, event_id, order_ref, reason) VALUES ($1, $2, $3, $4)")
+        .bind(provider)
+        .bind(event_id)
+        .bind(order_ref)
+        .bind(reason)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// Mark an order terminal for the money and stop the escrow sweep from advancing it.
 /// `terminal_event_seen` is what a late `Paid` checks before minting.
 async fn mark_terminal(conn: &mut PgConnection, order_id: Uuid, marker: &str, escrow: &str) -> Result<(), AppError> {
@@ -157,6 +177,14 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                 // Rolled back, not committed: the delivery is NOT recorded, so a corrected resend
                 // of the same event id is applied instead of dropped as a duplicate.
                 tx.rollback().await?;
+                record_refusal(
+                    &st.db,
+                    provider,
+                    hook.id.as_deref(),
+                    &order_ref,
+                    "no order of this provider",
+                )
+                .await?;
                 return Ok(StatusCode::OK);
             };
             // (provider_ref, amount, currency, terminal_event_seen) — everything the binding needs.
@@ -175,6 +203,14 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                 if stored_ref.as_deref() != Some(charge_ref) {
                     tracing::warn!(%order_id, charge_ref, ?stored_ref, "webhook: paid event is not for the object we created — ignored");
                     tx.rollback().await?;
+                    record_refusal(
+                        &st.db,
+                        provider,
+                        hook.id.as_deref(),
+                        &order_ref,
+                        "charge is not the object created for this order",
+                    )
+                    .await?;
                     return Ok(StatusCode::OK);
                 }
             }
@@ -185,30 +221,24 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                 if expected != Some(paid) || !cur.eq_ignore_ascii_case(&order_currency) {
                     tracing::warn!(%order_id, paid, ?expected, cur, %order_currency, "webhook: paid amount does not match the order — ignored");
                     tx.rollback().await?;
+                    record_refusal(
+                        &st.db,
+                        provider,
+                        hook.id.as_deref(),
+                        &order_ref,
+                        "amount or currency does not match the order",
+                    )
+                    .await?;
                     return Ok(StatusCode::OK);
                 }
             }
             // A terminal event already arrived out of order — the money is gone, so the ticket
             // must not be issued. Checked before any minting rather than after.
-            if let Some(marker) = terminal {
-                if marker == "superseded" {
-                    // The buyer re-checked out and this is the OLD payment page paying. The seat
-                    // this order held went back at re-checkout — so does the money, never a
-                    // second ticket (BR-016).
-                    tracing::warn!(%order_id, "webhook: paid on a superseded checkout — refund queued");
-                    orders::refund_due(
-                        &mut tx,
-                        order_id,
-                        amount,
-                        &order_currency,
-                        "замовлення замінено новим checkout",
-                    )
-                    .await?;
-                } else {
-                    tracing::warn!(%order_id, marker, "webhook: paid arrived after a terminal event, not minting");
-                }
-                tx.commit().await?;
-                return Ok(StatusCode::OK);
+            if let Some(marker) = terminal.as_deref() {
+                // Closed before this money arrived. `fulfill` owns the decision (refund it, or
+                // nothing — the provider already returned it); we only make it visible here,
+                // and fall through so the PaymentIntent below is stored for the refund.
+                tracing::warn!(%order_id, marker, "webhook: paid arrived after a terminal event");
             }
             // The refundable handle only exists once the payment completed: at checkout we
             // stored the session, and a refund can only be issued against what replaced it.
@@ -309,11 +339,10 @@ pub async fn lemonsqueezy(State(st): State<AppState>, headers: HeaderMap, body: 
     let secret = settings
         .ls_webhook_secret
         .ok_or_else(|| AppError::Conflict("вебхук не налаштовано".into()))?;
-    let signature = headers
-        .get("x-signature")
-        .and_then(|v| v.to_str().ok())
-        .ok_or(AppError::Unauthorized)?;
-    if !verify_signature(&secret, &body, signature) {
+    let signature = headers.get("x-signature").and_then(|v| v.to_str().ok());
+    // A missing header is a rejected delivery like any other and is metered the same way
+    // (REVIEW-3 #8); before, it returned 401 above the limiter and cost a SELECT each time.
+    if !signature.is_some_and(|s| verify_signature(&secret, &body, s)) {
         // Only REJECTED deliveries are rate-limited: a verified one is never told to wait.
         crate::ratelimit::hit(
             &st.db,
@@ -356,10 +385,12 @@ pub async fn stripe(State(st): State<AppState>, headers: HeaderMap, body: Bytes)
             // A bad signature is indistinguishable from an attacker: never leak which check
             // failed. Count it, so a misconfigured secret is visible.
             tracing::warn!(error = %e, "stripe webhook rejected");
-            payments::note_webhook_rejected(&st.db).await?;
             // Only REJECTED deliveries are rate-limited. Counting before verification let 600
             // anonymous POSTs make a real, signed Stripe delivery 429 — and Stripe gives up
             // retrying after ~3 days, which is money taken and no ticket (REVIEW-2 N1).
+            // And the throttle comes BEFORE the rejection counter: that counter is a write to
+            // the same settings row a verified delivery updates, so an unmetered flood of it
+            // was lock contention on the money path (REVIEW-3 #3).
             crate::ratelimit::hit(
                 &st.db,
                 "webhook:stripe:rejected",
@@ -367,6 +398,7 @@ pub async fn stripe(State(st): State<AppState>, headers: HeaderMap, body: Bytes)
                 WEBHOOK_RATE_WINDOW_SECS,
             )
             .await?;
+            payments::note_webhook_rejected(&st.db).await?;
             return Err(AppError::Unauthorized);
         }
     };

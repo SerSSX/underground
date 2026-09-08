@@ -304,3 +304,42 @@ async fn payment_readiness_reports_status(pool: PgPool) {
     assert_eq!(v["ready_for_live"], true);
     assert_eq!(v["ls_webhook_secret_set"], true);
 }
+
+/// Live mode needs a provider that moves real money. The check runs on the MERGED settings, so
+/// flipping only the mode over a `test` provider is refused the same as sending both (REVIEW-3 #10).
+#[sqlx::test(migrations = "./migrations")]
+async fn live_mode_with_a_money_free_provider_is_refused_at_save(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let admin = token_for(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE payment_settings SET provider = 'test', mode = 'test' WHERE id = TRUE")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for body in [json!({"mode":"live"}), json!({"mode":"live","provider":"noop"})] {
+        let resp = app
+            .clone()
+            .oneshot(build(
+                "PUT",
+                "/api/admin/payment-settings",
+                Some(&admin),
+                Some(body.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    let (mode, provider): (String, String) =
+        sqlx::query_as("SELECT mode, provider FROM payment_settings WHERE id = TRUE")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (mode.as_str(), provider.as_str()),
+        ("test", "test"),
+        "nothing was saved"
+    );
+}

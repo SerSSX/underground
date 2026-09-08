@@ -507,6 +507,22 @@ mod tests {
     /// [SEC] The key's environment and the payment mode must agree in BOTH directions. A live
     /// key under test mode is the dangerous one: real charges on the demo stand while every
     /// screen says "test".
+    /// Restricted keys (`rk_`) are environment-typed like secret keys; a copy of this logic in
+    /// payments.rs once lagged behind and saved an rk_live_ key under test mode as "unknown".
+    #[test]
+    fn stripe_key_kind_reads_secret_and_restricted_keys() {
+        assert_eq!(stripe_key_kind("sk_live_a"), Some("live"));
+        assert_eq!(stripe_key_kind("rk_live_a"), Some("live"));
+        assert_eq!(stripe_key_kind("sk_test_a"), Some("test"));
+        assert_eq!(stripe_key_kind("rk_test_a"), Some("test"));
+        assert_eq!(
+            stripe_key_kind("pk_live_a"),
+            None,
+            "publishable keys are not account keys"
+        );
+        assert_eq!(stripe_key_kind("garbage"), None);
+    }
+
     #[test]
     fn resolve_refuses_stripe_key_that_disagrees_with_mode() {
         let _env = crate::stripe::test_env_lock().lock().unwrap();

@@ -279,3 +279,20 @@ async fn webhook_edge_cases(pool: PgPool) {
         StatusCode::UNPROCESSABLE_ENTITY
     );
 }
+
+/// A delivery with NO signature header is a rejected delivery like any other: it is metered,
+/// so an anonymous flood of header-less POSTs cannot cost a SELECT each for free (REVIEW-3 #8).
+#[sqlx::test(migrations = "./migrations")]
+async fn an_unsigned_ls_delivery_is_metered_like_a_bad_signature(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let admin = make_admin(&app, &pool, "admin@x.co").await;
+    set_webhook_secret(&app, &admin, "whsec_test").await;
+    let payload = json!({"meta": {"event_name": "order_paid", "webhook_id": "wh_1"}});
+    assert_eq!(post_webhook(&app, &payload, None).await, StatusCode::UNAUTHORIZED);
+    let metered: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rate_events WHERE bucket = 'webhook:lemonsqueezy:rejected'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(metered, 1, "a missing header costs the sender a token like a wrong one");
+}

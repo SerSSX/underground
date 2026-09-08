@@ -269,6 +269,8 @@ type EscrowOrderRow = (
     Option<String>,
     String,
     Option<chrono::DateTime<chrono::Utc>>,
+    rust_decimal::Decimal,
+    String,
 );
 
 /// `POST /api/admin/orders/:id/escrow` — manual escrow control.
@@ -282,48 +284,47 @@ pub async fn escrow_action(
 ) -> Result<Json<AdminOrder>, AppError> {
     let mut tx = st.db.begin().await?;
     let row: Option<EscrowOrderRow> =
-        sqlx::query_as("SELECT escrow_status, ticket_id, event_id, promo_code, status, hold_expires_at FROM orders WHERE id = $1 FOR UPDATE")
+        sqlx::query_as("SELECT escrow_status, ticket_id, event_id, promo_code, status, hold_expires_at, amount, currency FROM orders WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
             .await?;
-    let (escrow, ticket_id, event_id, promo_code, order_status, hold_expires_at) = row.ok_or(AppError::NotFound)?;
+    let (escrow, ticket_id, event_id, promo_code, order_status, hold_expires_at, amount, currency) =
+        row.ok_or(AppError::NotFound)?;
     if escrow.as_deref() == Some("paid_out") {
         return Err(AppError::Conflict("кошти вже виплачені організатору".into()));
     }
     let new_escrow = match req.action.as_str() {
         "refund" => {
-            if let Some(ticket_id) = ticket_id {
-                // Only free the seat / return the promo use if we ACTUALLY returned the ticket
-                // now — the status guard makes a repeated refund a no-op, so keying the side
-                // effects off rows_affected keeps the whole action idempotent (no double-credit).
-                let returned =
-                    sqlx::query("UPDATE tickets SET status = 'returned' WHERE id = $1 AND status IN ('active','used')")
-                        .bind(ticket_id)
-                        .execute(&mut *tx)
-                        .await?;
-                if returned.rows_affected() > 0 {
-                    crate::tickets::release_seats(&mut tx, event_id, 1).await?;
-                    // The fulfilled order counted its promo use at payment — give it back.
-                    if let Some(code) = &promo_code {
-                        sqlx::query(
-                            "UPDATE promo_codes SET used_count = used_count - 1 \
-                             WHERE event_id = $1 AND lower(code) = lower($2) AND used_count > 0",
-                        )
-                        .bind(event_id)
-                        .bind(code)
-                        .execute(&mut *tx)
-                        .await?;
-                    }
-                }
-            } else if order_status == "pending" && hold_expires_at.is_some() {
-                // A pending order holds a seat with no ticket yet. Refunding it must hand the
-                // seat back — once 'refunded', the expiry sweep never sees it again (REVIEW-2 N4).
-                crate::tickets::release_seats(&mut tx, event_id, 1).await?;
+            // One routine, shared with the provider's full-refund notice, hands back whatever
+            // the order holds — a ticket and its seat, or a pending hold's seat (REVIEW-3 #2).
+            crate::orders::return_holdings(
+                &mut tx,
+                event_id,
+                ticket_id,
+                promo_code.as_deref(),
+                &order_status,
+                hold_expires_at,
+            )
+            .await?;
+            // Was money ever taken? 'paid' = yes; 'refund_due' = yes, and its return is already
+            // queued (the insert below is a no-op). pending/expired/failed = no money yet.
+            let money_taken = matches!(order_status.as_str(), "paid" | "refund_due");
+            if money_taken {
+                // The return is a debt on record, drained by the refund executor — not a status
+                // flip that nobody acts on.
+                crate::orders::queue_refund(&mut tx, id, amount, &currency, "повернення адміністратором").await?;
             }
-            sqlx::query("UPDATE orders SET status = 'refunded' WHERE id = $1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            // The marker `fulfill` reads if this order's payment lands AFTER the admin closed it:
+            // 'cancelled' → the money goes back (nothing was taken yet, so it must be returned
+            // now); 'refunded' → already returned, never mint and never pay twice (REVIEW-3 #1).
+            let marker = if money_taken { "refunded" } else { "cancelled" };
+            sqlx::query(
+                "UPDATE orders SET status = 'refunded', terminal_event_seen = COALESCE(terminal_event_seen, $2) WHERE id = $1",
+            )
+            .bind(id)
+            .bind(marker)
+            .execute(&mut *tx)
+            .await?;
             "refunded"
         }
         "freeze" => "frozen",

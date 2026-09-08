@@ -692,6 +692,135 @@ async fn admin_refund_of_a_pending_order_returns_its_seat(pool: PgPool) {
     lapse(&pool, order).await;
     orders::expire_holds(&pool).await.unwrap();
     assert_eq!(tickets_left(&pool, event).await, 1);
+
+    // The payment lands anyway — the buyer's page completed after the admin closed the order.
+    // Nothing had been taken at close time, so the money is now a recorded debt: never a silent
+    // AlreadyHandled with no refund on file (REVIEW-3 #1).
+    let (marker,): (Option<String>,) = sqlx::query_as("SELECT terminal_event_seen FROM orders WHERE id = $1")
+        .bind(order)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marker.as_deref(), Some("cancelled"));
+    assert_eq!(fulfill_now(&pool, order).await, FulfillOutcome::RefundDue);
+    assert_eq!(refund_jobs_for(&pool, order).await, 1, "the debt is on record");
+    assert_eq!(order_status(&pool, order).await.0, "refund_due");
+    assert_eq!(
+        tickets_left(&pool, event).await,
+        1,
+        "no seat is taken for money that goes back"
+    );
+}
+
+/// Admin refund of a PAID order: the return is a debt on record for the refund executor, and a
+/// replayed payment afterwards neither mints nor queues a second return.
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_refund_of_a_paid_order_records_the_debt_once(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let admin = token_for(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = create_event(&app, &owner, 1).await;
+    let (_, v) = checkout(&app, &a, event, None).await;
+    let order = order_id(&v).await;
+    assert!(matches!(fulfill_now(&pool, order).await, FulfillOutcome::Fulfilled(_)));
+
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/admin/orders/{order}/escrow"),
+            Some(&admin),
+            Some(json!({"action":"refund"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        refund_jobs_for(&pool, order).await,
+        1,
+        "money was taken, so its return is queued"
+    );
+    assert_eq!(tickets_left(&pool, event).await, 1, "the ticket's seat is back on sale");
+    let (marker,): (Option<String>,) = sqlx::query_as("SELECT terminal_event_seen FROM orders WHERE id = $1")
+        .bind(order)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marker.as_deref(), Some("refunded"));
+    // A replayed Paid: nothing to mint, and NOT a second refund.
+    assert_eq!(fulfill_now(&pool, order).await, FulfillOutcome::AlreadyHandled);
+    assert_eq!(refund_jobs_for(&pool, order).await, 1);
+    assert_eq!(order_status(&pool, order).await.0, "refunded");
+}
+
+/// [SEC] The "never a ticket for a superseded checkout" rule lives in the function that mints,
+/// not only in the webhook that usually calls it (REVIEW-3 #5).
+#[sqlx::test(migrations = "./migrations")]
+async fn a_superseded_order_paid_through_fulfill_directly_is_refunded_not_ticketed(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let event = create_event(&app, &owner, 2).await;
+    let (_, v1) = checkout(&app, &a, event, None).await;
+    let first = order_id(&v1).await;
+    assert_eq!(checkout(&app, &a, event, None).await.0, StatusCode::CREATED);
+    assert_eq!(tickets_left(&pool, event).await, 1, "one buyer, one hold");
+
+    assert_eq!(fulfill_now(&pool, first).await, FulfillOutcome::RefundDue);
+    assert_eq!(
+        order_status(&pool, first).await,
+        ("refund_due".into(), "refund_due".into())
+    );
+    assert_eq!(refund_jobs_for(&pool, first).await, 1);
+    let minted: i64 = sqlx::query_scalar("SELECT count(*) FROM tickets WHERE event_id = $1")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(minted, 0);
+    assert_eq!(tickets_left(&pool, event).await, 1, "the superseded order took nothing");
+}
+
+/// A pending order from before the hold existed is superseded by a re-checkout like any other —
+/// but hands back no seat, because it never took one (REVIEW-3 #6, BR-023/BR-024).
+#[sqlx::test(migrations = "./migrations")]
+async fn a_legacy_hold_less_pending_order_is_superseded_without_releasing_a_seat(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let event = create_event(&app, &owner, 2).await;
+    let (_, v1) = checkout(&app, &a, event, None).await;
+    let legacy = order_id(&v1).await;
+    // Rewind to the pre-migration shape: no hold, and the seat it "took" back on sale.
+    sqlx::query("UPDATE orders SET hold_expires_at = NULL WHERE id = $1")
+        .bind(legacy)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE events SET tickets_left = 2 WHERE id = $1")
+        .bind(event)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(checkout(&app, &a, event, None).await.0, StatusCode::CREATED);
+    assert_eq!(
+        tickets_left(&pool, event).await,
+        1,
+        "the new hold took one seat and nothing was released for an order that held none"
+    );
+    assert_eq!(order_status(&pool, legacy).await.0, "expired");
+    let (marker,): (Option<String>,) = sqlx::query_as("SELECT terminal_event_seen FROM orders WHERE id = $1")
+        .bind(legacy)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marker.as_deref(), Some("superseded"));
 }
 
 /// [SEC] Re-checkout on the LAST seat: the buyer already holds it, so the second checkout must
