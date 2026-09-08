@@ -859,6 +859,15 @@ mod tests {
 
     // ---------------------------------------------------------------- event mapping
 
+    /// Stripe may add signature schemes (`v0=` was the old one); unknown parts are skipped, not
+    /// treated as malformed, so a scheme rollout never turns every delivery into a 401.
+    #[test]
+    fn signature_header_skips_unknown_scheme_parts() {
+        let parsed = parse_signature_header("t=5,v0=legacy,v1=abc").unwrap();
+        assert_eq!(parsed.timestamp, 5);
+        assert_eq!(parsed.v1, vec!["abc".to_string()]);
+    }
+
     fn event(kind: &str, object: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({"id":"evt_1","type":kind,"data":{"object":object}})).unwrap()
     }
@@ -916,6 +925,21 @@ mod tests {
 
     #[test]
     fn refund_and_dispute_map_to_terminal_events() {
+        // The Refund object knows its own amount but not the charge total: "not proven full".
+        let refund_obj = event(
+            "refund.succeeded",
+            serde_json::json!({"amount": 700, "metadata":{"order_id":"o-3"}}),
+        );
+        assert_eq!(
+            map_event(&refund_obj).unwrap().event,
+            WebhookEvent::Refunded {
+                order_ref: "o-3".into(),
+                refunded_minor: Some(700),
+                total_minor: None
+            }
+        );
+        let unbound = event("refund.succeeded", serde_json::json!({"amount": 700}));
+        assert_eq!(map_event(&unbound).unwrap().event, WebhookEvent::Ignored);
         let refunded = event("charge.refunded", serde_json::json!({"metadata":{"order_id":"o-2"}}));
         assert_eq!(
             map_event(&refunded).unwrap().event,

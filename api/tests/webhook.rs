@@ -295,4 +295,8 @@ async fn an_unsigned_ls_delivery_is_metered_like_a_bad_signature(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(metered, 1, "a missing header costs the sender a token like a wrong one");
+    // The sweep is what keeps an attacker-fed table bounded: age 0 drops everything older than
+    // this instant (our one row); a day-old cut-off drops nothing more.
+    assert_eq!(underground_api::ratelimit::sweep(&pool, 0).await.unwrap(), 1);
+    assert_eq!(underground_api::ratelimit::sweep(&pool, 86_400).await.unwrap(), 0);
 }

@@ -680,6 +680,43 @@ async fn a_payment_on_a_superseded_checkout_is_refunded_not_ticketed(pool: PgPoo
         left, 1,
         "2 seats: one held by the new order, one free — the old order took nothing"
     );
+
+    // Stripe then returns the money itself (the operator refunded it in the dashboard, or the
+    // executor did). The queued debt is settled — the ledger must not keep saying we owe it.
+    let refunded = stripe_event(
+        "evt_late_refund",
+        "charge.refunded",
+        json!({ "payment_intent": "pi_cs_first", "amount": 10_000, "amount_refunded": 10_000,
+                "metadata": { "order_id": first.to_string() } }),
+    );
+    assert_eq!(post(&app, &refunded, SECRET).await, StatusCode::OK);
+    let (job_status,): (String,) = sqlx::query_as("SELECT status FROM refund_jobs WHERE order_id = $1")
+        .bind(first)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(job_status, "done", "the provider settled it (REVIEW-4 #1)");
+    assert_eq!(order_state(&pool, first).await.0, "refunded");
+}
+
+/// The forensic trail must never change the answer Stripe gets: with the refusals table gone,
+/// a refused delivery is still acknowledged with 200 — a 500 would make Stripe retry for days
+/// a delivery we refused on purpose (REVIEW-4 #4).
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failing_refusal_trail_never_changes_the_answer_to_stripe(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let buyer = token_for(&app, "b@x.co").await;
+    let (order, _) = stripe_order(&app, &pool, &buyer, "cs_A").await;
+    sqlx::query("DROP TABLE webhook_refusals").execute(&pool).await.unwrap();
+    let short = stripe_event(
+        "evt_short",
+        "checkout.session.completed",
+        paid_session("cs_A", order, 100),
+    );
+    assert_eq!(post(&app, &short, SECRET).await, StatusCode::OK);
+    assert_eq!(tickets_for(&pool, order).await, 0);
+    assert_eq!(count(&pool, "SELECT count(*) FROM webhook_events").await, 0);
 }
 
 /// A forged or unbindable delivery is NOT recorded: a later genuine resend of the same event id
@@ -717,4 +754,57 @@ async fn an_ignored_delivery_does_not_burn_its_event_id(pool: PgPool) {
     );
     assert_eq!(post(&app, &good, SECRET).await, StatusCode::OK);
     assert_eq!(tickets_for(&pool, order).await, 1);
+}
+
+/// Payout, account and dispute/refund events that name nothing of ours are recorded (so a replay
+/// is a duplicate from day one) and acknowledged, and change no order. Acting on payout/account
+/// events is PAY-5/PAY-9.
+#[sqlx::test(migrations = "./migrations")]
+async fn operational_events_are_recorded_and_acknowledged_without_touching_orders(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let buyer = token_for(&app, "b@x.co").await;
+    let (order, _) = stripe_order(&app, &pool, &buyer, "cs_A").await;
+    let nobody = Uuid::new_v4();
+    let events = [
+        stripe_event(
+            "evt_po1",
+            "payout.paid",
+            json!({"id":"po_1","metadata":{"payout_id":"p-1"}}),
+        ),
+        stripe_event(
+            "evt_po2",
+            "payout.failed",
+            json!({"id":"po_2","failure_message":"account closed","metadata":{"payout_id":"p-2"}}),
+        ),
+        stripe_event(
+            "evt_acct",
+            "account.updated",
+            json!({"id":"acct_1","charges_enabled":true,"payouts_enabled":false,"requirements":{"currently_due":["external_account"]}}),
+        ),
+        stripe_event(
+            "evt_disp",
+            "charge.dispute.created",
+            json!({"payment_intent":"pi_zzz","metadata":{"order_id": nobody.to_string()}}),
+        ),
+        stripe_event(
+            "evt_ref",
+            "charge.refunded",
+            json!({"payment_intent":"pi_zzz","amount":10_000,"amount_refunded":10_000,"metadata":{"order_id": nobody.to_string()}}),
+        ),
+    ];
+    for e in &events {
+        assert_eq!(post(&app, e, SECRET).await, StatusCode::OK, "{e}");
+    }
+    assert_eq!(
+        count(&pool, "SELECT count(*) FROM webhook_events").await,
+        5,
+        "all five recorded for dedup"
+    );
+    assert_eq!(order_state(&pool, order).await.0, "pending", "our order is untouched");
+    assert_eq!(
+        count(&pool, "SELECT count(*) FROM webhook_refusals").await,
+        0,
+        "not refusals — nothing to bind"
+    );
 }

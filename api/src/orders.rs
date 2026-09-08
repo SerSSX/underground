@@ -162,7 +162,7 @@ pub async fn checkout(
     // at the provider, the late-payment path in `fulfill` handles it like any lapsed hold.
     // Hold-less orders (from before the reservation existed) are superseded too, so no buyer
     // keeps a payable order the one-hold rule cannot see (REVIEW-3 #6) — but only a HELD
-    // order hands a seat back, because only a held order ever took one (BR-023).
+    // order hands a seat back, because only a held order ever took one (BR-025).
     let superseded: Vec<(Uuid, Option<String>, bool)> = sqlx::query_as(
         "UPDATE orders SET status = 'expired', terminal_event_seen = 'superseded' \
          WHERE event_id = $1 AND buyer_id = $2 AND status = 'pending' \
@@ -182,7 +182,7 @@ pub async fn checkout(
     if tickets::decrement_tickets(&mut tx, event_id).await?.is_none() {
         return Err(AppError::Conflict("квитки закінчились".into()));
     }
-    let (order_id, hold_expires_at): (Uuid, DateTime<Utc>) = sqlx::query_as(
+    let inserted: Result<(Uuid, DateTime<Utc>), sqlx::Error> = sqlx::query_as(
         "INSERT INTO orders (event_id, buyer_id, amount, currency, provider, promo_code, application_fee, hold_expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(mins => $8)) \
          RETURNING id, hold_expires_at",
@@ -196,7 +196,20 @@ pub async fn checkout(
     .bind(fee)
     .bind(HOLD_MINUTES)
     .fetch_one(&mut *tx)
-    .await?;
+    .await;
+    let (order_id, hold_expires_at) = match inserted {
+        Ok(row) => row,
+        // Two checkouts of ONE buyer racing each other both saw nothing to supersede — the
+        // database is the referee: the partial unique index `orders_one_live_hold_uidx`
+        // (one pending order per buyer per event) refuses the second INSERT, and dropping
+        // `tx` hands back the seat it had just taken (BR-026, REVIEW-4 #2).
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(AppError::Conflict(
+                "у вас уже є активний checkout на цю подію — відкрийте його або спробуйте ще раз".into(),
+            ));
+        }
+        Err(e) => return Err(AppError::Db(e)),
+    };
     tx.commit().await?;
 
     // The superseded checkouts may still have a live payment page open somewhere. Void them at
@@ -209,15 +222,16 @@ pub async fn checkout(
         .filter_map(|(id, r, _)| r.map(|r| (id, r)))
         .collect();
     if !victims.is_empty() {
-        if let Ok(voider) = crate::provider::resolve(&settings) {
-            tokio::spawn(async move {
-                for (old_id, r) in victims {
-                    if let Err(e) = voider.cancel_charge(&r).await {
-                        tracing::warn!(order_id = %old_id, error = %e, "checkout: could not void superseded session");
-                    }
+        // The same settings resolved a provider a moment ago; this second handle is the one the
+        // task owns, so the request's `provider` stays available for `create_charge` below.
+        let voider = crate::provider::resolve(&settings).map_err(|e| AppError::Conflict(e.to_string()))?;
+        tokio::spawn(async move {
+            for (old_id, r) in victims {
+                if let Err(e) = voider.cancel_charge(&r).await {
+                    tracing::warn!(order_id = %old_id, error = %e, "checkout: could not void superseded session");
                 }
-            });
-        }
+            }
+        });
     }
 
     // Ask the provider to collect — AFTER the commit, so a slow or hung provider call never
@@ -247,9 +261,9 @@ pub async fn checkout(
                 .bind(order_id)
                 .execute(&mut *tx)
                 .await?;
-            if closed.rows_affected() > 0 {
-                tickets::release_seats(&mut tx, event_id, 1).await?;
-            }
+            // 1 in every real run; 0 only if a concurrent sweep or payment already moved the
+            // order off 'pending', and releasing zero seats is a no-op by construction.
+            tickets::release_seats(&mut tx, event_id, closed.rows_affected() as i32).await?;
             tx.commit().await?;
             // Same rule: the provider's text goes to the log. An `Invalid` from our own
             // pre-checks (below the currency minimum, fee ≥ amount) IS buyer-actionable and
@@ -360,6 +374,12 @@ pub async fn apply_full_refund(conn: &mut sqlx::PgConnection, order_id: Uuid) ->
         hold_expires_at,
     )
     .await?;
+    // The provider itself returned the money, so a debt we had queued for the refund executor is
+    // settled — the ledger must not keep saying we owe what has demonstrably gone back (REVIEW-4 #1).
+    sqlx::query("UPDATE refund_jobs SET status = 'done' WHERE order_id = $1 AND status = 'pending'")
+        .bind(order_id)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query(
         "UPDATE orders SET status = 'refunded', escrow_status = 'refunded', refunded_amount = $2, \
             terminal_event_seen = COALESCE(terminal_event_seen, 'refunded') WHERE id = $1",
@@ -414,14 +434,15 @@ pub async fn return_holdings(
 
 /// Record the debt: exactly one refund job per order, however many deliveries or admin
 /// actions arrive (`refund_jobs.order_id` is unique). The refund executor (PAY-11) drains it.
+/// Returns whether the job is NEW — false means the debt was already on record.
 pub async fn queue_refund(
     conn: &mut sqlx::PgConnection,
     order_id: Uuid,
     amount: Decimal,
     currency: &str,
     reason: &str,
-) -> Result<(), AppError> {
-    sqlx::query(
+) -> Result<bool, AppError> {
+    let inserted = sqlx::query(
         "INSERT INTO refund_jobs (order_id, amount, currency, reason) VALUES ($1, $2, $3, $4) \
          ON CONFLICT (order_id) DO NOTHING",
     )
@@ -431,7 +452,7 @@ pub async fn queue_refund(
     .bind(reason)
     .execute(&mut *conn)
     .await?;
-    Ok(())
+    Ok(inserted.rows_affected() > 0)
 }
 
 /// The money is in, the ticket is not coming: mark the order and queue the return.
@@ -442,13 +463,19 @@ pub async fn refund_due(
     currency: &str,
     reason: &str,
 ) -> Result<FulfillOutcome, AppError> {
+    // Queue FIRST and key everything on whether the job is new: a further payment event on an
+    // order whose debt is already on record — or already settled by an admin — must not flip
+    // the order back to refund_due. One debt, one row, one status change (REVIEW-4).
+    if !queue_refund(conn, order_id, amount, currency, reason).await? {
+        tracing::info!(%order_id, "payment on an order whose refund is already on record — nothing new");
+        return Ok(FulfillOutcome::AlreadyHandled);
+    }
     // A distinct status, not `paid`: `paid` is what the confirmation email, organiser revenue
     // and platform GMV all key on, and none of those may count money that is going back.
     sqlx::query("UPDATE orders SET status = 'refund_due', escrow_status = 'refund_due' WHERE id = $1")
         .bind(order_id)
         .execute(&mut *conn)
         .await?;
-    queue_refund(conn, order_id, amount, currency, reason).await?;
     tracing::warn!(%order_id, reason, "payment landed with no ticket to issue — refund queued");
     Ok(FulfillOutcome::RefundDue)
 }
@@ -488,7 +515,7 @@ pub async fn fulfill(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<Fu
     if let Some(marker) = terminal.as_deref() {
         return match marker {
             // Closed on our side before any payment — at re-checkout (superseded) or by an
-            // admin (cancelled). Its seat is gone; the money goes back (BR-014, BR-024).
+            // admin (cancelled). Its seat is gone; the money goes back (BR-014, BR-026).
             "superseded" | "cancelled" => {
                 refund_due(conn, order_id, amount, &currency, "замовлення закрито до оплати").await
             }
@@ -500,7 +527,7 @@ pub async fn fulfill(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<Fu
     let seat_held = match status.as_str() {
         // Reserved at checkout; still ours. ONLY with a hold: an order from before the hold
         // existed (hold_expires_at NULL) never took a seat, so treating it as reserved would
-        // mint a ticket without consuming capacity (BR-015, REVIEW-2 N2).
+        // mint a ticket without consuming capacity (BR-025, REVIEW-2 N2).
         "pending" if hold_expires_at.is_some() => true,
         // The hold lapsed and its seat went back on sale. The buyer paid anyway (a slow 3-DS
         // page, a tab reopened an hour later) — take a seat now if one is left.

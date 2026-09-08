@@ -5,6 +5,7 @@
 
 use rust_decimal::Decimal;
 use std::str::FromStr;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use underground_api::provider::{
     ChargeReq, ChargeStatus, PaymentProvider, PayoutReq, PayoutStatus, ProviderError, RefundReq, RefundStatus,
 };
@@ -360,4 +361,80 @@ async fn cancel_charge_reports_a_session_that_can_no_longer_be_expired() {
         .await;
     let err = provider(&server).cancel_charge("cs_paid").await.unwrap_err();
     assert!(matches!(err, ProviderError::Upstream(_)), "{err:?}");
+}
+
+/// A 200 without an object id is not a success we can act on: nothing to refund against,
+/// nothing to reconcile. Reported as the provider's fault, never as a payout/refund that happened.
+#[tokio::test]
+async fn a_payout_or_refund_without_an_id_is_an_upstream_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/payouts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status":"paid"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/refunds"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status":"succeeded"})))
+        .mount(&server)
+        .await;
+    let payout = provider(&server)
+        .transfer_payout(PayoutReq {
+            payout_id: Uuid::new_v4(),
+            amount: Decimal::from_str("10.00").unwrap(),
+            currency: "UAH".into(),
+            connected_account: Some("acct_x".into()),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(payout, ProviderError::Upstream(ref m) if m.contains("no payout id")),
+        "{payout:?}"
+    );
+    let refund = provider(&server)
+        .refund(RefundReq {
+            provider_ref: "pi_1".into(),
+            amount: Decimal::from_str("10.00").unwrap(),
+            currency: "UAH".into(),
+            reason: None,
+            connected_account: None,
+            refund_application_fee: false,
+            idempotency_key: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refund, ProviderError::Upstream(ref m) if m.contains("no refund id")),
+        "{refund:?}"
+    );
+}
+
+/// The socket closes mid-body (a proxy died, a connection reset). That is a transport failure,
+/// retried like any other and then reported as one — never parsed as a half-object.
+#[tokio::test]
+async fn a_body_cut_off_mid_response_is_retried_then_reported_as_transport() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            // Promise 100 bytes, send 12, hang up.
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"id\":\"cs_x\"",
+                )
+                .await;
+            drop(sock);
+        }
+    });
+    let p = StripeProvider::new("sk_test_unit", Some("whsec_unit".into()), format!("http://{addr}"));
+    let err = p.create_charge(charge(Uuid::new_v4(), None)).await.unwrap_err();
+    assert!(
+        matches!(err, ProviderError::Transport(ref m) if m.contains("unreadable")),
+        "{err:?}"
+    );
 }

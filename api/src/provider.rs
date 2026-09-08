@@ -574,10 +574,13 @@ mod tests {
     #[test]
     fn resolve_by_name_rejects_unknown_provider() {
         // `Box<dyn PaymentProvider>` is not Debug, so unwrap_err() is unavailable here.
-        match resolve_by_name("wayforpay") {
-            Ok(p) => panic!("unknown provider must not resolve, got {}", p.name()),
-            Err(e) => assert!(matches!(e, ProviderError::Invalid(m) if m.contains("unknown payment provider"))),
-        }
+        assert!(
+            matches!(resolve_by_name("wayforpay"), Err(ProviderError::Invalid(m)) if m.contains("unknown payment provider"))
+        );
+        // The settings-driven entry point refuses the same way — a typo in the row stops checkout.
+        assert!(
+            matches!(resolve(&settings("wayforpay", "test", None)), Err(ProviderError::Invalid(m)) if m.contains("unknown payment provider"))
+        );
     }
 
     #[test]

@@ -113,7 +113,9 @@ async fn resolve_order(conn: &mut PgConnection, provider: &str, order_ref: &str)
 
 /// A refused delivery leaves a trail even though its dedup row is rolled back on purpose:
 /// what arrived, which order it named, why it was not applied. Written on its own connection
-/// AFTER the rollback so the trail survives the refusal (REVIEW-3 #7).
+/// AFTER the rollback so the trail survives the refusal (REVIEW-3 #7). Best effort at the call
+/// sites: a forensic table must never change the answer Stripe gets — a 500 here would make it
+/// retry, for days, a delivery we refused on purpose (REVIEW-4 #4).
 async fn record_refusal(
     db: &sqlx::PgPool,
     provider: &str,
@@ -177,14 +179,17 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                 // Rolled back, not committed: the delivery is NOT recorded, so a corrected resend
                 // of the same event id is applied instead of dropped as a duplicate.
                 tx.rollback().await?;
-                record_refusal(
+                if let Err(e) = record_refusal(
                     &st.db,
                     provider,
                     hook.id.as_deref(),
                     &order_ref,
                     "no order of this provider",
                 )
-                .await?;
+                .await
+                {
+                    tracing::error!(error = %e, "webhook: refusal not recorded");
+                }
                 return Ok(StatusCode::OK);
             };
             // (provider_ref, amount, currency, terminal_event_seen) — everything the binding needs.
@@ -199,38 +204,45 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
             // of the object we created for this order. They must be the same object. Without
             // this, a payer who pays for a cheap order with an expensive order's id in the
             // metadata gets the expensive ticket.
-            if let Some(charge_ref) = charge_ref.as_deref() {
-                if stored_ref.as_deref() != Some(charge_ref) {
-                    tracing::warn!(%order_id, charge_ref, ?stored_ref, "webhook: paid event is not for the object we created — ignored");
-                    tx.rollback().await?;
-                    record_refusal(
-                        &st.db,
-                        provider,
-                        hook.id.as_deref(),
-                        &order_ref,
-                        "charge is not the object created for this order",
-                    )
-                    .await?;
-                    return Ok(StatusCode::OK);
+            // An event without a charge reference cannot be bound and, with Lemon Squeezy retired,
+            // no longer exists; one flat condition keeps the refusal on a single branch.
+            if charge_ref.is_some() && charge_ref.as_deref() != stored_ref.as_deref() {
+                tracing::warn!(%order_id, ?charge_ref, ?stored_ref, "webhook: paid event is not for the object we created — ignored");
+                tx.rollback().await?;
+                if let Err(e) = record_refusal(
+                    &st.db,
+                    provider,
+                    hook.id.as_deref(),
+                    &order_ref,
+                    "charge is not the object created for this order",
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "webhook: refusal not recorded");
                 }
+                return Ok(StatusCode::OK);
             }
             // And the money must match what the order asked for. A partial or tampered amount
             // is recorded and not honoured.
-            if let (Some(paid), Some(cur)) = (amount_minor, currency.as_deref()) {
-                let expected = crate::stripe::to_minor(amount, &order_currency).ok();
-                if expected != Some(paid) || !cur.eq_ignore_ascii_case(&order_currency) {
-                    tracing::warn!(%order_id, paid, ?expected, cur, %order_currency, "webhook: paid amount does not match the order — ignored");
-                    tx.rollback().await?;
-                    record_refusal(
-                        &st.db,
-                        provider,
-                        hook.id.as_deref(),
-                        &order_ref,
-                        "amount or currency does not match the order",
-                    )
-                    .await?;
-                    return Ok(StatusCode::OK);
+            let expected = crate::stripe::to_minor(amount, &order_currency).ok();
+            let mismatch = amount_minor
+                .zip(currency.as_deref())
+                .filter(|(paid, cur)| expected != Some(*paid) || !cur.eq_ignore_ascii_case(&order_currency));
+            if let Some((paid, cur)) = mismatch {
+                tracing::warn!(%order_id, paid, ?expected, cur, %order_currency, "webhook: paid amount does not match the order — ignored");
+                tx.rollback().await?;
+                if let Err(e) = record_refusal(
+                    &st.db,
+                    provider,
+                    hook.id.as_deref(),
+                    &order_ref,
+                    "amount or currency does not match the order",
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "webhook: refusal not recorded");
                 }
+                return Ok(StatusCode::OK);
             }
             // A terminal event already arrived out of order — the money is gone, so the ticket
             // must not be issued. Checked before any minting rather than after.
@@ -265,10 +277,14 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                 // Full only when proven full: the charge total is known and the cumulative
                 // refunded amount reaches it. A partial refund — or a Refund object that does
                 // not know the total — is bookkeeping, not a returned ticket.
-                let full = matches!((refunded_minor, total_minor), (Some(r), Some(t)) if r >= t);
-                if full || (refunded_minor.is_none() && total_minor.is_none()) {
+                let full = matches!((refunded_minor, total_minor), (Some(r), Some(t)) if r >= t)
+                    || (refunded_minor.is_none() && total_minor.is_none());
+                // A partial amount is bookkeeping only when the refund is NOT proven full.
+                let partial = if full { None } else { refunded_minor };
+                if full {
                     orders::apply_full_refund(&mut tx, order_id).await?;
-                } else if let Some(r) = refunded_minor {
+                }
+                if let Some(r) = partial {
                     let (currency,): (String,) = sqlx::query_as("SELECT currency FROM orders WHERE id = $1")
                         .bind(order_id)
                         .fetch_one(&mut *tx)

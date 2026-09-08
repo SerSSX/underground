@@ -343,3 +343,86 @@ async fn live_mode_with_a_money_free_provider_is_refused_at_save(pool: PgPool) {
         "nothing was saved"
     );
 }
+
+/// Live mode with Stripe needs BOTH secrets and a LIVE key; test mode refuses a live key. Each
+/// refusal names what is missing so the operator fixes the checklist, not a 409 at the first sale.
+#[sqlx::test(migrations = "./migrations")]
+async fn stripe_settings_are_checked_against_the_mode_on_the_merged_values(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let admin = token_for(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let put = |body: Value| build("PUT", "/api/admin/payment-settings", Some(&admin), Some(body));
+
+    // No keys at all → says which are missing.
+    let resp = app
+        .clone()
+        .oneshot(put(json!({"mode":"live","provider":"stripe"})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let msg = json_body(resp).await["error"].as_str().unwrap().to_string();
+    assert!(
+        msg.contains("stripe_secret_key") && msg.contains("stripe_webhook_secret"),
+        "{msg}"
+    );
+
+    // A live key under TEST mode: real money behind screens that say "test" — refused.
+    let resp = app
+        .clone()
+        .oneshot(put(json!({"mode":"test","provider":"stripe","stripe_secret_key":"sk_live_x","stripe_webhook_secret":"whsec_x"})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Test keys saved; then flipping only the mode to live must fail on the STORED test key.
+    let resp = app
+        .clone()
+        .oneshot(put(json!({"mode":"test","provider":"stripe","stripe_secret_key":"sk_test_x","stripe_webhook_secret":"whsec_x"})))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = app.clone().oneshot(put(json!({"mode":"live"}))).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let msg = json_body(resp).await["error"].as_str().unwrap().to_string();
+    assert!(msg.contains("live-ключ"), "{msg}");
+
+    // A live key with live mode is the one accepted combination; readiness reflects the kind.
+    let resp = app
+        .clone()
+        .oneshot(put(
+            json!({"mode":"live","stripe_secret_key":"sk_live_real","stripe_webhook_secret":"whsec_x"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = app
+        .clone()
+        .oneshot(build("GET", "/api/admin/payment-readiness", Some(&admin), None))
+        .await
+        .unwrap();
+    let v = json_body(resp).await;
+    assert_eq!(v["mode"], "live");
+    assert_eq!(v["stripe_key_kind"], "live");
+}
+
+/// pay-test on an order that does not exist is 404 — the same answer as another buyer's order,
+/// so the endpoint never confirms which order ids exist.
+#[sqlx::test(migrations = "./migrations")]
+async fn pay_test_on_an_unknown_order_is_not_found(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let user = token_for(&app, "u@x.co").await;
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/orders/{}/pay-test", uuid::Uuid::new_v4()),
+            Some(&user),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

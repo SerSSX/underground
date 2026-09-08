@@ -793,7 +793,9 @@ async fn a_legacy_hold_less_pending_order_is_superseded_without_releasing_a_seat
     let app = make_app(pool.clone());
     let owner = token_for(&app, "owner@x.co").await;
     let a = token_for(&app, "a@x.co").await;
-    let event = create_event(&app, &owner, 2).await;
+    // 3 seats with 2 on sale: a wrong extra release would show as 2 -> 3, not be swallowed by
+    // the LEAST(tickets_total, …) ceiling (REVIEW-4 #3 — the 2-seat version could not detect it).
+    let event = create_event(&app, &owner, 3).await;
     let (_, v1) = checkout(&app, &a, event, None).await;
     let legacy = order_id(&v1).await;
     // Rewind to the pre-migration shape: no hold, and the seat it "took" back on sale.
@@ -853,4 +855,207 @@ async fn sec_rechecking_out_on_the_last_seat_succeeds_and_supersedes(pool: PgPoo
         Some("superseded"),
         "a late payment on it becomes a refund, never a ticket"
     );
+}
+
+/// Admin refund of an EXPIRED order: no ticket, no hold, no money — nothing to hand back, and a
+/// payment that lands later is money we never asked for, so it goes back (REVIEW-4 question c).
+#[sqlx::test(migrations = "./migrations")]
+async fn admin_refund_of_an_expired_order_takes_no_seat_and_refunds_a_late_payment(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let admin = token_for(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = create_event(&app, &owner, 1).await;
+    let (_, v) = checkout(&app, &a, event, None).await;
+    let order = order_id(&v).await;
+    lapse(&pool, order).await;
+    orders::expire_holds(&pool).await.unwrap();
+    assert_eq!(tickets_left(&pool, event).await, 1);
+
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/admin/orders/{order}/escrow"),
+            Some(&admin),
+            Some(json!({"action":"refund"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        tickets_left(&pool, event).await,
+        1,
+        "nothing was held, nothing is released"
+    );
+    assert_eq!(
+        refund_jobs_for(&pool, order).await,
+        0,
+        "no money was taken, no debt yet"
+    );
+    assert_eq!(fulfill_now(&pool, order).await, FulfillOutcome::RefundDue);
+    assert_eq!(refund_jobs_for(&pool, order).await, 1, "…until the payment lands");
+    assert_eq!(tickets_left(&pool, event).await, 1);
+}
+
+/// A full-refund notice for an order we do not have is acknowledged and changes nothing.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_full_refund_of_an_unknown_order_is_a_no_op(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    orders::apply_full_refund(&mut conn, Uuid::new_v4()).await.unwrap();
+    let orders: i64 = sqlx::query_scalar("SELECT count(*) FROM orders")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(orders, 0);
+}
+
+/// [SEC] Two checkouts of ONE buyer racing each other. Neither request can see the other's
+/// uncommitted hold, so the rule lives in the database: the second INSERT hits the one-live-hold
+/// index, gets 409, and its seat decrement rolls back — capacity is never pinned twice (BR-026).
+/// Reproduced deterministically: an uncommitted hold on one connection, the real checkout on
+/// another, then the first commits.
+#[sqlx::test(migrations = "./migrations")]
+async fn sec_two_simultaneous_checkouts_of_one_buyer_yield_one_hold(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let event = create_event(&app, &owner, 3).await;
+    let buyer: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = 'a@x.co'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Request 1, frozen just after its INSERT (not yet committed).
+    let mut first = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO orders (event_id, buyer_id, amount, currency, provider, hold_expires_at) \
+         VALUES ($1, $2, 100, 'UAH', 'test', now() + interval '15 minutes')",
+    )
+    .bind(event)
+    .bind(buyer)
+    .execute(&mut *first)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE events SET tickets_left = tickets_left - 1 WHERE id = $1")
+        .bind(event)
+        .execute(&mut *first)
+        .await
+        .unwrap();
+
+    // Request 2 runs for real and blocks on the index until request 1 decides. Wait for the
+    // block to be REAL (a backend in a lock wait) rather than for a fixed time: through the test
+    // tunnel a checkout's eight round trips can take longer than any sleep we would pick.
+    let app2 = app.clone();
+    let racing = tokio::spawn(async move { checkout(&app2, &a, event, None).await });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the racing checkout never reached the index"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    first.commit().await.unwrap();
+    let (status, body) = racing.await.unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("активний checkout"),
+        "{body}"
+    );
+
+    let holds: i64 = sqlx::query_scalar("SELECT count(*) FROM orders WHERE event_id = $1 AND status = 'pending'")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(holds, 1, "one buyer, one live hold");
+    assert_eq!(tickets_left(&pool, event).await, 2, "the loser's seat went back");
+}
+
+/// A database failure while the order row is written is a 500 — and the seat the checkout had
+/// already taken goes back with the transaction, never leaking capacity.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_database_failure_at_order_creation_rolls_the_seat_back(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let event = create_event(&app, &owner, 2).await;
+    sqlx::query(
+        "CREATE FUNCTION boom() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected'; END $$",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("CREATE TRIGGER boom_on_order BEFORE INSERT ON orders FOR EACH ROW EXECUTE FUNCTION boom()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = checkout(&app, &a, event, None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        tickets_left(&pool, event).await,
+        2,
+        "the decrement rolled back with the failed insert"
+    );
+}
+
+/// A further payment event on an order whose refund is ALREADY on record changes nothing: the
+/// debt stays one row, and an admin's `refunded` is not flipped back to `refund_due` (REVIEW-4).
+#[sqlx::test(migrations = "./migrations")]
+async fn a_repeat_payment_on_a_recorded_debt_is_already_handled(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let owner = token_for(&app, "owner@x.co").await;
+    let a = token_for(&app, "a@x.co").await;
+    let b = token_for(&app, "b@x.co").await;
+    let admin = token_for(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = create_event(&app, &owner, 1).await;
+    let (_, va) = checkout(&app, &a, event, None).await;
+    let order_a = order_id(&va).await;
+    lapse(&pool, order_a).await;
+    orders::expire_holds(&pool).await.unwrap();
+    assert_eq!(checkout(&app, &b, event, None).await.0, StatusCode::CREATED);
+    assert_eq!(fulfill_now(&pool, order_a).await, FulfillOutcome::RefundDue);
+    assert_eq!(refund_jobs_for(&pool, order_a).await, 1);
+
+    // The admin closes it out (the debt is already queued — nothing new is inserted).
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            &format!("/api/admin/orders/{order_a}/escrow"),
+            Some(&admin),
+            Some(json!({"action":"refund"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(order_status(&pool, order_a).await.0, "refunded");
+    assert_eq!(refund_jobs_for(&pool, order_a).await, 1);
+
+    // A second payment event for the same order (a different delivery, same money).
+    assert_eq!(fulfill_now(&pool, order_a).await, FulfillOutcome::AlreadyHandled);
+    assert_eq!(
+        order_status(&pool, order_a).await.0,
+        "refunded",
+        "the admin's decision stands"
+    );
+    assert_eq!(refund_jobs_for(&pool, order_a).await, 1, "still one debt");
 }
