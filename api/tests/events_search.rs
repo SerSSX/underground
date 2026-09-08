@@ -16,15 +16,17 @@ fn make_app(pool: PgPool) -> Router {
     })
 }
 
-/// Seed a fixed catalog the filter assertions are written against.
+/// Seed a fixed catalog the filter assertions are written against. Dates are RELATIVE: a
+/// hardcoded September 2026 lineup went into the past on 2026-09-02 and turned nine tests red
+/// for a week without any code change (REVIEW-2).
 async fn seed_events(pool: &PgPool) {
     sqlx::query(
         "INSERT INTO events (title, category, city, starts_at, price, tickets_total, tickets_left, cost_type, status) VALUES \
-         ('Louna Live',    'Rock',   'Kyiv',  '2026-09-03T19:00:00Z', 450, 100, 100, 'paid', 'published'), \
-         ('Jazz Evening',  'Jazz',   'Kyiv',  '2026-09-01T19:00:00Z', 300,  50,  50, 'paid', 'published'), \
-         ('Poetry Night',  'Poetry', 'Lviv',  '2026-09-02T19:00:00Z',   0,  30,  30, 'free', 'published'), \
-         ('Rock Marathon', 'Rock',   'Lviv',  '2026-09-04T19:00:00Z', 150, 200, 200, 'paid', 'published'), \
-         ('Hidden Rave',   'Rock',   'Kyiv',  '2026-09-05T19:00:00Z', 500, 100, 100, 'paid', 'hidden')",
+         ('Louna Live',    'Rock',   'Kyiv',  now() + interval '3 days', 450, 100, 100, 'paid', 'published'), \
+         ('Jazz Evening',  'Jazz',   'Kyiv',  now() + interval '1 days', 300,  50,  50, 'paid', 'published'), \
+         ('Poetry Night',  'Poetry', 'Lviv',  now() + interval '2 days',   0,  30,  30, 'free', 'published'), \
+         ('Rock Marathon', 'Rock',   'Lviv',  now() + interval '4 days', 150, 200, 200, 'paid', 'published'), \
+         ('Hidden Rave',   'Rock',   'Kyiv',  now() + interval '5 days', 500, 100, 100, 'paid', 'hidden')",
     )
     .execute(pool)
     .await

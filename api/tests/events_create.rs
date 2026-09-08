@@ -40,7 +40,7 @@ fn post_event(token: Option<&str>, body: Value) -> Request<Body> {
 fn valid_event() -> Value {
     json!({
         "title": "My Gig", "description": "desc", "category": "Rock", "city": "Kyiv",
-        "venue_address": "Club", "starts_at": "2026-09-01T19:00:00Z",
+        "venue_address": "Club", "starts_at": (chrono::Utc::now() + chrono::Duration::days(30)).to_rfc3339(),
         "price": "250.00", "currency": "UAH", "tickets_total": 100, "cost_type": "paid"
     })
 }
