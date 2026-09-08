@@ -784,6 +784,11 @@ async fn a_superseded_order_paid_through_fulfill_directly_is_refunded_not_ticket
         .unwrap();
     assert_eq!(minted, 0);
     assert_eq!(tickets_left(&pool, event).await, 1, "the superseded order took nothing");
+    // The same money reported a second time (another delivery id for the same session): the debt
+    // is already on record, so nothing changes — not the status, not the job count.
+    assert_eq!(fulfill_now(&pool, first).await, FulfillOutcome::AlreadyHandled);
+    assert_eq!(order_status(&pool, first).await.0, "refund_due");
+    assert_eq!(refund_jobs_for(&pool, first).await, 1);
 }
 
 /// A pending order from before the hold existed is superseded by a re-checkout like any other —

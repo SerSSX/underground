@@ -715,6 +715,19 @@ async fn a_failing_refusal_trail_never_changes_the_answer_to_stripe(pool: PgPool
         paid_session("cs_A", order, 100),
     );
     assert_eq!(post(&app, &short, SECRET).await, StatusCode::OK);
+    // The other two refusal kinds behave the same: unknown order, wrong object.
+    let nobody = stripe_event(
+        "evt_nobody",
+        "checkout.session.completed",
+        paid_session("cs_A", Uuid::new_v4(), 10_000),
+    );
+    assert_eq!(post(&app, &nobody, SECRET).await, StatusCode::OK);
+    let other = stripe_event(
+        "evt_other",
+        "checkout.session.completed",
+        paid_session("cs_other", order, 10_000),
+    );
+    assert_eq!(post(&app, &other, SECRET).await, StatusCode::OK);
     assert_eq!(tickets_for(&pool, order).await, 0);
     assert_eq!(count(&pool, "SELECT count(*) FROM webhook_events").await, 0);
 }
@@ -806,5 +819,31 @@ async fn operational_events_are_recorded_and_acknowledged_without_touching_order
         count(&pool, "SELECT count(*) FROM webhook_refusals").await,
         0,
         "not refusals — nothing to bind"
+    );
+}
+
+/// A completed session that carries no PaymentIntent (possible for zero-amount or async payment
+/// methods) still binds on the session id and mints; the stored ref stays the session, which is
+/// what a refund would then have to be issued against.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_paid_session_without_a_payment_intent_still_mints_and_keeps_the_session_ref(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let buyer = token_for(&app, "b@x.co").await;
+    let (order, _) = stripe_order(&app, &pool, &buyer, "cs_A").await;
+    let payload = stripe_event(
+        "evt_nopi",
+        "checkout.session.completed",
+        json!({ "id": "cs_A", "payment_status": "paid", "amount_total": 10_000, "currency": "uah",
+                "metadata": { "order_id": order.to_string() } }),
+    );
+    assert_eq!(post(&app, &payload, SECRET).await, StatusCode::OK);
+    assert_eq!(tickets_for(&pool, order).await, 1);
+    let (status, _, provider_ref, _) = order_state(&pool, order).await;
+    assert_eq!(status, "paid");
+    assert_eq!(
+        provider_ref.as_deref(),
+        Some("cs_A"),
+        "no PaymentIntent to replace the session with"
     );
 }
