@@ -217,8 +217,15 @@ async fn pay_test_rejected_outside_test_mode(pool: PgPool) {
     assert_eq!(status, StatusCode::CONFLICT, "test payment is test-mode only");
 }
 
+/// This test used to be `pay_test_conflicts_when_tickets_ran_out`: it drove `tickets_left` to 0
+/// between checkout and payment and expected pay-test to answer 409. That scenario WAS the
+/// worst money bug in the repo — a buyer charged for a seat that "vanished" — and PAY-3 removed
+/// it by reserving the seat at checkout. The seat cannot vanish any more, so a payment on a
+/// pending order always yields the ticket, and the stock never goes negative. The genuine
+/// refusal case (paying an order whose hold has lapsed) lives in
+/// `orders_hold::sec_pay_test_on_an_expired_order_is_refused`.
 #[sqlx::test(migrations = "./migrations")]
-async fn pay_test_conflicts_when_tickets_ran_out(pool: PgPool) {
+async fn pay_test_succeeds_because_the_seat_was_reserved_at_checkout(pool: PgPool) {
     let app = make_app(pool.clone());
     let token = token_for(&app, "b@x.co").await;
     let event = create_event(
@@ -233,19 +240,26 @@ async fn pay_test_conflicts_when_tickets_ran_out(pool: PgPool) {
     )
     .await;
     let order = checkout["order_id"].as_str().unwrap();
-
-    // Tickets vanish between checkout and payment.
-    sqlx::query("UPDATE events SET tickets_left = 0 WHERE id = $1::uuid")
+    let left: i32 = sqlx::query_scalar("SELECT tickets_left FROM events WHERE id = $1::uuid")
         .bind(event.as_str())
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
-    let (status, _) = send(
+    assert_eq!(left, 0, "the last seat is held by the checkout, not still on sale");
+
+    // Nothing external can take the held seat away; the payment lands on it.
+    let (status, ticket) = send(
         &app,
         build("POST", &format!("/api/orders/{order}/pay-test"), Some(&token), None),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::CREATED, "paid → ticket, always: {ticket}");
+    let left: i32 = sqlx::query_scalar("SELECT tickets_left FROM events WHERE id = $1::uuid")
+        .bind(event.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "no second decrement at payment — the seat was already ours");
 }
 
 #[sqlx::test(migrations = "./migrations")]
