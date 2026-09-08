@@ -32,9 +32,14 @@ pub struct ResetReq {
     pub password: String,
 }
 
-/// Public web app base URL for the reset link (the page lives in the public client, not the API).
-fn web_base_url() -> String {
-    std::env::var("WEB_APP_URL").unwrap_or_else(|_| "http://localhost:3001".into())
+/// Public web app base URL: reset links, and the return URL a hosted checkout sends the
+/// buyer back to. Trailing slash trimmed so callers can append a path unconditionally.
+pub fn web_base_url() -> String {
+    std::env::var("WEB_APP_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "http://localhost:3001".into())
 }
 
 /// SHA-256 hex of a raw token — what we persist and look up by. Public so tests can seed a

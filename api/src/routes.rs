@@ -35,6 +35,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/orders/:id/pay-test", post(orders::pay_test))
         .route("/api/orders/:id/dispute", post(orders::dispute))
         .route("/api/webhooks/lemonsqueezy", post(webhooks::lemonsqueezy))
+        .route("/api/webhooks/stripe", post(webhooks::stripe))
         .route("/api/me/tickets", get(tickets::my_tickets))
         .route("/api/me/prefs", get(prefs::get_prefs).put(prefs::put_prefs))
         .route("/api/me/unread", get(notifications::unread_counts))
@@ -103,6 +104,7 @@ pub fn router(state: AppState) -> Router {
             get(payments::get_settings).put(payments::update_settings),
         )
         .route("/api/admin/payment-readiness", get(payments::readiness))
+        .route("/api/admin/stripe/test", post(payments::stripe_test))
         .route("/api/admin/stats", get(admin::stats))
         .route("/api/admin/actions", get(audit::list_actions))
         .route("/api/admin/telemetry", get(telemetry::admin_telemetry))

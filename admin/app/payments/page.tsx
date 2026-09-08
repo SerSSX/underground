@@ -2,7 +2,8 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Shell from "../components/Shell";
-import { getSettings, updateSettings, errorMessage } from "../../lib/api";
+import { getSettings, updateSettings, errorMessage, type PaymentSettings } from "../../lib/api";
+import StripeSection from "./StripeSection";
 
 export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
@@ -16,10 +17,14 @@ export default function PaymentsPage() {
   const [variantId, setVariantId] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [keySet, setKeySet] = useState(false);
+  // The whole settings row, so the Stripe section can show what is stored without a
+  // second fetch and re-render from the same save.
+  const [settings, setSettings] = useState<PaymentSettings | null>(null);
 
   useEffect(() => {
     getSettings()
       .then((s) => {
+        setSettings(s);
         setMode(s.mode);
         setProvider(s.provider);
         setFee(s.platform_fee_bps);
@@ -45,6 +50,7 @@ export default function PaymentsPage() {
     if (apiKey.trim()) body.ls_api_key = apiKey.trim();
     try {
       const s = await updateSettings(body);
+      setSettings(s);
       setKeySet(s.ls_api_key_set);
       setApiKey("");
       setSaved(true);
@@ -71,8 +77,9 @@ export default function PaymentsPage() {
         <label className="lbl">
           Провайдер
           <select className="input" value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="test">test</option>
-            <option value="lemonsqueezy">lemonsqueezy</option>
+            <option value="test">test (симуляція, гроші не рухаються)</option>
+            <option value="stripe">stripe</option>
+            <option value="lemonsqueezy">lemonsqueezy (виводиться з експлуатації)</option>
           </select>
         </label>
         <label className="lbl">
@@ -100,6 +107,7 @@ export default function PaymentsPage() {
         {saved && <div className="ok">Збережено ✓</div>}
         <button className="btn">Зберегти</button>
       </form>
+      {settings && <StripeSection settings={settings} onSaved={setSettings} />}
     </Shell>
   );
 }

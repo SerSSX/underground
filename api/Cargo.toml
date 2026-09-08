@@ -41,13 +41,21 @@ rust_decimal = { version = "1", features = ["serde"] }
 argon2 = "0.5"
 jsonwebtoken = "9"
 async-trait = "0.1"
-# Lemon Squeezy webhook signature verification (HMAC-SHA256).
+# Webhook signature verification (HMAC-SHA256) for Lemon Squeezy and Stripe.
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+# The service had no HTTP client at all until Stripe. rustls (not native-tls) keeps the
+# distroless-ish runtime image free of an OpenSSL dependency; `json` is only used for
+# responses — Stripe's API takes form-encoded bodies, not JSON.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# A local HTTP server so every Stripe branch — including the error paths — is exercised
+# without touching the network. Required by the 100%-line gate: an un-mockable client
+# would leave the whole adapter uncovered.
+wiremock = "0.6"
 
 [profile.release]
 opt-level = 3

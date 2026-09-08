@@ -39,8 +39,38 @@ export interface PaymentSettings {
   ls_store_id: string | null;
   ls_variant_id: string | null;
   ls_api_key_set: boolean;
+  // Publishable keys are safe to show; secrets come back only as a boolean, never a value.
+  stripe_publishable_key: string | null;
+  stripe_secret_key_set: boolean;
+  stripe_webhook_secret_set: boolean;
+  stripe_key_kind: string | null;
   platform_fee_bps: number;
   updated_at: string;
+}
+
+export interface PaymentReadiness {
+  mode: string;
+  provider: string;
+  stripe_secret_key_set: boolean;
+  stripe_webhook_secret_set: boolean;
+  stripe_key_kind: string | null;
+  provider_recognised: boolean;
+  ready_for_live: boolean;
+}
+
+export interface ConnectionCheck {
+  ok: boolean;
+  account_id: string | null;
+  message: string;
+}
+
+export async function getReadiness(): Promise<PaymentReadiness> {
+  return apiGet<PaymentReadiness>("/api/admin/payment-readiness");
+}
+
+/// Proves the stored key actually opens a Stripe account, before a buyer finds out it doesn't.
+export async function testStripe(): Promise<ConnectionCheck> {
+  return apiSend<ConnectionCheck>("POST", "/api/admin/stripe/test");
 }
 
 export async function getSettings(): Promise<PaymentSettings> {
@@ -58,6 +88,9 @@ export interface UpdateSettings {
   ls_store_id?: string;
   ls_variant_id?: string;
   ls_api_key?: string;
+  stripe_secret_key?: string;
+  stripe_publishable_key?: string;
+  stripe_webhook_secret?: string;
 }
 
 export async function updateSettings(body: UpdateSettings): Promise<PaymentSettings> {

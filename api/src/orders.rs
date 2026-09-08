@@ -67,17 +67,18 @@ pub async fn checkout(
     Path(event_id): Path<Uuid>,
     Query(q): Query<CheckoutQuery>,
 ) -> Result<(StatusCode, Json<CheckoutResp>), AppError> {
-    // (price, currency, cost_type, tickets_left, sales_closed, past, age_rating) for a published event.
-    type CheckoutEventRow = (Decimal, String, String, i32, bool, bool, Option<String>);
+    // (title, price, currency, cost_type, tickets_left, sales_closed, past, age_rating).
+    type CheckoutEventRow = (String, Decimal, String, String, i32, bool, bool, Option<String>);
     let row: Option<CheckoutEventRow> = sqlx::query_as(
-        "SELECT price, currency, cost_type, tickets_left, sales_closed, \
+        "SELECT title, price, currency, cost_type, tickets_left, sales_closed, \
             (starts_at IS NOT NULL AND starts_at < now()) AS past, age_rating \
          FROM events WHERE id = $1 AND status = 'published'",
     )
     .bind(event_id)
     .fetch_optional(&st.db)
     .await?;
-    let (price, currency, cost_type, tickets_left, sales_closed, past, age_rating) = row.ok_or(AppError::NotFound)?;
+    let (title, price, currency, cost_type, tickets_left, sales_closed, past, age_rating) =
+        row.ok_or(AppError::NotFound)?;
     if past {
         return Err(AppError::Conflict("подія вже завершилась".into()));
     }
@@ -98,41 +99,63 @@ pub async fn checkout(
 
     let settings = payments::load_settings(&st.db).await?;
     let test_mode = settings.mode == "test";
-    // Live mode with no hosted-checkout variant configured can't actually take a payment —
-    // reject before creating an order so we don't leave an orphan pending row (SEC/$).
-    if !test_mode
-        && settings
-            .ls_variant_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .is_none()
-    {
-        return Err(AppError::Conflict("live-платежі ще не налаштовані".into()));
-    }
+    // Resolve BEFORE inserting the order. A provider name the code does not know is an
+    // operator error, and PAY-1 makes it loud: we no longer substitute the test provider
+    // silently, because that either sells tickets nobody can pay for or — worse, once a real
+    // key is present — takes money through a path nobody configured.
+    let provider = crate::provider::resolve(&settings)
+        .map_err(|e| AppError::Conflict(format!("платіжний провайдер не налаштований: {e}")))?;
     let (amount, applied_promo) = apply_promo(&st.db, event_id, price, q.promo.as_deref()).await?;
+    // Our commission, snapshotted now. `platform_fee_bps` can change before this order is
+    // refunded, and a refund must return what was actually taken.
+    let fee = (amount * Decimal::from(settings.platform_fee_bps) / Decimal::from(10_000)).round_dp(2);
     let order_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO orders (event_id, buyer_id, amount, currency, provider, promo_code) \
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        "INSERT INTO orders (event_id, buyer_id, amount, currency, provider, promo_code, application_fee) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
     )
     .bind(event_id)
     .bind(user.id)
     .bind(amount)
     .bind(&currency)
-    .bind(&settings.provider)
+    .bind(provider.name())
     .bind(&applied_promo)
+    .bind(fee)
     .fetch_one(&st.db)
     .await?;
 
-    // In live mode, hand the client a Lemon Squeezy hosted-checkout URL carrying our order id.
-    let checkout_url = (!test_mode)
-        .then(|| {
-            settings.ls_variant_id.as_deref().map(|variant| {
-                let store = settings.ls_store_id.as_deref().unwrap_or("store");
-                format!("https://{store}.lemonsqueezy.com/buy/{variant}?checkout[custom][order_id]={order_id}")
-            })
+    // Ask the provider to collect. The order row exists first because its id is the
+    // reference we hand the provider (metadata + idempotency key) and the handle a refund
+    // will later need.
+    let charge = provider
+        .create_charge(crate::provider::ChargeReq {
+            order_id,
+            amount,
+            currency: currency.clone(),
+            return_url: Some(crate::passwords::web_base_url()),
+            description: title,
+            // Direct charges arrive with PAY-5, when an organiser has a connected account.
+            connected_account: None,
+            application_fee: fee,
         })
-        .flatten();
+        .await;
+    let charge = match charge {
+        Ok(c) => c,
+        Err(e) => {
+            // Never leave a pending row the buyer could later be charged against: the order
+            // is closed out here, and the provider's own message goes back to the caller.
+            sqlx::query("UPDATE orders SET status = 'failed' WHERE id = $1 AND status = 'pending'")
+                .bind(order_id)
+                .execute(&st.db)
+                .await?;
+            return Err(AppError::Conflict(format!("оплату не вдалося створити: {e}")));
+        }
+    };
+    sqlx::query("UPDATE orders SET provider_ref = $2 WHERE id = $1")
+        .bind(order_id)
+        .bind(&charge.provider_ref)
+        .execute(&st.db)
+        .await?;
+
     Ok((
         StatusCode::CREATED,
         Json(CheckoutResp {
@@ -141,7 +164,7 @@ pub async fn checkout(
             amount,
             currency,
             test_mode,
-            checkout_url,
+            checkout_url: charge.checkout_url,
         }),
     ))
 }

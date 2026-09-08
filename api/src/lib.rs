@@ -40,6 +40,7 @@ pub mod routes;
 pub mod social;
 pub mod staff;
 pub mod state;
+pub mod stripe;
 pub mod telemetry;
 pub mod tickets;
 pub mod uploads;
