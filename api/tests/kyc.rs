@@ -217,7 +217,11 @@ async fn connecting_twice_reuses_the_same_account(pool: PgPool) {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{first}");
-    assert!(first["onboarding_url"].as_str().unwrap().contains("onboarding="));
+    let url = first["onboarding_url"].as_str().unwrap();
+    assert!(url.contains("onboarding="), "{url}");
+    // One query string, not two: the return URL already carries `?done=1`, and a link with a
+    // second `?` is not one an organiser can follow.
+    assert_eq!(url.matches('?').count(), 1, "malformed onboarding URL: {url}");
 
     let stored: Option<String> = sqlx::query_scalar("SELECT psp_account_id FROM users WHERE id = $1::uuid")
         .bind(&org_id)

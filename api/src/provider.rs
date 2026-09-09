@@ -299,7 +299,11 @@ impl PaymentProvider for NoopProvider {
         _refresh_url: &str,
         return_url: &str,
     ) -> Result<String, ProviderError> {
-        Ok(format!("{return_url}?onboarding={account_ref}"))
+        // The return URL already carries a query string, so join with `&`. A stub that produces
+        // `...?done=1?onboarding=...` is not a URL anyone can follow, and this one is what a
+        // demo stand actually opens.
+        let sep = if return_url.contains('?') { '&' } else { '?' };
+        Ok(format!("{return_url}{sep}onboarding={account_ref}"))
     }
 }
 
@@ -355,7 +359,11 @@ impl PaymentProvider for TestProvider {
         _refresh_url: &str,
         return_url: &str,
     ) -> Result<String, ProviderError> {
-        Ok(format!("{return_url}?onboarding={account_ref}"))
+        // The return URL already carries a query string, so join with `&`. A stub that produces
+        // `...?done=1?onboarding=...` is not a URL anyone can follow, and this one is what a
+        // demo stand actually opens.
+        let sep = if return_url.contains('?') { '&' } else { '?' };
+        Ok(format!("{return_url}{sep}onboarding={account_ref}"))
     }
 }
 
