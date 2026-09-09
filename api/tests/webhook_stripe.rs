@@ -847,3 +847,23 @@ async fn a_paid_session_without_a_payment_intent_still_mints_and_keeps_the_sessi
         "no PaymentIntent to replace the session with"
     );
 }
+
+/// The stripe webhook route resolves the provider from settings before checking the signature.
+/// When settings can't resolve one (stripe selected, no key), the delivery is refused with a
+/// config-shaped 409 — never a signature check against a provider that does not exist.
+#[sqlx::test(migrations = "./migrations")]
+async fn the_stripe_webhook_is_refused_when_no_provider_resolves(pool: PgPool) {
+    let app = make_app(pool.clone());
+    sqlx::query(
+        "UPDATE payment_settings SET provider = 'stripe', mode = 'test', stripe_secret_key = NULL WHERE id = TRUE",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let payload = stripe_event(
+        "evt_x",
+        "checkout.session.completed",
+        paid_session("cs_A", Uuid::new_v4(), 10_000),
+    );
+    assert_eq!(post(&app, &payload, SECRET).await, StatusCode::CONFLICT);
+}

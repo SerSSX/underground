@@ -115,5 +115,22 @@ async fn the_connection_check_reports_no_key_a_bad_base_a_refusal_and_success(po
     let v = check(&app, &admin).await;
     assert_eq!(v["ok"], true);
     assert_eq!(v["account_id"], "acct_42");
+
+    // 5. Stripe answers 200 with a body that is not JSON → a transport-shaped failure, reported.
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/account"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+        .mount(&server)
+        .await;
+    let v = check(&app, &admin).await;
+    assert_eq!(v["ok"], false);
+    assert!(v["message"].as_str().unwrap().contains("not json"), "{v}");
+
+    // 6. Nothing listening at a valid loopback base → the send itself fails (connection refused).
+    std::env::set_var("STRIPE_API_BASE", "http://127.0.0.1:9");
+    let v = check(&app, &admin).await;
+    assert_eq!(v["ok"], false);
+    assert!(v["message"].as_str().unwrap().contains("request failed"), "{v}");
     std::env::remove_var("STRIPE_API_BASE");
 }

@@ -20,6 +20,7 @@ use crate::error::AppError;
 use crate::payments;
 use crate::state::AppState;
 use crate::tickets::{self, Ticket};
+use std::sync::Arc;
 
 /// How long a checkout keeps its seat while the buyer pays. Long enough for a card form and
 /// a 3-D Secure round trip; short enough that an abandoned tab does not sell out an event.
@@ -145,10 +146,15 @@ pub async fn checkout(
     // The provider's reason is for the operator's log, not the buyer's screen: it names our
     // configuration state ("stripe selected but no secret key configured"), and a buyer is
     // nobody who should learn that.
-    let provider = crate::provider::resolve(&settings).map_err(|e| {
-        tracing::error!(error = %e, "checkout: payment provider unavailable");
-        AppError::Conflict("платіжна система тимчасово недоступна, спробуйте за хвилину".into())
-    })?;
+    // Resolved ONCE into an Arc: the checkout uses it for `create_charge`, and the superseded-
+    // session void (spawned below) needs an owned handle too. Re-resolving there would be a
+    // second, deterministically-identical call whose error arm is unreachable (REVIEW-4 gate).
+    let provider: Arc<dyn crate::provider::PaymentProvider> = crate::provider::resolve(&settings)
+        .map_err(|e| {
+            tracing::error!(error = %e, "checkout: payment provider unavailable");
+            AppError::Conflict("платіжна система тимчасово недоступна, спробуйте за хвилину".into())
+        })?
+        .into();
     let (amount, applied_promo) = apply_promo(&st.db, event_id, price, q.promo.as_deref()).await?;
     // Our commission, snapshotted now. `platform_fee_bps` can change before this order is
     // refunded, and a refund must return what was actually taken.
@@ -222,9 +228,9 @@ pub async fn checkout(
         .filter_map(|(id, r, _)| r.map(|r| (id, r)))
         .collect();
     if !victims.is_empty() {
-        // The same settings resolved a provider a moment ago; this second handle is the one the
-        // task owns, so the request's `provider` stays available for `create_charge` below.
-        let voider = crate::provider::resolve(&settings).map_err(|e| AppError::Conflict(e.to_string()))?;
+        // A clone of the already-resolved provider — no second resolve, so no unreachable error
+        // arm — moved into the task that owns the best-effort void.
+        let voider = Arc::clone(&provider);
         tokio::spawn(async move {
             for (old_id, r) in victims {
                 if let Err(e) = voider.cancel_charge(&r).await {

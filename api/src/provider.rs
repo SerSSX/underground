@@ -507,6 +507,25 @@ mod tests {
     /// [SEC] The key's environment and the payment mode must agree in BOTH directions. A live
     /// key under test mode is the dangerous one: real charges on the demo stand while every
     /// screen says "test".
+    /// The trait's default `cancel_charge` is a no-op the money-free providers inherit; a
+    /// superseded free/RSVP order has nothing to void at a provider. Exercised so the default
+    /// body is not dead (it is the fallback every future provider gets for free).
+    #[tokio::test]
+    async fn money_free_providers_cancel_charge_is_a_harmless_noop() {
+        assert!(NoopProvider.cancel_charge("cs_x").await.is_ok());
+        assert!(TestProvider.cancel_charge("cs_x").await.is_ok());
+    }
+
+    /// Stripe selected but no key configured is a configuration error, refused at resolve.
+    #[test]
+    fn resolve_refuses_stripe_without_a_secret_key() {
+        let _env = crate::stripe::test_env_lock().lock().unwrap();
+        assert!(matches!(
+            resolve(&settings("stripe", "test", None)),
+            Err(ProviderError::Invalid(m)) if m.contains("no secret key")
+        ));
+    }
+
     /// Restricted keys (`rk_`) are environment-typed like secret keys; a copy of this logic in
     /// payments.rs once lagged behind and saved an rk_live_ key under test mode as "unknown".
     #[test]
