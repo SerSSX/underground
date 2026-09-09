@@ -164,7 +164,9 @@ async fn a_request_without_idempotency_key_is_never_retried() {
     let err = provider(&server)
         .refund(RefundReq {
             provider_ref: "pi_1".into(),
-            amount: Decimal::ZERO,
+            // A real amount: zero is refused before any request now, because at Stripe an
+            // omitted amount means "refund everything".
+            amount: Decimal::from_str("10.00").unwrap(),
             currency: "UAH".into(),
             reason: None,
             connected_account: None,

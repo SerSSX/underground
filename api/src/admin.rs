@@ -65,6 +65,12 @@ pub struct AdminUser {
     pub blocked: bool,
     pub verified: bool,
     pub kyc_status: String,
+    /// Read-only mirror of the payment provider's view of this organiser's account. Shown so an
+    /// operator can tell "we have not verified them" apart from "the provider has not enabled
+    /// them" — two different problems with two different fixes. Never writable from here.
+    pub psp_connected: bool,
+    pub psp_charges_enabled: bool,
+    pub psp_payouts_enabled: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -76,7 +82,9 @@ pub async fn users(
 ) -> Result<Json<Vec<AdminUser>>, AppError> {
     let (limit, offset) = page(&query);
     let users: Vec<AdminUser> = sqlx::query_as(
-        "SELECT id, email, name, role, blocked, verified, kyc_status, created_at FROM users \
+        "SELECT id, email, name, role, blocked, verified, kyc_status, \
+            psp_account_id IS NOT NULL AS psp_connected, psp_charges_enabled, psp_payouts_enabled, created_at \
+         FROM users \
          WHERE ($1::text IS NULL OR email ILIKE '%' || $1 || '%' OR name ILIKE '%' || $1 || '%') \
          ORDER BY created_at DESC LIMIT $2 OFFSET $3",
     )
@@ -117,7 +125,9 @@ pub async fn patch_user(
     let user: Option<AdminUser> = sqlx::query_as(
         "UPDATE users SET blocked = COALESCE($2, blocked), role = COALESCE($3, role), \
             verified = COALESCE($4, verified) \
-         WHERE id = $1 RETURNING id, email, name, role, blocked, verified, kyc_status, created_at",
+         WHERE id = $1 \
+         RETURNING id, email, name, role, blocked, verified, kyc_status, \
+             psp_account_id IS NOT NULL AS psp_connected, psp_charges_enabled, psp_payouts_enabled, created_at",
     )
     .bind(id)
     .bind(req.blocked)
@@ -325,7 +335,15 @@ pub async fn escrow_action(
             .bind(marker)
             .execute(&mut *tx)
             .await?;
-            "refunded"
+            // Where money was actually taken the escrow is `refund_due`, NOT `refunded`: a job
+            // is queued and the worker has not moved anything yet. Claiming `refunded` here is
+            // how the admin list came to say "returned" about money still sitting at the
+            // provider. The executor flips it once the provider confirms.
+            if money_taken {
+                "refund_due"
+            } else {
+                "refunded"
+            }
         }
         "freeze" => "frozen",
         // held|clearing clear normally; a frozen (disputed) order needs an explicit force.

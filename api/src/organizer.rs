@@ -134,3 +134,26 @@ pub async fn event_tickets(
     .await?;
     Ok(Json(tickets))
 }
+
+/// `GET /api/events/:id/refund-progress` — how a cancellation is draining.
+///
+/// Owner or platform admin only: refund progress reveals how many tickets an event sold and for
+/// how much, which is the organiser's business and nobody else's.
+pub async fn refund_progress(
+    user: crate::auth::CurrentUser,
+    State(st): State<AppState>,
+    axum::extract::Path(event_id): axum::extract::Path<uuid::Uuid>,
+) -> Result<Json<crate::refunds::Progress>, AppError> {
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM events e, users u \
+         WHERE e.id = $1 AND u.id = $2 AND (e.organizer_id = u.id OR u.role = 'ADMIN'))",
+    )
+    .bind(event_id)
+    .bind(user.id)
+    .fetch_one(&st.db)
+    .await?;
+    if !allowed {
+        return Err(AppError::Forbidden);
+    }
+    Ok(Json(crate::refunds::event_progress(&st.db, event_id).await?))
+}

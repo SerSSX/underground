@@ -47,6 +47,10 @@ pub enum PayoutStatus {
 pub enum RefundStatus {
     Succeeded,
     Failed,
+    /// Accepted but the money has not moved yet — for a direct charge this is what an organiser
+    /// with too little balance produces, and the provider settles it later or gives up. The
+    /// refund job stays open until a webhook says which.
+    Pending,
 }
 
 /// A normalized inbound payment event, decoded from a provider webhook.
@@ -97,7 +101,18 @@ pub enum WebhookEvent {
         account_ref: String,
         charges_enabled: bool,
         payouts_enabled: bool,
-        requirements_due: bool,
+        /// WHICH documents the provider is still waiting for, not merely that some are. The
+        /// organiser has to be told what to go and do; "потрібні документи" with no list is a
+        /// dead end for them.
+        requirements_due: Vec<String>,
+    },
+    /// A refund we issued finally resolved — this is how a `Pending` refund becomes settled or
+    /// failed, and the only signal that money actually left the organiser's balance.
+    RefundResolved {
+        order_ref: String,
+        refund_ref: String,
+        status: String,
+        failure_reason: Option<String>,
     },
     /// Recognized but not actionable (or providers that never call back).
     Ignored,
@@ -211,6 +226,24 @@ pub trait PaymentProvider: Send + Sync {
     async fn cancel_charge(&self, _provider_ref: &str) -> Result<(), ProviderError> {
         Ok(())
     }
+
+    /// Create the SELLER's own account at the provider and return its id. The organiser is the
+    /// merchant of record for their tickets, so this account — not ours — is where their money
+    /// lands. Deliberately has no default body: a new provider must decide how it onboards
+    /// sellers instead of inheriting a stub that reports success and never took an account.
+    ///
+    /// The returned id is the ONLY source of `users.psp_account_id`; it never comes from a
+    /// request body (PAY-5 SEC).
+    async fn create_seller_account(&self, country: &str, email: &str) -> Result<String, ProviderError>;
+
+    /// A short-lived, single-use URL where the seller enters their own identity and bank
+    /// details, on the provider's pages. We never see those details and never store this URL.
+    async fn seller_onboarding_link(
+        &self,
+        account_ref: &str,
+        refresh_url: &str,
+        return_url: &str,
+    ) -> Result<String, ProviderError>;
 }
 
 /// Free / RSVP provider: only zero-amount charges, no money ever moves.
@@ -251,6 +284,23 @@ impl PaymentProvider for NoopProvider {
     fn verify_webhook(&self, _headers: &HeaderMap, _raw: &[u8]) -> Result<InboundWebhook, ProviderError> {
         Ok(InboundWebhook::ignored())
     }
+    /// Deterministic: the same organiser always gets the same account id, so a test can assert
+    /// that a second connect call did NOT create a second account.
+    async fn create_seller_account(&self, country: &str, email: &str) -> Result<String, ProviderError> {
+        Ok(format!(
+            "acct_noop_{}_{}",
+            country.to_ascii_lowercase(),
+            email.trim().to_ascii_lowercase()
+        ))
+    }
+    async fn seller_onboarding_link(
+        &self,
+        account_ref: &str,
+        _refresh_url: &str,
+        return_url: &str,
+    ) -> Result<String, ProviderError> {
+        Ok(format!("{return_url}?onboarding={account_ref}"))
+    }
 }
 
 /// Deterministic test provider: paid amounts succeed instantly with NO real money,
@@ -289,6 +339,23 @@ impl PaymentProvider for TestProvider {
     }
     fn verify_webhook(&self, _headers: &HeaderMap, _raw: &[u8]) -> Result<InboundWebhook, ProviderError> {
         Ok(InboundWebhook::ignored())
+    }
+    /// Deterministic: the same organiser always gets the same account id, so a test can assert
+    /// that a second connect call did NOT create a second account.
+    async fn create_seller_account(&self, country: &str, email: &str) -> Result<String, ProviderError> {
+        Ok(format!(
+            "acct_test_{}_{}",
+            country.to_ascii_lowercase(),
+            email.trim().to_ascii_lowercase()
+        ))
+    }
+    async fn seller_onboarding_link(
+        &self,
+        account_ref: &str,
+        _refresh_url: &str,
+        return_url: &str,
+    ) -> Result<String, ProviderError> {
+        Ok(format!("{return_url}?onboarding={account_ref}"))
     }
 }
 

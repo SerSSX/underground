@@ -92,18 +92,16 @@ async fn export_returns_user_data(pool: PgPool) {
 async fn delete_me_anonymizes_and_frees_email(pool: PgPool) {
     let app = make_app(pool.clone());
     let token = register(&app, "gone@x.co").await;
-    // Put KYC bank details on file so we can prove erasure clears them.
-    let (st, _) = send(
-        &app,
-        build(
-            "POST",
-            "/api/me/kyc",
-            Some(&token),
-            Some(json!({"name":"Gone Co","iban":"DE89370400440532013000","swift":"PBANUA2X"})),
-        ),
+    // We no longer hold anyone's bank details (PAY-5). What erasure must break is the LINK to
+    // the organiser's account at the payment provider, and the capabilities it granted —
+    // otherwise a deleted account can still sell tickets and be paid.
+    sqlx::query(
+        "UPDATE users SET psp_account_id = 'acct_gone', psp_charges_enabled = true, \
+            psp_payouts_enabled = true, kyc_status = 'verified' WHERE email = 'gone@x.co'",
     )
-    .await;
-    assert_eq!(st, StatusCode::NO_CONTENT);
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Wrong password → 401 (re-auth required).
     let (st, _) = send(
@@ -125,15 +123,22 @@ async fn delete_me_anonymizes_and_frees_email(pool: PgPool) {
     let (st, _) = send(&app, build("GET", "/api/me", Some(&token), None)).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "[SEC] erased account loses access");
 
-    // All identifying / financial PII is gone (bank details, google identity, kyc reset).
-    let row: (Option<String>, Option<String>, String, Option<String>) = sqlx::query_as(
-        "SELECT payout_iban, google_sub, kyc_status, password_hash FROM users \
-         WHERE email = 'deleted+' || id || '@deleted.invalid' AND deleted_at IS NOT NULL",
+    // All identifying / financial PII is gone. Bank details are no longer ours to clear — we do
+    // not store them any more (PAY-5) — so what must go is the POINTER to the organiser's
+    // account at the payment provider, and every capability it granted.
+    type ErasedRow = (Option<String>, Option<String>, String, Option<String>, bool, bool);
+    let row: ErasedRow = sqlx::query_as(
+        "SELECT psp_account_id, google_sub, kyc_status, password_hash, psp_charges_enabled, psp_payouts_enabled \
+         FROM users WHERE email = 'deleted+' || id || '@deleted.invalid' AND deleted_at IS NOT NULL",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(row.0, None, "[GDPR] IBAN cleared");
+    assert_eq!(row.0, None, "[GDPR] the link to the provider account is cleared");
+    assert!(
+        !row.4 && !row.5,
+        "[GDPR] an erased organiser can no longer take money or be paid"
+    );
     assert_eq!(row.1, None, "[GDPR] google_sub cleared");
     assert_eq!(row.2, "none", "[GDPR] kyc reset");
     assert_eq!(row.3, None, "[GDPR] password cleared");

@@ -2,6 +2,10 @@
 //! `clearing` once the event is over, then to `cleared` once the clearing window has
 //! elapsed — at which point an admin can settle the payout. Frozen (disputed) orders are
 //! left untouched until an admin resolves them.
+//!
+//! A CANCELLED event is excluded at both steps. Its money is going back to the buyers, and
+//! without this the sweep would keep walking it toward a payout for an event that never
+//! happened — which is how an organiser gets paid for tickets they are also refunding.
 
 use sqlx::PgPool;
 
@@ -12,6 +16,7 @@ pub async fn sweep(db: &PgPool, clearing_days: i32) -> Result<(u64, u64), sqlx::
         "UPDATE orders o SET escrow_status = 'clearing' \
          FROM events e \
          WHERE e.id = o.event_id AND o.escrow_status = 'held' \
+           AND e.status <> 'cancelled' \
            AND COALESCE(e.ends_at, e.starts_at) IS NOT NULL \
            AND COALESCE(e.ends_at, e.starts_at) < now()",
     )
@@ -23,6 +28,7 @@ pub async fn sweep(db: &PgPool, clearing_days: i32) -> Result<(u64, u64), sqlx::
         "UPDATE orders o SET escrow_status = 'cleared' \
          FROM events e \
          WHERE e.id = o.event_id AND o.escrow_status = 'clearing' \
+           AND e.status <> 'cancelled' \
            AND COALESCE(e.ends_at, e.starts_at) < now() - make_interval(days => $1)",
     )
     .bind(clearing_days)

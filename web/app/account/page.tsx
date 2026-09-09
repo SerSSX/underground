@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   getToken, clearToken, getMe, patchMe, exportMyData, deleteMyAccount,
-  getKyc, submitKyc, errorMessage, type UserDto, type KycView,
+  getPayoutStatus, connectPayouts, errorMessage, type UserDto, type PayoutStatus,
 } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
 import Modal from "../components/Modal";
@@ -13,14 +13,14 @@ export default function AccountPage() {
   const router = useRouter();
   const { lang } = useLang();
   const [me, setMe] = useState<UserDto | null>(null);
-  const [kyc, setKyc] = useState<KycView | null>(null);
+  const [kyc, setKyc] = useState<PayoutStatus | null>(null);
   const [dob, setDob] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // KYC form
-  const [kName, setKName] = useState("");
-  const [iban, setIban] = useState("");
-  const [swift, setSwift] = useState("");
+  // Payout onboarding: the only thing we ask for is the country. Everything else — identity,
+  // bank account — is entered on the provider's own pages and never passes through us.
+  const [country, setCountry] = useState("");
+  const [connecting, setConnecting] = useState(false);
   // delete-account modal
   const [showDelete, setShowDelete] = useState(false);
   const [deletePw, setDeletePw] = useState("");
@@ -31,7 +31,7 @@ export default function AccountPage() {
       return;
     }
     getMe().then(setMe).catch((e) => setError(errorMessage(e)));
-    getKyc().then(setKyc).catch(() => {});
+    getPayoutStatus().then(setKyc).catch(() => {});
   }, [router]);
 
   async function saveDob() {
@@ -64,13 +64,14 @@ export default function AccountPage() {
     } catch (e) { setError(errorMessage(e)); }
   }
 
-  async function doKyc() {
-    setError(null); setMsg(null);
+  async function doConnect() {
+    setError(null); setMsg(null); setConnecting(true);
     try {
-      await submitKyc(kName.trim(), iban.trim(), swift.trim());
-      setMsg(tr(lang, "Реквізити надіслано на перевірку", "Details submitted for review"));
-      setKyc(await getKyc());
-    } catch (e) { setError(errorMessage(e)); }
+      // An account that already exists keeps its country; only a first connection asks for one.
+      const { onboarding_url } = await connectPayouts((kyc?.country ?? country).trim());
+      // Single-use and short-lived: go straight there rather than keeping it around.
+      window.location.href = onboarding_url;
+    } catch (e) { setError(errorMessage(e)); setConnecting(false); }
   }
 
   if (error && !me) return <main className="container narrow"><div className="error">{error}</div></main>;
@@ -93,34 +94,57 @@ export default function AccountPage() {
       </section>
 
       <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 18 }}>{tr(lang, "Виплати організатора (KYC)", "Organizer payouts (KYC)")}</h2>
-        <p>
-          {tr(lang, "Статус:", "Status:")}{" "}
-          <span className={kyc?.kyc_status === "verified" ? "pill ok" : kyc?.kyc_status === "rejected" ? "pill bad" : kyc?.kyc_status === "pending" ? "pill warn" : "pill"}>
-            {kyc?.kyc_status ?? "—"}
-          </span>
-          {kyc?.has_bank_details ? <span className="muted">{tr(lang, " · реквізити на файлі", " · bank details on file")}</span> : ""}
-        </p>
-        <p className="muted">{tr(lang, "Потрібно перед першою виплатою.", "Required before your first payout.")}</p>
-        {(() => {
-          const ibanClean = iban.replace(/\s/g, "").toUpperCase();
-          const ibanOk = /^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/.test(ibanClean);
-          const swiftOk = /^[A-Z0-9]{8}([A-Z0-9]{3})?$/.test(swift.trim().toUpperCase());
-          const nameOk = kName.trim().length > 0;
-          const verified = kyc?.kyc_status === "verified";
-          return (
+        <h2 style={{ fontSize: 18 }}>{tr(lang, "Виплати організатора", "Organizer payouts")}</h2>
+        {!kyc ? null : !kyc.connected ? (
+          <>
+            <p className="muted">
+              {tr(lang,
+                "Щоб продавати платні квитки, підключіть виплати. Свої дані й банківський рахунок ви вводите на сторінці платіжної системи — ми їх не бачимо і не зберігаємо.",
+                "To sell paid tickets, connect payouts. You enter your details and bank account on the payment provider's own page — we never see or store them.")}
+            </p>
             <div className="form">
-              <input className="input" placeholder={tr(lang, "Ім'я отримувача", "Recipient name")} value={kName} onChange={(e) => setKName(e.target.value)} disabled={verified} />
-              <input className="input" placeholder="IBAN (UA / DE…)" value={iban} onChange={(e) => setIban(e.target.value)} disabled={verified} aria-invalid={iban.length > 0 && !ibanOk} />
-              {iban.length > 0 && !ibanOk && <div className="muted" style={{ fontSize: 12 }}>{tr(lang, "IBAN: 2 літери + 2 цифри + 11–30 символів", "IBAN: 2 letters + 2 digits + 11–30 chars")}</div>}
-              <input className="input" placeholder="SWIFT / BIC" value={swift} onChange={(e) => setSwift(e.target.value)} disabled={verified} aria-invalid={swift.length > 0 && !swiftOk} />
-              {swift.length > 0 && !swiftOk && <div className="muted" style={{ fontSize: 12 }}>{tr(lang, "SWIFT: 8 або 11 символів", "SWIFT: 8 or 11 characters")}</div>}
-              {verified
-                ? <p className="muted">{tr(lang, "Реквізити підтверджені. Зміна — через підтримку.", "Details verified. Change via support.")}</p>
-                : <button className="btn sm" onClick={doKyc} disabled={!nameOk || !ibanOk || !swiftOk}>{tr(lang, "Надіслати на перевірку", "Submit for review")}</button>}
+              <input
+                className="input"
+                placeholder={tr(lang, "Країна (2 літери, напр. PL)", "Country (2 letters, e.g. PL)")}
+                value={country}
+                maxLength={2}
+                onChange={(e) => setCountry(e.target.value.toUpperCase())}
+              />
+              <button className="btn sm" onClick={doConnect} disabled={country.trim().length !== 2 || connecting}>
+                {tr(lang, "Підключити виплати", "Connect payouts")}
+              </button>
             </div>
-          );
-        })()}
+          </>
+        ) : (
+          <>
+            <p>
+              {tr(lang, "Приймання оплат:", "Taking payments:")}{" "}
+              <span className={kyc.charges_enabled ? "pill ok" : "pill warn"}>
+                {kyc.charges_enabled ? tr(lang, "увімкнено", "enabled") : tr(lang, "перевіряється", "in review")}
+              </span>
+              {"  "}
+              {tr(lang, "Виплати:", "Payouts:")}{" "}
+              <span className={kyc.payouts_enabled ? "pill ok" : "pill warn"}>
+                {kyc.payouts_enabled ? tr(lang, "увімкнено", "enabled") : tr(lang, "перевіряється", "in review")}
+              </span>
+            </p>
+            {kyc.requirements_due.length > 0 && (
+              <p className="muted">
+                {tr(lang, "Платіжна система чекає документи:", "The payment provider is waiting for:")}{" "}
+                {kyc.requirements_due.join(", ")}
+              </p>
+            )}
+            {!kyc.charges_enabled && (
+              <p className="muted">
+                {tr(lang, "Поки перевірка триває, публікація платних подій недоступна.",
+                         "While the review is in progress, publishing paid events is unavailable.")}
+              </p>
+            )}
+            <button className="btn sm ghost" onClick={doConnect} disabled={connecting}>
+              {tr(lang, "Змінити реквізити", "Update details")}
+            </button>
+          </>
+        )}
       </section>
 
       <section style={{ marginTop: 24 }}>

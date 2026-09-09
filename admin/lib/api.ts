@@ -151,6 +151,9 @@ export interface AdminUser {
   blocked: boolean;
   verified: boolean;
   kyc_status: string;
+  psp_connected: boolean;
+  psp_charges_enabled: boolean;
+  psp_payouts_enabled: boolean;
   created_at: string;
 }
 

@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -73,9 +74,7 @@ fun SettingsScreen(
     var isOrganizer by remember { mutableStateOf(user.isOrganizer) }
     var avatarUrl by remember { mutableStateOf(user.avatarUrl) }
     var dob by remember { mutableStateOf("") }
-    var kycName by remember { mutableStateOf("") }
-    var iban by remember { mutableStateOf("") }
-    var swift by remember { mutableStateOf("") }
+    var payoutCountry by remember { mutableStateOf("") }
     var showDelete by remember { mutableStateOf(false) }
     var deletePw by remember { mutableStateOf("") }
 
@@ -83,9 +82,9 @@ fun SettingsScreen(
     val uploading by vm.uploading.collectAsState()
     val error by vm.error.collectAsState()
     val message by vm.message.collectAsState()
-    val kyc by vm.kyc.collectAsState()
+    val payouts by vm.payouts.collectAsState()
     val context = LocalContext.current
-    LaunchedEffect(Unit) { vm.loadKyc() }
+    LaunchedEffect(Unit) { vm.loadPayouts() }
 
     val pickAvatar = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
@@ -215,16 +214,48 @@ fun SettingsScreen(
             }
 
             HorizontalDivider()
-            Text("Виплати організатора (KYC)", fontWeight = FontWeight.SemiBold)
-            Text("Статус: ${kyc ?: "—"} · потрібно перед першою виплатою.", style = MaterialTheme.typography.bodySmall, color = Muted)
-            OutlinedTextField(value = kycName, onValueChange = { kycName = it }, label = { Text("Ім'я отримувача") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = iban, onValueChange = { iban = it }, label = { Text("IBAN") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = swift, onValueChange = { swift = it }, label = { Text("SWIFT / BIC") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text("Виплати організатора", fontWeight = FontWeight.SemiBold)
+            val p = payouts
+            if (p == null || !p.connected) {
+                Text(
+                    "Щоб продавати платні квитки, підключіть виплати. Свої дані й банківський рахунок " +
+                        "ви вводите на сторінці платіжної системи — застосунок їх не бачить.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Muted,
+                )
+                OutlinedTextField(
+                    value = payoutCountry,
+                    onValueChange = { payoutCountry = it.uppercase().take(2) },
+                    label = { Text("Країна (2 літери, напр. PL)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                Text(
+                    "Приймання оплат: " + (if (p.chargesEnabled) "увімкнено" else "перевіряється") +
+                        " · Виплати: " + (if (p.payoutsEnabled) "увімкнено" else "перевіряється"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Muted,
+                )
+                if (p.requirementsDue.isNotEmpty()) {
+                    Text(
+                        "Платіжна система чекає документи: " + p.requirementsDue.joinToString(", "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Muted,
+                    )
+                }
+            }
             OutlinedButton(
-                onClick = { vm.submitKyc(kycName, iban, swift) },
-                enabled = kycName.isNotBlank() && iban.isNotBlank() && swift.isNotBlank() && !busy,
+                onClick = {
+                    // The onboarding URL is single-use and short-lived, so it is opened straight
+                    // away in the browser and never kept.
+                    vm.connectPayouts(p?.country ?: payoutCountry) { url ->
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                },
+                enabled = !busy && ((p?.connected == true) || payoutCountry.length == 2),
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Надіслати реквізити") }
+            ) { Text(if (p?.connected == true) "Змінити реквізити" else "Підключити виплати") }
 
             HorizontalDivider()
             Text("Ваші дані (GDPR)", fontWeight = FontWeight.SemiBold)

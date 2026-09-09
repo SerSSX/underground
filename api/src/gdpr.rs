@@ -54,12 +54,18 @@ pub async fn delete_me(
         sqlx::query(sql).bind(user.id).execute(&mut *tx).await?;
     }
     // Anonymize the account row; block it so the credential can no longer authenticate.
-    // Clears ALL identifying / financial PII: email, name, bio, avatar, dob, password,
-    // Google identity (re-identification risk), and KYC bank details.
+    // Clears ALL identifying / financial PII: email, name, bio, avatar, dob, password, and the
+    // Google identity (re-identification risk).
+    //
+    // Bank details are no longer ours to clear — we never hold them now (PAY-5). What we drop
+    // is the POINTER to the organiser's account at the payment provider, and every capability
+    // flag with it, so an erased account cannot go on selling paid tickets. The account itself
+    // belongs to them at the provider, and only they can close it there.
     sqlx::query(
         "UPDATE users SET email = 'deleted+' || id || '@deleted.invalid', name = 'Видалений користувач', \
             bio = NULL, avatar_url = NULL, dob = NULL, password_hash = NULL, google_sub = NULL, \
-            payout_name = NULL, payout_iban = NULL, payout_swift = NULL, kyc_status = 'none', \
+            psp_account_id = NULL, psp_country = NULL, psp_requirements_due = NULL, \
+            psp_charges_enabled = false, psp_payouts_enabled = false, kyc_status = 'none', \
             is_organizer = false, verified = false, blocked = true, deleted_at = now() WHERE id = $1",
     )
     .bind(user.id)

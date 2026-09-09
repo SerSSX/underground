@@ -33,6 +33,7 @@ pub mod provider;
 pub mod push;
 pub mod qr;
 pub mod ratelimit;
+pub mod refunds;
 pub mod reminders;
 pub mod reports;
 pub mod reviews;

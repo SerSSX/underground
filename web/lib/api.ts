@@ -527,16 +527,24 @@ export async function deleteMyAccount(password: string): Promise<void> {
   await apiSend("DELETE", "/api/me", { password });
 }
 
-// ---- organizer KYC (P1 #78) ----
-export interface KycView {
+// ---- organiser payouts (PAY-5) ----
+// The organiser is the merchant of record for their own tickets, so their identity and bank
+// details are entered on the payment provider's own pages and never reach us. What we read back
+// is only whether that account can take money yet.
+export interface PayoutStatus {
+  charges_enabled: boolean;
+  payouts_enabled: boolean;
+  requirements_due: string[];
+  connected: boolean;
+  country: string | null;
   kyc_status: string;
-  has_bank_details: boolean;
 }
-export async function getKyc(): Promise<KycView> {
-  return apiGet<KycView>("/api/me/kyc");
+export async function getPayoutStatus(): Promise<PayoutStatus> {
+  return apiGet<PayoutStatus>("/api/me/payouts/status");
 }
-export async function submitKyc(name: string, iban: string, swift: string): Promise<void> {
-  await apiSend("POST", "/api/me/kyc", { name, iban, swift });
+/// Returns a single-use URL on the provider's site. Send the organiser there; do not store it.
+export async function connectPayouts(country: string): Promise<{ onboarding_url: string }> {
+  return apiSend("POST", "/api/me/payouts/connect", { country });
 }
 
 // ---- abuse reporting (P1 #76) ----

@@ -4,7 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.underground.app.UndergroundApp
 import com.underground.app.data.DeleteMeReq
-import com.underground.app.data.KycReq
+import com.underground.app.data.ConnectPayoutsReq
+import com.underground.app.data.PayoutStatusDto
 import com.underground.app.data.PatchMeReq
 import com.underground.app.data.UserDto
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,13 +31,13 @@ class SettingsViewModel : ViewModel() {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
-    private val _kyc = MutableStateFlow<String?>(null)
-    val kyc: StateFlow<String?> = _kyc.asStateFlow()
+    private val _payouts = MutableStateFlow<PayoutStatusDto?>(null)
+    val payouts: StateFlow<PayoutStatusDto?> = _payouts.asStateFlow()
 
-    fun loadKyc() {
+    fun loadPayouts() {
         viewModelScope.launch {
             try {
-                _kyc.value = container.authApi.getKyc().kycStatus
+                _payouts.value = container.authApi.getPayoutStatus()
             } catch (_: Exception) {
                 /* organizer KYC is optional context */
             }
@@ -64,18 +65,21 @@ class SettingsViewModel : ViewModel() {
         }
     }
 
-    /** Submit organizer KYC bank details for review (P1 #78). */
-    fun submitKyc(name: String, iban: String, swift: String) {
+    /**
+     * Start hosted payout onboarding and hand the single-use URL to [onUrl], which opens it in a
+     * Custom Tab. The URL is never stored: it is short-lived and usable exactly once, and the
+     * organiser's identity and bank details are entered on the provider's pages, not ours.
+     */
+    fun connectPayouts(country: String, onUrl: (String) -> Unit) {
         viewModelScope.launch {
             _busy.value = true
             _error.value = null
             _message.value = null
             try {
-                container.authApi.submitKyc(KycReq(name.trim(), iban.trim(), swift.trim()))
-                _message.value = "Реквізити надіслано на перевірку"
-                loadKyc()
+                val resp = container.authApi.connectPayouts(ConnectPayoutsReq(country.trim().uppercase()))
+                onUrl(resp.onboardingUrl)
             } catch (e: Exception) {
-                _error.value = "Перевірте реквізити (IBAN/SWIFT)"
+                _error.value = "Не вдалося відкрити форму підключення виплат"
             } finally {
                 _busy.value = false
             }

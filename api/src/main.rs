@@ -9,7 +9,7 @@ use underground_api::config::Config;
 use underground_api::email::{self, EmailConfig};
 use underground_api::push::{self, FcmConfig};
 use underground_api::state::AppState;
-use underground_api::{db, escrow, orders, payments, ratelimit, reminders, routes};
+use underground_api::{db, escrow, orders, payments, ratelimit, refunds, reminders, routes};
 
 /// Remind going/interested users about events starting within this many hours.
 const REMINDER_WINDOW_HOURS: i32 = 24;
@@ -30,6 +30,9 @@ const EMAIL_INTERVAL_SECS: u64 = 60;
 /// How often lapsed checkout holds are released back to sale (PAY-3). A minute of slack on a
 /// 15-minute hold is invisible to buyers and keeps the sweep cheap.
 const HOLD_INTERVAL_SECS: u64 = 60;
+/// Refunds are money owed to a person who is waiting; a minute is the longest they should
+/// wait for a retry to even be attempted.
+const REFUND_INTERVAL_SECS: u64 = 60;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,6 +59,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(reminder_worker(pool.clone()));
     tokio::spawn(escrow_worker(pool.clone()));
     tokio::spawn(hold_worker(pool.clone()));
+    tokio::spawn(refund_worker(pool.clone()));
     match FcmConfig::from_env() {
         Some(cfg) => {
             tracing::info!(project = %cfg.project_id, "push: FCM configured — starting delivery worker");
@@ -129,6 +133,38 @@ async fn hold_worker(pool: sqlx::PgPool) {
         // Rate-limit rows are written by anonymous callers; keep a day, drop the rest.
         if let Err(e) = ratelimit::sweep(&pool, 86_400).await {
             tracing::warn!(error = %e, "ratelimit: sweep failed");
+        }
+    }
+}
+
+/// Drains the refund queue against the payment provider (PAY-11). Everything that decides a
+/// buyer's money should come back only WRITES a job; this is the single place that moves it, so
+/// retries, the amount ceiling and the "money has not actually left yet" state live in one loop
+/// instead of at every call site.
+async fn refund_worker(pool: sqlx::PgPool) {
+    let mut tick = tokio::time::interval(Duration::from_secs(REFUND_INTERVAL_SECS));
+    loop {
+        tick.tick().await;
+        // Settings are read every pass on purpose: an operator switching provider or key must
+        // not need a restart before refunds start flowing again.
+        let settings = match payments::load_settings(&pool).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "refunds: could not read payment settings");
+                continue;
+            }
+        };
+        let provider = match underground_api::provider::resolve(&settings) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "refunds: no usable payment provider");
+                continue;
+            }
+        };
+        match refunds::run_once(&pool, provider.as_ref()).await {
+            Ok((0, 0)) => {}
+            Ok((settled, failed)) => tracing::info!(settled, failed, "refunds: queue pass"),
+            Err(e) => tracing::warn!(error = %e, "refunds: queue pass failed"),
         }
     }
 }

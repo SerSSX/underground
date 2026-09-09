@@ -277,8 +277,18 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                 // Full only when proven full: the charge total is known and the cumulative
                 // refunded amount reaches it. A partial refund — or a Refund object that does
                 // not know the total — is bookkeeping, not a returned ticket.
+                // An amount-less notification used to count as FULL unconditionally. That was
+                // safe only while we never issued partial refunds ourselves: now, a notice with
+                // no amounts arriving on an order we have half-refunded would return the ticket
+                // and close every open job, leaving the buyer short the other half (OR-22). So
+                // it counts as full only when our own ledger shows nothing has gone back yet.
+                let nothing_refunded_yet: bool =
+                    sqlx::query_scalar("SELECT refunded_amount = 0 FROM orders WHERE id = $1")
+                        .bind(order_id)
+                        .fetch_one(&mut *tx)
+                        .await?;
                 let full = matches!((refunded_minor, total_minor), (Some(r), Some(t)) if r >= t)
-                    || (refunded_minor.is_none() && total_minor.is_none());
+                    || (refunded_minor.is_none() && total_minor.is_none() && nothing_refunded_yet);
                 // A partial amount is bookkeeping only when the refund is NOT proven full.
                 let partial = if full { None } else { refunded_minor };
                 if full {
@@ -289,7 +299,11 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                         .bind(order_id)
                         .fetch_one(&mut *tx)
                         .await?;
-                    sqlx::query("UPDATE orders SET refunded_amount = $2 WHERE id = $1")
+                    // The provider reports a CUMULATIVE figure, so this is a SET, not an add —
+                    // but never downward: a refund that later fails lowers the provider's own
+                    // total, and letting that reopen room under the ceiling is how an order gets
+                    // refunded past what was paid (OR-10).
+                    sqlx::query("UPDATE orders SET refunded_amount = GREATEST(refunded_amount, $2) WHERE id = $1")
                         .bind(order_id)
                         .bind(crate::stripe::from_minor(r, &currency))
                         .execute(&mut *tx)
@@ -326,14 +340,69 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
             payouts_enabled,
             requirements_due,
         } => {
+            // These flags are a MIRROR of the provider's own view, and this is their only
+            // writer — no admin endpoint may set them, because the provider, not us, decides
+            // whether an organiser may take money.
+            //
+            // The account id is the ONLY key. An id we do not know belongs to no organiser
+            // here: acknowledged and dropped, never resolved to a guessed user, or one
+            // organiser's onboarding would switch on another's ability to be paid.
+            let matched = sqlx::query(
+                "UPDATE users SET psp_charges_enabled = $2, psp_payouts_enabled = $3, \
+                    psp_requirements_due = $4 WHERE psp_account_id = $1",
+            )
+            .bind(&account_ref)
+            .bind(charges_enabled)
+            .bind(payouts_enabled)
+            .bind(serde_json::json!(requirements_due))
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
-            tracing::info!(
-                account_ref,
-                charges_enabled,
-                payouts_enabled,
-                requirements_due,
-                "webhook: connected account updated"
-            );
+            if matched.rows_affected() == 0 {
+                tracing::warn!(account_ref, "webhook: account.updated names no organiser of ours");
+            } else {
+                tracing::info!(
+                    account_ref,
+                    charges_enabled,
+                    payouts_enabled,
+                    outstanding = requirements_due.len(),
+                    "webhook: connected account updated"
+                );
+            }
+            Ok(StatusCode::OK)
+        }
+        WebhookEvent::RefundResolved {
+            order_ref,
+            refund_ref,
+            status,
+            failure_reason,
+        } => {
+            // The only signal that a refund we SENT has actually moved money — so it is applied
+            // in the SAME transaction that records the delivery. Commit the dedup row first and
+            // a failure here would burn the event id, and the provider's retry (our one other
+            // chance to hear that the money moved) would be dropped as a duplicate.
+            match resolve_order(&mut tx, provider, &order_ref).await? {
+                Some(order_id) => {
+                    crate::refunds::resolve_from_webhook(
+                        &mut tx,
+                        order_id,
+                        &refund_ref,
+                        &status,
+                        failure_reason.as_deref(),
+                    )
+                    .await?;
+                    tx.commit().await?;
+                }
+                None => {
+                    // Nothing of ours: roll back so a corrected resend is not a duplicate.
+                    tx.rollback().await?;
+                    tracing::warn!(
+                        provider,
+                        order_ref,
+                        "webhook: refund event names no order of this provider"
+                    );
+                }
+            }
             Ok(StatusCode::OK)
         }
         WebhookEvent::Ignored => {

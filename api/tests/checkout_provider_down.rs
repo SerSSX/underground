@@ -51,6 +51,14 @@ async fn a_transport_failure_shows_the_buyer_a_fixed_line_and_frees_the_seat(poo
         .await
         .unwrap();
     let token = json_body(resp).await["token"].as_str().unwrap().to_string();
+    // A paid event whose organiser can actually receive the money: without a connected account
+    // checkout now refuses outright, because a real charge would settle on OUR balance.
+    sqlx::query(
+        "UPDATE users SET psp_account_id = 'acct_' || id, psp_charges_enabled = true WHERE psp_account_id IS NULL",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let resp = app
         .clone()
         .oneshot(build(

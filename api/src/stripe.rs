@@ -352,13 +352,16 @@ pub fn map_event(raw: &[u8]) -> Result<InboundWebhook, ProviderError> {
             },
             None => WebhookEvent::Ignored,
         },
-        // Arrives on the Refund object, which knows its own amount but not the charge total;
-        // the consumer treats "total unknown" as "not proven full".
-        "refund.succeeded" => match order_ref.clone() {
-            Some(order_ref) => WebhookEvent::Refunded {
+        // `refund.succeeded` does NOT exist in Stripe's event list — the refund resource emits
+        // exactly created/updated/failed. We create refunds ourselves, so `created` tells us
+        // nothing new; `updated` and `failed` are how a PENDING refund finally resolves, which
+        // is the only way the executor learns that money it asked for has actually moved.
+        "refund.updated" | "refund.failed" => match order_ref.clone() {
+            Some(order_ref) => WebhookEvent::RefundResolved {
                 order_ref,
-                refunded_minor: obj["amount"].as_i64(),
-                total_minor: None,
+                refund_ref: obj["id"].as_str().unwrap_or_default().to_string(),
+                status: obj["status"].as_str().unwrap_or("pending").to_string(),
+                failure_reason: obj["failure_reason"].as_str().map(str::to_string),
             },
             None => WebhookEvent::Ignored,
         },
@@ -392,7 +395,8 @@ pub fn map_event(raw: &[u8]) -> Result<InboundWebhook, ProviderError> {
                 payouts_enabled: obj["payouts_enabled"].as_bool().unwrap_or(false),
                 requirements_due: obj["requirements"]["currently_due"]
                     .as_array()
-                    .is_some_and(|a| !a.is_empty()),
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default(),
             },
             None => WebhookEvent::Ignored,
         },
@@ -599,11 +603,17 @@ impl PaymentProvider for StripeProvider {
 
     async fn refund(&self, req: RefundReq) -> Result<RefundResult, ProviderError> {
         let minor = to_minor(req.amount, &req.currency)?;
-        let mut form = Form::new().put("payment_intent", req.provider_ref.clone());
-        // Omitting `amount` tells Stripe to refund everything; sending it enables a partial.
-        if minor > 0 {
-            form = form.put("amount", minor.to_string());
+        // Omitting `amount` tells Stripe to refund EVERYTHING. So an amount that rounds to zero
+        // minor units — a fee-only remainder, a bad split, a bug upstream — must never become a
+        // request at all, or a 0.004 refund silently returns the whole ticket price (OR-12).
+        if minor <= 0 {
+            return Err(ProviderError::Invalid(
+                "refund amount must be greater than zero in minor units".into(),
+            ));
         }
+        let mut form = Form::new()
+            .put("payment_intent", req.provider_ref.clone())
+            .put("amount", minor.to_string());
         if let Some(reason) = req.reason.as_deref().filter(|r| !r.trim().is_empty()) {
             form = form.put("metadata[reason]", reason);
         }
@@ -623,14 +633,74 @@ impl PaymentProvider for StripeProvider {
         let id = body["id"]
             .as_str()
             .ok_or_else(|| ProviderError::Upstream("stripe returned no refund id".into()))?;
+        // FIVE values, not two. The one that matters for a direct charge: when the ORGANISER's
+        // balance is short, Stripe answers 200 with `pending` — no error at all — and settles it
+        // later, or gives up. Collapsing that into `Succeeded` marks the debt paid while the
+        // buyer's money has not moved, so anything not explicitly settled stays open and waits
+        // for `refund.updated` to say what happened.
         let status = match body["status"].as_str().unwrap_or("pending") {
+            "succeeded" => RefundStatus::Succeeded,
             "failed" | "canceled" => RefundStatus::Failed,
-            _ => RefundStatus::Succeeded,
+            _ => RefundStatus::Pending,
         };
         Ok(RefundResult {
             provider_ref: id.to_string(),
             status,
         })
+    }
+
+    async fn create_seller_account(&self, country: &str, email: &str) -> Result<String, ProviderError> {
+        // Controller properties, NOT the legacy `type=express|standard|custom` parameter: that
+        // form is deprecated, and Stripe explicitly warns against DIRECT charges on legacy
+        // Express/Custom accounts ("use destination charges instead"), which is the whole model
+        // here. This shape asks for the full-dashboard account the owner chose on 2026-09-09:
+        // the ORGANISER pays Stripe's processing fees and carries their own losses, so our
+        // application fee stays margin instead of being eaten by the processing cost — and a
+        // chargeback on someone else's event is not our liability.
+        //
+        // `dashboard.type` is immutable per account: changing it later means creating new
+        // accounts, so this constant is a decision, not a default.
+        let form = Form::new()
+            .put("country", country.to_ascii_uppercase())
+            .put("email", email)
+            .put("controller[stripe_dashboard][type]", "full")
+            .put("controller[fees][payer]", "account")
+            .put("controller[losses][payments]", "stripe")
+            .put("controller[requirement_collection]", "stripe")
+            .put("capabilities[card_payments][requested]", "true")
+            .put("capabilities[transfers][requested]", "true");
+        // Keyed on the organiser: a retry — ours, or a network timeout's — must resume the SAME
+        // account. Without this, a timed-out create leaves a second connected account nobody
+        // knows about, which can go on to receive real money.
+        let key = format!("seller:{}", email.trim().to_ascii_lowercase());
+        // No `Stripe-Account` header: this call CREATES an account, it does not act as one.
+        let body = self.post("/v1/accounts", form, None, Some(&key)).await?;
+        body["id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| ProviderError::Upstream("stripe returned no account id".into()))
+    }
+
+    async fn seller_onboarding_link(
+        &self,
+        account_ref: &str,
+        refresh_url: &str,
+        return_url: &str,
+    ) -> Result<String, ProviderError> {
+        let form = Form::new()
+            .put("account", account_ref)
+            .put("refresh_url", refresh_url)
+            .put("return_url", return_url)
+            .put("type", "account_onboarding");
+        // Deliberately NO idempotency key. Each link is single-use and short-lived — link
+        // previews in chat apps are enough to consume one — so replaying a key would hand the
+        // organiser a URL that has already been spent, and they would land on an error instead
+        // of the form. A fresh link every time is the documented flow.
+        let body = self.post("/v1/account_links", form, None, None).await?;
+        body["url"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| ProviderError::Upstream("stripe returned no onboarding url".into()))
     }
 
     async fn cancel_charge(&self, provider_ref: &str) -> Result<(), ProviderError> {
@@ -925,20 +995,44 @@ mod tests {
 
     #[test]
     fn refund_and_dispute_map_to_terminal_events() {
-        // The Refund object knows its own amount but not the charge total: "not proven full".
-        let refund_obj = event(
+        // `refund.succeeded` is not a Stripe event type at all — the refund resource emits
+        // created / updated / failed. Anything claiming to be one is not ours to act on.
+        let ghost = event(
             "refund.succeeded",
             serde_json::json!({"amount": 700, "metadata":{"order_id":"o-3"}}),
         );
+        assert_eq!(map_event(&ghost).unwrap().event, WebhookEvent::Ignored);
+
+        // `refund.updated` is how a PENDING refund finally resolves — the only proof that money
+        // actually left the organiser's balance.
+        let resolved = event(
+            "refund.updated",
+            serde_json::json!({"id":"re_1","status":"succeeded","metadata":{"order_id":"o-3"}}),
+        );
         assert_eq!(
-            map_event(&refund_obj).unwrap().event,
-            WebhookEvent::Refunded {
+            map_event(&resolved).unwrap().event,
+            WebhookEvent::RefundResolved {
                 order_ref: "o-3".into(),
-                refunded_minor: Some(700),
-                total_minor: None
+                refund_ref: "re_1".into(),
+                status: "succeeded".into(),
+                failure_reason: None,
             }
         );
-        let unbound = event("refund.succeeded", serde_json::json!({"amount": 700}));
+        let failed = event(
+            "refund.failed",
+            serde_json::json!({"id":"re_2","status":"failed","failure_reason":"insufficient_funds",
+                               "metadata":{"order_id":"o-3"}}),
+        );
+        assert_eq!(
+            map_event(&failed).unwrap().event,
+            WebhookEvent::RefundResolved {
+                order_ref: "o-3".into(),
+                refund_ref: "re_2".into(),
+                status: "failed".into(),
+                failure_reason: Some("insufficient_funds".into()),
+            }
+        );
+        let unbound = event("refund.updated", serde_json::json!({"id":"re_3","status":"succeeded"}));
         assert_eq!(map_event(&unbound).unwrap().event, WebhookEvent::Ignored);
         let refunded = event("charge.refunded", serde_json::json!({"metadata":{"order_id":"o-2"}}));
         assert_eq!(
@@ -996,7 +1090,24 @@ mod tests {
                 account_ref: "acct_1".into(),
                 charges_enabled: true,
                 payouts_enabled: false,
-                requirements_due: true,
+                // The LIST, so the organiser can be told what to go and do.
+                requirements_due: vec!["individual.verification.document".to_string()],
+            }
+        );
+
+        // An account with nothing outstanding carries an empty list, not a missing field.
+        let done = event(
+            "account.updated",
+            serde_json::json!({"id":"acct_2","charges_enabled":true,"payouts_enabled":true,
+                               "requirements":{"currently_due":[]}}),
+        );
+        assert_eq!(
+            map_event(&done).unwrap().event,
+            WebhookEvent::AccountUpdated {
+                account_ref: "acct_2".into(),
+                charges_enabled: true,
+                payouts_enabled: true,
+                requirements_due: vec![],
             }
         );
     }

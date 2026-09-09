@@ -370,6 +370,7 @@ async fn refund_returns_promo_use(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn draft_is_hidden_until_published_then_announces(pool: PgPool) {
+    let db = pool.clone();
     let app = make_app(pool);
     let (maker, maker_id) = register(&app, "m@x.co").await;
     let (follower, _) = register(&app, "f@x.co").await;
@@ -410,6 +411,15 @@ async fn draft_is_hidden_until_published_then_announces(pool: PgPool) {
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND, "can't checkout a draft");
     assert!(notifs(&app, &follower).await.is_empty(), "no announcement for a draft");
+
+    // Publishing a PAID event now requires the organiser to be able to receive the money
+    // (PAY-5); this test is about announcements, so grant it and move on.
+    sqlx::query(
+        "UPDATE users SET psp_account_id = 'acct_' || id, psp_charges_enabled = true WHERE psp_account_id IS NULL",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
 
     // Publishing announces it to the follower.
     let (st, pub_ev) = send(

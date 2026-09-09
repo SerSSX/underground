@@ -107,17 +107,29 @@ pub async fn checkout(
     Path(event_id): Path<Uuid>,
     Query(q): Query<CheckoutQuery>,
 ) -> Result<(StatusCode, Json<CheckoutResp>), AppError> {
-    // (title, price, currency, cost_type, tickets_left, sales_closed, past, age_rating).
-    type CheckoutEventRow = (String, Decimal, String, String, i32, bool, bool, Option<String>);
+    // (title, price, currency, cost_type, tickets_left, sales_closed, past, age_rating,
+    // organiser's connected account). LEFT JOIN because `organizer_id` is nullable.
+    type CheckoutEventRow = (
+        String,
+        Decimal,
+        String,
+        String,
+        i32,
+        bool,
+        bool,
+        Option<String>,
+        Option<String>,
+    );
     let row: Option<CheckoutEventRow> = sqlx::query_as(
-        "SELECT title, price, currency, cost_type, tickets_left, sales_closed, \
-            (starts_at IS NOT NULL AND starts_at < now()) AS past, age_rating \
-         FROM events WHERE id = $1 AND status = 'published'",
+        "SELECT e.title, e.price, e.currency, e.cost_type, e.tickets_left, e.sales_closed, \
+            (e.starts_at IS NOT NULL AND e.starts_at < now()) AS past, e.age_rating, u.psp_account_id \
+         FROM events e LEFT JOIN users u ON u.id = e.organizer_id \
+         WHERE e.id = $1 AND e.status = 'published'",
     )
     .bind(event_id)
     .fetch_optional(&st.db)
     .await?;
-    let (title, price, currency, cost_type, _tickets_left, sales_closed, past, age_rating) =
+    let (title, price, currency, cost_type, _tickets_left, sales_closed, past, age_rating, seller_account) =
         row.ok_or(AppError::NotFound)?;
     if past {
         return Err(AppError::Conflict("подія вже завершилась".into()));
@@ -155,6 +167,16 @@ pub async fn checkout(
             AppError::Conflict("платіжна система тимчасово недоступна, спробуйте за хвилину".into())
         })?
         .into();
+    // Real money needs a destination. With a money-moving provider and no connected account for
+    // this organiser, the charge would settle on OUR balance instead of theirs — so refuse the
+    // sale rather than take money we would then have to hand over by other means. Test and noop
+    // providers move nothing, so they need no account.
+    if provider.moves_real_money() && cost_type != "free" && seller_account.is_none() {
+        tracing::error!(%event_id, "checkout: paid event whose organiser has no connected account");
+        return Err(AppError::Conflict(
+            "організатор ще не підключив виплати — продаж тимчасово недоступний".into(),
+        ));
+    }
     let (amount, applied_promo) = apply_promo(&st.db, event_id, price, q.promo.as_deref()).await?;
     // Our commission, snapshotted now. `platform_fee_bps` can change before this order is
     // refunded, and a refund must return what was actually taken.
@@ -251,8 +273,10 @@ pub async fn checkout(
             currency: currency.clone(),
             return_url: Some(crate::passwords::web_base_url()),
             description: title,
-            // Direct charges arrive with PAY-5, when an organiser has a connected account.
-            connected_account: None,
+            // A DIRECT charge: the buyer's money lands on the ORGANISER's account and we take
+            // only `application_fee` out of the same movement. Passing None here would route a
+            // real payment onto the PLATFORM's balance — the custody model the owner rejected.
+            connected_account: seller_account,
             application_fee: fee,
         })
         .await;
@@ -380,9 +404,13 @@ pub async fn apply_full_refund(conn: &mut sqlx::PgConnection, order_id: Uuid) ->
         hold_expires_at,
     )
     .await?;
-    // The provider itself returned the money, so a debt we had queued for the refund executor is
-    // settled — the ledger must not keep saying we owe what has demonstrably gone back (REVIEW-4 #1).
-    sqlx::query("UPDATE refund_jobs SET status = 'done' WHERE order_id = $1 AND status = 'pending'")
+    // The provider itself returned the money in full, so every debt we had queued for this order
+    // is settled — the ledger must not keep saying we owe what has demonstrably gone back.
+    //
+    // Only a FULL refund may close jobs wholesale. A partial notification closes nothing here:
+    // under several jobs per order it would silently discharge a slice the buyer never received
+    // (OR-21). The partial path below records the amount and leaves the queue alone.
+    sqlx::query("UPDATE refund_jobs SET status = 'done' WHERE order_id = $1 AND status IN ('queued', 'sent')")
         .bind(order_id)
         .execute(&mut *conn)
         .await?;
@@ -438,27 +466,27 @@ pub async fn return_holdings(
     Ok(())
 }
 
-/// Record the debt: exactly one refund job per order, however many deliveries or admin
-/// actions arrive (`refund_jobs.order_id` is unique). The refund executor (PAY-11) drains it.
-/// Returns whether the job is NEW — false means the debt was already on record.
+/// Record the debt. Delegates to the ONE queue so every source of a refund — this one, an
+/// admin, a buyer, a cancelled event — obeys the same ceiling and is drained by the same worker.
+/// Returns whether the debt is NEW; false means it was already on record.
 pub async fn queue_refund(
     conn: &mut sqlx::PgConnection,
     order_id: Uuid,
     amount: Decimal,
-    currency: &str,
+    _currency: &str,
     reason: &str,
 ) -> Result<bool, AppError> {
-    let inserted = sqlx::query(
-        "INSERT INTO refund_jobs (order_id, amount, currency, reason) VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (order_id) DO NOTHING",
-    )
-    .bind(order_id)
-    .bind(amount)
-    .bind(currency)
-    .bind(reason)
-    .execute(&mut *conn)
-    .await?;
-    Ok(inserted.rows_affected() > 0)
+    match crate::refunds::enqueue(conn, order_id, amount, reason).await {
+        Ok(queued) => Ok(queued),
+        // The ceiling refused it: this order has already had everything it paid returned, or
+        // committed to be returned. That is not an error HERE — BR-014 says a payment event may
+        // never fail on domain grounds — it just means there is no new debt to record.
+        Err(AppError::Conflict(why)) => {
+            tracing::warn!(%order_id, why, "refund not queued: nothing left to return");
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// The money is in, the ticket is not coming: mark the order and queue the return.
@@ -469,19 +497,27 @@ pub async fn refund_due(
     currency: &str,
     reason: &str,
 ) -> Result<FulfillOutcome, AppError> {
-    // Queue FIRST and key everything on whether the job is new: a further payment event on an
-    // order whose debt is already on record — or already settled by an admin — must not flip
-    // the order back to refund_due. One debt, one row, one status change (REVIEW-4).
-    if !queue_refund(conn, order_id, amount, currency, reason).await? {
+    // A debt already on record — queued by an earlier delivery, or settled by an admin — means
+    // this money is already accounted for. A further payment event must not queue a second
+    // return, nor flip a decision an admin already made (REVIEW-4).
+    let already: i64 = sqlx::query_scalar("SELECT count(*) FROM refund_jobs WHERE order_id = $1")
+        .bind(order_id)
+        .fetch_one(&mut *conn)
+        .await?;
+    if already > 0 {
         tracing::info!(%order_id, "payment on an order whose refund is already on record — nothing new");
         return Ok(FulfillOutcome::AlreadyHandled);
     }
-    // A distinct status, not `paid`: `paid` is what the confirmation email, organiser revenue
-    // and platform GMV all key on, and none of those may count money that is going back.
+    // Mark BEFORE queueing. `refund_due` is a distinct status, not `paid`: `paid` is what the
+    // confirmation email, organiser revenue and platform GMV all key on, and none of those may
+    // count money that is going back. It is also what tells the queue this order's money really
+    // did arrive — the order is still `pending` or `expired` at this point, because the payment
+    // that just landed is exactly the one we are refusing to turn into a ticket.
     sqlx::query("UPDATE orders SET status = 'refund_due', escrow_status = 'refund_due' WHERE id = $1")
         .bind(order_id)
         .execute(&mut *conn)
         .await?;
+    queue_refund(conn, order_id, amount, currency, reason).await?;
     tracing::warn!(%order_id, reason, "payment landed with no ticket to issue — refund queued");
     Ok(FulfillOutcome::RefundDue)
 }

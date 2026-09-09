@@ -257,8 +257,16 @@ pub async fn return_ticket(
     Path(ticket_id): Path<Uuid>,
 ) -> Result<Json<Ticket>, AppError> {
     let mut tx = st.db.begin().await?;
-    let row: Option<(Uuid, String, Option<String>)> = sqlx::query_as(
-        "SELECT t.event_id, t.status, o.escrow_status \
+    type ReturnRow = (
+        Uuid,
+        String,
+        Option<String>,
+        Option<Uuid>,
+        Option<rust_decimal::Decimal>,
+        Option<String>,
+    );
+    let row: Option<ReturnRow> = sqlx::query_as(
+        "SELECT t.event_id, t.status, o.escrow_status, o.id, o.amount, o.promo_code \
          FROM tickets t LEFT JOIN orders o ON o.ticket_id = t.id \
          WHERE t.id = $1 AND t.owner_id = $2 FOR UPDATE OF t",
     )
@@ -266,7 +274,7 @@ pub async fn return_ticket(
     .bind(user.id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (event_id, status, escrow) = row.ok_or(AppError::NotFound)?;
+    let (event_id, status, escrow, order_id, order_amount, promo_code) = row.ok_or(AppError::NotFound)?;
     if status != "active" {
         return Err(AppError::Conflict("квиток уже використаний або повернений".into()));
     }
@@ -276,18 +284,23 @@ pub async fn return_ticket(
         return Err(AppError::Conflict("термін повернення квитка минув".into()));
     }
 
-    sqlx::query("UPDATE tickets SET status = 'returned' WHERE id = $1")
-        .bind(ticket_id)
+    // The SAME routine the admin refund uses: ticket returned, seat back on sale, promo use
+    // given back. They were two code paths before, and they had already drifted — a buyer
+    // returning their own ticket silently burned a promo-code use forever, while an admin
+    // returning the identical ticket gave it back (PAY-11).
+    crate::orders::return_holdings(&mut tx, event_id, Some(ticket_id), promo_code.as_deref(), "paid", None).await?;
+
+    // The money actually goes back now, through the one queue, instead of a status flip that
+    // told the buyer "refunded" while their card was never credited.
+    if let (Some(order_id), Some(amount)) = (order_id, order_amount) {
+        crate::refunds::enqueue(&mut tx, order_id, amount, "повернення квитка покупцем").await?;
+        sqlx::query(
+            "UPDATE orders SET escrow_status = 'refund_due' WHERE id = $1 AND escrow_status IN ('held', 'clearing')",
+        )
+        .bind(order_id)
         .execute(&mut *tx)
         .await?;
-    release_seats(&mut tx, event_id, 1).await?;
-    // Refund escrow while funds are still recallable (held or mid-clearing).
-    sqlx::query(
-        "UPDATE orders SET escrow_status = 'refunded' WHERE ticket_id = $1 AND escrow_status IN ('held', 'clearing')",
-    )
-    .bind(ticket_id)
-    .execute(&mut *tx)
-    .await?;
+    }
 
     tx.commit().await?;
     Ok(Json(fetch_ticket(&st.db, ticket_id).await?))

@@ -227,6 +227,14 @@ async fn payout_settles_cleared_escrow_net_of_fee(pool: PgPool) {
         .await
         .unwrap();
 
+    // Settling also requires the PROVIDER to say this organiser can receive money — our own KYC
+    // verdict is no longer enough on its own (PAY-5).
+    sqlx::query("UPDATE users SET psp_account_id = 'acct_org', psp_payouts_enabled = true WHERE id = $1::uuid")
+        .bind(&maker_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
     // Settle the payout: 100 less 10% commission = 90.00, one order, marked paid_out.
     let (st, payouts) = send(
         &app,
@@ -378,7 +386,10 @@ async fn return_refunds_during_clearing_but_not_after_cleared(pool: PgPool) {
     )
     .await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(order_escrow(&app, &admin, &order_a).await, "refunded");
+    // `refund_due`, not `refunded`: the ticket is returned and the money is QUEUED to go back
+    // through the provider. It reads as refunded only once the provider confirms it moved
+    // (PAY-11) — saying "refunded" before that told the buyer a lie.
+    assert_eq!(order_escrow(&app, &admin, &order_a).await, "refund_due");
 
     // Once cleared, the refund window is over → return is rejected, escrow untouched.
     let ev_b = paid_event(&app, &maker).await;

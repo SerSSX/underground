@@ -317,8 +317,22 @@ async fn admin_orders_and_escrow_actions(pool: PgPool) {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "unknown action rejected");
 
     let (_, o) = send(&app, escrow("refund")).await;
-    assert_eq!(o["escrow_status"], "refunded");
-    assert_eq!(o["status"], "refunded");
+    // `refund_due`, not `refunded`: the admin's decision is recorded and the money is QUEUED to
+    // go back through the provider. It reads as refunded once the provider confirms it moved
+    // (PAY-11) — before that, "refunded" was telling the buyer their money had returned when
+    // nothing had left anyone's balance.
+    assert_eq!(o["escrow_status"], "refund_due");
+    assert_eq!(
+        o["status"], "refunded",
+        "the order is closed for the organiser either way"
+    );
+    // And the debt is on the queue, not merely a status.
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM refund_jobs WHERE order_id = $1::uuid")
+        .bind(&order_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(queued, 1, "an admin refund records a debt the executor will pay back");
     // Seat freed + the fan's ticket returned.
     let (_, event) = send(&app, build("GET", &format!("/api/events/{event_id}"), None, None)).await;
     assert_eq!(event["tickets_left"], 5, "seat freed after refund");

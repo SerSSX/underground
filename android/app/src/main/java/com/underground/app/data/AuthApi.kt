@@ -35,14 +35,24 @@ data class PatchMeReq(
 @Serializable
 data class DeleteMeReq(val password: String)
 
+/** Whether the organiser's account at the payment provider can take money yet (PAY-5). */
 @Serializable
-data class KycViewDto(
+data class PayoutStatusDto(
+    @SerialName("charges_enabled") val chargesEnabled: Boolean,
+    @SerialName("payouts_enabled") val payoutsEnabled: Boolean,
+    @SerialName("requirements_due") val requirementsDue: List<String> = emptyList(),
+    val connected: Boolean,
+    val country: String? = null,
     @SerialName("kyc_status") val kycStatus: String,
-    @SerialName("has_bank_details") val hasBankDetails: Boolean,
 )
 
+/** The organiser declares only their country; identity and bank details are entered on the
+ *  provider's own pages and never pass through the app. */
 @Serializable
-data class KycReq(val name: String, val iban: String, val swift: String)
+data class ConnectPayoutsReq(val country: String)
+
+@Serializable
+data class ConnectPayoutsResp(@SerialName("onboarding_url") val onboardingUrl: String)
 
 @Serializable
 data class CreateReportReq(
@@ -103,11 +113,11 @@ interface AuthApi {
     suspend fun deleteMe(@Body req: DeleteMeReq)
 
     // Organizer KYC (P1 #78)
-    @GET("api/me/kyc")
-    suspend fun getKyc(): KycViewDto
+    @GET("api/me/payouts/status")
+    suspend fun getPayoutStatus(): PayoutStatusDto
 
-    @POST("api/me/kyc")
-    suspend fun submitKyc(@Body req: KycReq)
+    @POST("api/me/payouts/connect")
+    suspend fun connectPayouts(@Body req: ConnectPayoutsReq): ConnectPayoutsResp
 
     // Abuse reporting (P1 #76)
     @POST("api/reports")

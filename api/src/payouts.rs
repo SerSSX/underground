@@ -33,15 +33,28 @@ pub async fn create_payout(
     State(st): State<AppState>,
     Path(organizer_id): Path<Uuid>,
 ) -> Result<Json<Vec<Payout>>, AppError> {
-    // No money leaves the platform unless the organizer is active (not blocked/erased) AND
-    // KYC-verified (AML/fraud gate). A missing organizer also fails this guard.
-    let row: Option<(bool, String)> = sqlx::query_as("SELECT blocked, kyc_status FROM users WHERE id = $1")
-        .bind(organizer_id)
-        .fetch_optional(&st.db)
-        .await?;
-    if !matches!(row, Some((false, ref s)) if s == "verified") {
+    // Nothing is settled unless the organiser is active (not blocked/erased), has passed OUR
+    // moderation, AND the payment provider says their account can actually receive money.
+    //
+    // That last condition is the one PAY-5 adds, and it is not redundant: `kyc_status` is our
+    // own verdict, which an admin sets by hand. On its own it would let us mark orders
+    // `paid_out` for an organiser whose provider account is restricted — bookkeeping that says
+    // the money went somewhere it cannot go.
+    type GateRow = (bool, String, bool, Option<String>);
+    let row: Option<GateRow> = sqlx::query_as(
+        "SELECT blocked, kyc_status, psp_payouts_enabled, psp_account_id FROM users \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(organizer_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let ready = matches!(
+        row,
+        Some((false, ref s, true, Some(ref acct))) if s == "verified" && !acct.is_empty()
+    );
+    if !ready {
         return Err(AppError::Conflict(
-            "організатор заблокований або не пройшов KYC — виплата заблокована".into(),
+            "організатор заблокований, не пройшов KYC або не підключив виплати — виплата заблокована".into(),
         ));
     }
     let mut tx = st.db.begin().await?;

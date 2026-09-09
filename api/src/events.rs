@@ -255,6 +255,17 @@ pub async fn create_event(
     }
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
+    // A free event needs no payment setup at all; the wall appears only where money would move.
+    //
+    // Both defaults matter here and both are "the money-taking one": an omitted `cost_type` is
+    // `paid`, and an omitted `status` is PUBLISHED. Reading the gate off `Some("published")`
+    // alone let the commonest call — a body with neither field — create a published paid event
+    // with no way to be paid for it.
+    let will_be_paid = req.cost_type.as_deref().unwrap_or("paid") != "free";
+    let will_be_published = req.status.as_deref().unwrap_or("published") == "published";
+    if will_be_published && will_be_paid {
+        require_can_take_money(&st.db, user.id).await?;
+    }
     let event = insert_event(&st.db, user.id, &req).await?;
     // Drafts stay private; only a published event announces itself.
     if event.status == "published" {
@@ -323,6 +334,44 @@ async fn require_owner(db: &PgPool, event_id: Uuid, user_id: Uuid) -> Result<(),
     }
 }
 
+/// A PUBLISHED, non-free event can take a buyer's money — so that money must have somewhere to
+/// land. Under direct charges the destination is the ORGANISER's own connected account at the
+/// payment provider, and until the provider says that account can accept charges, publishing
+/// such an event would sell tickets whose payment has no destination (PAY-5).
+///
+/// Checked on every path that can PRODUCE that state, not only on creation: a draft published
+/// later, or a cancelled event republished, arrive at the same place by another route, and a
+/// gate on one path only is the classic hole.
+async fn require_can_take_money(db: &PgPool, organizer_id: Uuid) -> Result<(), AppError> {
+    // Only where money would actually move. With a provider that moves none — the test and noop
+    // providers a demo stand runs on — there is no destination to be missing, and demanding a
+    // connected account would put a payment wall in front of every non-payment feature. The
+    // load-bearing check is the one in `orders::checkout`, which refuses a REAL charge with
+    // nowhere to land; this one exists so the organiser learns about it before they advertise
+    // the event rather than when the first buyer cannot pay.
+    let settings = crate::payments::load_settings(db).await?;
+    match crate::provider::resolve(&settings) {
+        Ok(p) if !p.moves_real_money() => return Ok(()),
+        // A provider that will not resolve cannot take money either; that is the operator's
+        // problem to fix, and checkout says so plainly.
+        Err(_) => return Ok(()),
+        Ok(_) => {}
+    }
+    let row: Option<(bool, bool)> = sqlx::query_as("SELECT psp_charges_enabled, blocked FROM users WHERE id = $1")
+        .bind(organizer_id)
+        .fetch_optional(db)
+        .await?;
+    let (charges_enabled, blocked) = row.ok_or(AppError::NotFound)?;
+    // Blocked wins over the provider's opinion: the provider knows whether the account is valid,
+    // not whether WE have suspended this organiser.
+    if blocked || !charges_enabled {
+        return Err(AppError::Conflict(
+            "щоб продавати платні квитки, підключіть виплати в кабінеті організатора".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// `PUT /api/events/:id` — owner-only partial update (mobile organizer admin).
 pub async fn update_event(
     user: CurrentUser,
@@ -349,11 +398,17 @@ pub async fn update_event(
     }
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
-    // Track a draft→published transition so publishing a draft announces it (once).
-    let was_draft: bool = sqlx::query_scalar("SELECT status = 'draft' FROM events WHERE id = $1")
-        .bind(id)
-        .fetch_one(&st.db)
-        .await?;
+    // Track a draft→published transition so publishing a draft announces it (once), and read the
+    // event's cost type: `cost_type` is not updatable here, so the stored value is what this
+    // event will still be after the update.
+    let (was_draft, is_paid): (bool, bool) =
+        sqlx::query_as("SELECT status = 'draft', cost_type <> 'free' FROM events WHERE id = $1")
+            .bind(id)
+            .fetch_one(&st.db)
+            .await?;
+    if req.status.as_deref() == Some("published") && is_paid {
+        require_can_take_money(&st.db, user.id).await?;
+    }
     // Re-resolve geo when the city changes; null fields leave the old geo untouched (COALESCE).
     let geo = match req.city.as_deref() {
         Some(_) => crate::cities::resolve(&st.db, req.city.as_deref()).await?,
@@ -418,16 +473,90 @@ pub async fn update_event(
     Ok(Json(event))
 }
 
-/// `DELETE /api/events/:id` — owner-only cancellation (kept in history as `cancelled`).
-pub async fn delete_event(
+/// What a cancellation did, so the organiser sees the size of it rather than a silent 204.
+#[derive(Serialize)]
+pub struct CancelResp {
+    pub tickets_returned: i64,
+    pub refunds_queued: i64,
+}
+
+/// `POST /api/events/:id/cancel` — owner-only cancellation, and the mass refund that has to go
+/// with it.
+///
+/// Cancelling used to be one `UPDATE events SET status='cancelled'` and nothing else: the
+/// tickets stayed valid-looking, the orders stayed `paid`, and the escrow sweep went on walking
+/// that money toward a payout for an event that never happened. Now the money comes back, and
+/// it does so through the same queue as every other refund.
+///
+/// One transaction, and idempotent: cancelling twice queues nothing the second time, because
+/// only orders still in a refundable state are picked up.
+pub async fn cancel_event(
     user: CurrentUser,
     State(st): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
-) -> Result<StatusCode, AppError> {
+) -> Result<Json<CancelResp>, AppError> {
     require_owner(&st.db, id, user.id).await?;
+    let mut tx = st.db.begin().await?;
     sqlx::query("UPDATE events SET status = 'cancelled', sales_closed = true WHERE id = $1")
         .bind(id)
-        .execute(&st.db)
+        .execute(&mut *tx)
         .await?;
+
+    // Every order that actually took money. `FOR UPDATE` so a payment landing in this instant
+    // cannot slip between the read and the queueing and end up with a ticket to a dead event.
+    let paid: Vec<(Uuid, Option<Uuid>, rust_decimal::Decimal)> =
+        sqlx::query_as("SELECT id, ticket_id, amount FROM orders WHERE event_id = $1 AND status = 'paid' FOR UPDATE")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+    let mut tickets_returned = 0i64;
+    let mut refunds_queued = 0i64;
+    for (order_id, ticket_id, amount) in paid {
+        if let Some(ticket_id) = ticket_id {
+            let returned =
+                sqlx::query("UPDATE tickets SET status = 'returned' WHERE id = $1 AND status IN ('active','used')")
+                    .bind(ticket_id)
+                    .execute(&mut *tx)
+                    .await?;
+            tickets_returned += returned.rows_affected() as i64;
+        }
+        match crate::refunds::enqueue(&mut tx, order_id, amount, "подію скасовано організатором").await
+        {
+            Ok(true) => refunds_queued += 1,
+            Ok(false) => {}
+            // This order's money is already fully spoken for by an earlier refund. Skip it —
+            // one settled order must not fail the cancellation of the other two hundred.
+            Err(AppError::Conflict(why)) => {
+                tracing::info!(%order_id, why, "cancel: nothing left to refund on this order");
+            }
+            Err(e) => return Err(e),
+        }
+        // `refund_due` on BOTH, and this is what makes a second cancellation a no-op: the order
+        // stops being `paid`, so the query above no longer finds it. It also stops the money
+        // counting as the organiser's revenue for an event that is not happening, and stops the
+        // escrow sweep advancing it toward a payout (BR-014, BR-028).
+        sqlx::query("UPDATE orders SET status = 'refund_due', escrow_status = 'refund_due' WHERE id = $1")
+            .bind(order_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    tracing::info!(event_id = %id, tickets_returned, refunds_queued, "event cancelled, refunds queued");
+    Ok(Json(CancelResp {
+        tickets_returned,
+        refunds_queued,
+    }))
+}
+
+/// `DELETE /api/events/:id` — the older spelling of cancellation. Kept so existing clients do
+/// not break, and routed through the same code so it can never drift into the bare status flip
+/// it used to be.
+pub async fn delete_event(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    path: axum::extract::Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let _ = cancel_event(user, State(st), path).await?;
     Ok(StatusCode::NO_CONTENT)
 }

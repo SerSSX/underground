@@ -66,7 +66,7 @@ export default function UsersPage() {
           </>
         }
         headers={
-          <tr><th>Email</th><th>Ім&apos;я</th><th>Роль</th><th>Стан</th><th>KYC</th><th className="actions">Дії</th></tr>
+          <tr><th>Email</th><th>Ім&apos;я</th><th>Роль</th><th>Стан</th><th>KYC</th><th>Платіжка</th><th className="actions">Дії</th></tr>
         }
       >
         {users.map((u) => (
@@ -76,6 +76,11 @@ export default function UsersPage() {
             <td><span className={`badge2 ${u.role === "ADMIN" ? "s-accent" : "s-neutral"}`}>{u.role}</span></td>
             <td><StatusBadge status={u.blocked ? "blocked" : "active"} /></td>
             <td><StatusBadge status={u.kyc_status} /></td>
+            <td title="Стан акаунта у платіжній системі — лише читання, керує провайдер">
+              {!u.psp_connected
+                ? "—"
+                : `${u.psp_charges_enabled ? "оплати ✓" : "оплати …"} / ${u.psp_payouts_enabled ? "виплати ✓" : "виплати …"}`}
+            </td>
             <td className="actions">
               <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
                 <button className={u.blocked ? "btn sm ok" : "btn sm danger"} onClick={() => patch(u.id, { blocked: !u.blocked })}>

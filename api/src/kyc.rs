@@ -1,6 +1,11 @@
-//! Organizer KYC (P1 #78). Before any payout an organizer must submit verified bank details
-//! and reach `kyc_status = 'verified'`. Identity-provider verification (Sumsub/Onfido) plugs
-//! into the pending->verified transition later; for now an admin reviews and verifies.
+//! Organiser payouts. Under direct charges the organiser is the merchant of record for their
+//! own tickets, so their money never touches our balance — and we no longer need, or want, to
+//! hold their bank details. They onboard on the PROVIDER's hosted pages; we keep only a mirror
+//! of what the provider tells us about that account (PAY-5).
+//!
+//! `kyc_status` survives as OUR moderation verdict, which is a different thing from the
+//! provider's capability flags: the provider says whether an account is valid, we say whether
+//! we are willing to work with this organiser.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -14,74 +19,141 @@ use crate::state::AppState;
 
 const KYC_STATUSES: [&str; 4] = ["none", "pending", "verified", "rejected"];
 
-/// Loose IBAN sanity check (pre-stripped of whitespace): 15-34 chars, alphanumeric,
-/// 2 leading country letters then 2 check digits. Not a full mod-97 validation.
-fn valid_iban(s: &str) -> bool {
-    let len = s.len();
-    (15..=34).contains(&len)
-        && s.chars().all(|c| c.is_ascii_alphanumeric())
-        && s[..2].chars().all(|c| c.is_ascii_alphabetic())
-        && s[2..4].chars().all(|c| c.is_ascii_digit())
-}
-
-/// SWIFT/BIC: 8 or 11 alphanumeric characters.
-fn valid_swift(s: &str) -> bool {
-    (s.len() == 8 || s.len() == 11) && s.chars().all(|c| c.is_ascii_alphanumeric())
-}
-
-#[derive(Deserialize)]
-pub struct KycReq {
-    pub name: String,
-    pub iban: String,
-    pub swift: String,
-}
-
-/// `POST /api/me/kyc` — organizer submits payout identity + bank details (→ pending).
-pub async fn submit_kyc(
-    user: CurrentUser,
-    State(st): State<AppState>,
-    Json(req): Json<KycReq>,
-) -> Result<StatusCode, AppError> {
-    let name = req.name.trim();
-    if name.is_empty() || name.len() > 200 {
-        return Err(AppError::Validation("name is required (max 200 chars)".into()));
-    }
-    let iban: String = req.iban.split_whitespace().collect::<String>().to_uppercase();
-    if !valid_iban(&iban) {
-        return Err(AppError::Validation("invalid IBAN".into()));
-    }
-    let swift = req.swift.split_whitespace().collect::<String>().to_uppercase();
-    if !valid_swift(&swift) {
-        return Err(AppError::Validation("invalid SWIFT/BIC".into()));
-    }
-    sqlx::query(
-        "UPDATE users SET payout_name = $2, payout_iban = $3, payout_swift = $4, kyc_status = 'pending' \
-         WHERE id = $1",
-    )
-    .bind(user.id)
-    .bind(name)
-    .bind(&iban)
-    .bind(&swift)
-    .execute(&st.db)
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Serialize, sqlx::FromRow)]
-pub struct KycView {
+/// What the organiser's cabinet renders: the three states of "can I be paid yet".
+#[derive(Serialize)]
+pub struct PayoutStatus {
+    /// Whether the provider will let this account take card payments yet.
+    pub charges_enabled: bool,
+    /// Whether money can actually leave the provider to their bank yet.
+    pub payouts_enabled: bool,
+    /// WHICH documents the provider is still waiting for. Empty when nothing is outstanding.
+    pub requirements_due: Vec<String>,
+    /// Whether onboarding has been started at all (an account exists).
+    pub connected: bool,
+    pub country: Option<String>,
+    /// Our own moderation verdict, which is not the provider's business.
     pub kyc_status: String,
-    pub has_bank_details: bool,
 }
 
-/// `GET /api/me/kyc` — the caller's own KYC status (never returns the raw bank details).
-pub async fn get_kyc(user: CurrentUser, State(st): State<AppState>) -> Result<Json<KycView>, AppError> {
-    let view = sqlx::query_as::<_, KycView>(
-        "SELECT kyc_status, payout_iban IS NOT NULL AS has_bank_details FROM users WHERE id = $1",
+/// `GET /api/me/payouts/status` — the caller's OWN payout state. There is deliberately no
+/// variant of this that takes a user id: one organiser has no business reading another's
+/// onboarding progress.
+pub async fn payouts_status(user: CurrentUser, State(st): State<AppState>) -> Result<Json<PayoutStatus>, AppError> {
+    type Row = (
+        Option<String>,
+        bool,
+        bool,
+        Option<serde_json::Value>,
+        Option<String>,
+        String,
+    );
+    let row: Row = sqlx::query_as(
+        "SELECT psp_account_id, psp_charges_enabled, psp_payouts_enabled, psp_requirements_due, \
+            psp_country, kyc_status FROM users WHERE id = $1",
     )
     .bind(user.id)
     .fetch_one(&st.db)
     .await?;
-    Ok(Json(view))
+    let (account_id, charges_enabled, payouts_enabled, requirements, country, kyc_status) = row;
+    Ok(Json(PayoutStatus {
+        charges_enabled,
+        payouts_enabled,
+        requirements_due: requirements
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .unwrap_or_default(),
+        connected: account_id.is_some(),
+        country,
+        kyc_status,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ConnectReq {
+    /// The organiser's own country, two-letter ISO. Their declaration, which the provider then
+    /// verifies during onboarding — not something we can look up for them.
+    pub country: String,
+}
+
+#[derive(Serialize)]
+pub struct ConnectResp {
+    /// Short-lived, single-use URL on the PROVIDER's pages. Never stored, never logged, never
+    /// handed to anyone but the organiser who asked for it.
+    pub onboarding_url: String,
+}
+
+/// `POST /api/me/payouts/connect` — start (or resume) hosted onboarding.
+///
+/// Called twice, this must not produce two accounts: the second call resumes the first. Two
+/// defences, because one is not enough under concurrency — the provider call carries an
+/// idempotency key derived from the organiser, and the database write is a compare-and-set that
+/// loses gracefully if a racing call stored an account first.
+pub async fn payouts_connect(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Json(req): Json<ConnectReq>,
+) -> Result<Json<ConnectResp>, AppError> {
+    let country = req.country.trim().to_ascii_uppercase();
+    if country.len() != 2 || !country.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Err(AppError::Validation("country must be a two-letter ISO code".into()));
+    }
+    let (email, existing, blocked): (String, Option<String>, bool) =
+        sqlx::query_as("SELECT email, psp_account_id, blocked FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&st.db)
+            .await?;
+    if blocked {
+        return Err(AppError::Forbidden);
+    }
+
+    let settings = crate::payments::load_settings(&st.db).await?;
+    let provider = crate::provider::resolve(&settings).map_err(|e| {
+        tracing::error!(error = %e, "payouts: provider unavailable");
+        AppError::Conflict("платіжна система тимчасово недоступна, спробуйте за хвилину".into())
+    })?;
+
+    let account_ref = match existing {
+        Some(a) => a,
+        None => {
+            let created = provider.create_seller_account(&country, &email).await.map_err(|e| {
+                tracing::error!(error = %e, "payouts: could not create the seller account");
+                AppError::Conflict("не вдалося створити акаунт для виплат, спробуйте за хвилину".into())
+            })?;
+            // Compare-and-set: only the first writer wins. A racing call that stored its own
+            // account leaves us with rows_affected = 0, and we then use THEIRS — never a second
+            // account, and never an id chosen by anyone but the provider.
+            let stored = sqlx::query(
+                "UPDATE users SET psp_account_id = $2, psp_country = $3 \
+                 WHERE id = $1 AND psp_account_id IS NULL",
+            )
+            .bind(user.id)
+            .bind(&created)
+            .bind(&country)
+            .execute(&st.db)
+            .await?;
+            if stored.rows_affected() > 0 {
+                created
+            } else {
+                sqlx::query_scalar("SELECT psp_account_id FROM users WHERE id = $1")
+                    .bind(user.id)
+                    .fetch_one(&st.db)
+                    .await?
+            }
+        }
+    };
+
+    let base = crate::passwords::web_base_url();
+    let onboarding_url = provider
+        .seller_onboarding_link(
+            &account_ref,
+            &format!("{base}/organizer/payouts?refresh=1"),
+            &format!("{base}/organizer/payouts?done=1"),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "payouts: could not create the onboarding link");
+            AppError::Conflict("не вдалося відкрити форму підключення, спробуйте за хвилину".into())
+        })?;
+    Ok(Json(ConnectResp { onboarding_url }))
 }
 
 #[derive(Deserialize)]
@@ -122,27 +194,4 @@ pub async fn admin_set_kyc(
     .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn iban_validation() {
-        assert!(valid_iban("UA903052992990004149123456789")); // UA IBAN
-        assert!(valid_iban("DE89370400440532013000"));
-        assert!(!valid_iban("DE8937")); // too short
-        assert!(!valid_iban("1234567890123456")); // no country letters
-        assert!(!valid_iban("DEXX370400440532013000")); // check digits not numeric
-        assert!(!valid_iban("DE89-7040-0440-5320-13000!")); // bad chars
-    }
-
-    #[test]
-    fn swift_validation() {
-        assert!(valid_swift("PBANUA2X")); // 8
-        assert!(valid_swift("PBANUA2XXXX")); // 11
-        assert!(!valid_swift("SHORT")); // wrong length
-        assert!(!valid_swift("PBANUA2X!!!")); // bad chars (11 len but non-alnum)
-    }
 }
