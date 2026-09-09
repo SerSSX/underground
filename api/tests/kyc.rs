@@ -414,3 +414,88 @@ async fn admin_records_the_platforms_own_kyc_verdict(pool: PgPool) {
     .await;
     assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+/// The compare-and-set that makes a racing second connect adopt the first account rather than
+/// overwrite it. Reached by planting an account between the read and the write, which is what a
+/// concurrent request does.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_racing_connect_adopts_the_account_that_won(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (org, org_id) = register(&app, "org@x.co").await;
+    sqlx::query("UPDATE payment_settings SET provider = 'test', mode = 'test' WHERE id = TRUE")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // A concurrent call got there first and stored ITS account. Our request has already read
+    // `psp_account_id = NULL`, so it will create one at the provider and try to store it.
+    sqlx::query("UPDATE users SET psp_account_id = 'acct_winner' WHERE id = $1::uuid")
+        .bind(&org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (st, v) = send(
+        &app,
+        build(
+            "POST",
+            "/api/me/payouts/connect",
+            Some(&org),
+            Some(json!({"country":"pl"})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let stored: String = sqlx::query_scalar("SELECT psp_account_id FROM users WHERE id = $1::uuid")
+        .bind(&org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored, "acct_winner",
+        "the first writer wins; the loser adopts it instead of pointing us at an orphan account"
+    );
+    assert!(
+        v["onboarding_url"].as_str().unwrap().contains("acct_winner"),
+        "and the organiser is sent to onboard the account we actually kept: {v}"
+    );
+}
+
+/// [SEC] A blocked organiser cannot start payout onboarding at all — being blocked is our
+/// decision and the provider knows nothing about it.
+#[sqlx::test(migrations = "./migrations")]
+async fn sec_a_blocked_organiser_cannot_connect_payouts(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (org, org_id) = register(&app, "org@x.co").await;
+    sqlx::query("UPDATE payment_settings SET provider = 'test', mode = 'test' WHERE id = TRUE")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Blocked in the database only, so the token still authenticates and the handler's own guard
+    // is what has to refuse — not the auth layer.
+    sqlx::query("UPDATE users SET blocked = true WHERE id = $1::uuid")
+        .bind(&org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (st, _) = send(
+        &app,
+        build(
+            "POST",
+            "/api/me/payouts/connect",
+            Some(&org),
+            Some(json!({"country":"pl"})),
+        ),
+    )
+    .await;
+    assert!(
+        st == StatusCode::FORBIDDEN || st == StatusCode::UNAUTHORIZED,
+        "a blocked organiser must not onboard, got {st}"
+    );
+    let stored: Option<String> = sqlx::query_scalar("SELECT psp_account_id FROM users WHERE id = $1::uuid")
+        .bind(&org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(stored.is_none());
+}

@@ -249,13 +249,88 @@ async fn sec_a_zero_or_negative_refund_is_refused(pool: PgPool) {
     let event = paid_event(&app, &pool, &org, 5).await;
     let order = buy(&app, &pool, &buyer, event).await;
     let mut conn = pool.acquire().await.unwrap();
-    for bad in ["0", "-10"] {
-        let err = underground_api::refunds::enqueue(&mut conn, order, Decimal::from_str(bad).unwrap(), "bad")
+    // Negative is a bug in the caller and is refused outright.
+    let err = underground_api::refunds::enqueue(&mut conn, order, Decimal::from_str("-10").unwrap(), "bad")
+        .await
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("Validation"), "{err:?}");
+    // Zero is not an error, it is "nothing to send back" — see the 100%-promo test below. Either
+    // way no job is created, because a zero refund at the provider means "refund everything".
+    assert!(
+        !underground_api::refunds::enqueue(&mut conn, order, Decimal::ZERO, "nothing")
             .await
-            .unwrap_err();
-        assert!(format!("{err:?}").contains("Validation"), "{bad}: {err:?}");
-    }
+            .unwrap()
+    );
     assert!(jobs_for(&pool, order).await.is_empty());
+}
+
+/// [SEC] A 100%-off promo is an ordinary organiser feature and produces a PAID order that cost
+/// nothing. Cancelling that event must still work: treating the zero-cost order as an error used
+/// to abort the whole transaction, so the event stayed on sale and NOBODY was refunded.
+#[sqlx::test(migrations = "./migrations")]
+async fn cancelling_an_event_with_a_free_order_still_refunds_everyone_else(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let org = register(&app, "org@x.co").await;
+    let free_buyer = register(&app, "free@x.co").await;
+    let paying_buyer = register(&app, "pay@x.co").await;
+    let event = paid_event(&app, &pool, &org, 10).await;
+    sqlx::query(
+        "INSERT INTO promo_codes (event_id, code, percent_off, active, max_uses) VALUES ($1, 'ALLFREE', 100, true, 10)",
+    )
+    .bind(event)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // One buyer pays nothing, one pays in full.
+    let (st, v) = send(
+        &app,
+        build(
+            "POST",
+            &format!("/api/events/{event}/checkout?promo=ALLFREE"),
+            Some(&free_buyer),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let free_order = Uuid::parse_str(v["order_id"].as_str().unwrap()).unwrap();
+    assert_eq!(v["amount"], "0", "the promo made it free: {v}");
+    send(
+        &app,
+        build(
+            "POST",
+            &format!("/api/orders/{free_order}/pay-test"),
+            Some(&free_buyer),
+            None,
+        ),
+    )
+    .await;
+    let paid_order = buy(&app, &pool, &paying_buyer, event).await;
+
+    let (st, out) = send(
+        &app,
+        build("POST", &format!("/api/events/{event}/cancel"), Some(&org), None),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a free order must not block the cancellation: {out}"
+    );
+    assert_eq!(out["tickets_returned"], 2, "both tickets come back");
+    assert_eq!(
+        out["refunds_queued"], 1,
+        "only the buyer who actually paid is owed money"
+    );
+    assert_eq!(jobs_for(&pool, free_order).await.len(), 0);
+    assert_eq!(jobs_for(&pool, paid_order).await.len(), 1);
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM events WHERE id = $1")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "cancelled", "the sale is actually closed");
 }
 
 /// [SEC] Money can only come back if it went out: an abandoned checkout has nothing to return,
@@ -411,7 +486,6 @@ async fn sec_a_cancelled_events_money_never_clears_for_payout(pool: PgPool) {
     let buyer = register(&app, "b@x.co").await;
     let event = paid_event(&app, &pool, &org, 5).await;
     let order = buy(&app, &pool, &buyer, event).await;
-    // The event is in the past, so the sweep would otherwise advance it.
     sqlx::query(
         "UPDATE events SET starts_at = now() - interval '2 days', ends_at = now() - interval '2 days' WHERE id = $1",
     )
@@ -419,16 +493,21 @@ async fn sec_a_cancelled_events_money_never_clears_for_payout(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE orders SET escrow_status = 'held' WHERE id = $1")
-        .bind(order)
-        .execute(&pool)
-        .await
-        .unwrap();
     send(
         &app,
         build("POST", &format!("/api/events/{event}/cancel"), Some(&org), None),
     )
     .await;
+
+    // The order the cancellation could NOT have caught: money that arrived on its own after the
+    // event died, so its escrow is still `held`. This is the only shape the sweep's
+    // `status <> 'cancelled'` condition actually guards — with the order left at `refund_due`
+    // the sweep would skip it anyway and the test would pass with the guard deleted.
+    sqlx::query("UPDATE orders SET escrow_status = 'held' WHERE id = $1")
+        .bind(order)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     underground_api::escrow::sweep(&pool, 0).await.unwrap();
     let escrow: String = sqlx::query_scalar("SELECT escrow_status FROM orders WHERE id = $1")
@@ -436,8 +515,10 @@ async fn sec_a_cancelled_events_money_never_clears_for_payout(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_ne!(escrow, "clearing", "[SEC] a cancelled event's money must not advance");
-    assert_ne!(escrow, "cleared");
+    assert_eq!(
+        escrow, "held",
+        "[SEC] a cancelled event's money must not advance toward a payout"
+    );
 }
 
 // ------------------------------------------------------------------ the executor
@@ -716,4 +797,263 @@ async fn a_self_return_gives_the_promo_use_back_like_an_admin_refund_does(pool: 
 
     // And the money is actually queued to go back, not merely marked returned.
     assert_eq!(jobs_for(&pool, order).await.len(), 1);
+}
+
+/// [SEC] A payment that lands AFTER the event was cancelled must never become a valid ticket to
+/// an event that is not happening — and the money must go back. The buyer's checkout page stays
+/// open for the whole hold, so this window is ordinary, not exotic.
+#[sqlx::test(migrations = "./migrations")]
+async fn sec_a_payment_after_cancellation_is_refunded_not_ticketed(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let org = register(&app, "org@x.co").await;
+    let buyer = register(&app, "b@x.co").await;
+    let event = paid_event(&app, &pool, &org, 5).await;
+
+    // Checkout, but do NOT pay yet: the payment page is open.
+    let (st, v) = send(
+        &app,
+        build("POST", &format!("/api/events/{event}/checkout"), Some(&buyer), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let order = Uuid::parse_str(v["order_id"].as_str().unwrap()).unwrap();
+
+    let (st, out) = send(
+        &app,
+        build("POST", &format!("/api/events/{event}/cancel"), Some(&org), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(out["refunds_queued"], 0, "nothing was paid yet");
+
+    // The payment lands now. `pay-test` runs the same `fulfill` a provider webhook would, so
+    // this IS the late-payment path: it answers 409 to the buyer's page because there is no
+    // ticket to hand over, and books the money to be returned.
+    let (st, _) = send(
+        &app,
+        build("POST", &format!("/api/orders/{order}/pay-test"), Some(&buyer), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "a cancelled event cannot mint a ticket");
+
+    let minted: i64 = sqlx::query_scalar("SELECT count(*) FROM tickets WHERE event_id = $1 AND status = 'active'")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(minted, 0, "[SEC] no ticket to a cancelled event");
+    assert_eq!(jobs_for(&pool, order).await.len(), 1, "the money is queued to go back");
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM orders WHERE id = $1")
+        .bind(order)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "refund_due");
+
+    // A replayed delivery for the same order adds nothing.
+    let mut conn = pool.acquire().await.unwrap();
+    let again = underground_api::orders::fulfill(&mut conn, order).await.unwrap();
+    drop(conn);
+    assert_eq!(again, underground_api::orders::FulfillOutcome::AlreadyHandled);
+    assert_eq!(jobs_for(&pool, order).await.len(), 1, "still one debt");
+}
+
+/// [SEC] Our commission is returned exactly ONCE, on the slice that finishes the refund. Sending
+/// it on every partial would claw the fee back two or three times, out of the platform's balance.
+#[sqlx::test(migrations = "./migrations")]
+async fn sec_the_commission_is_returned_only_on_the_closing_slice(pool: PgPool) {
+    use std::sync::Mutex;
+    /// Records the fee flag of every refund it is asked to make.
+    struct RecordingProvider {
+        seen: Mutex<Vec<bool>>,
+    }
+    #[async_trait::async_trait]
+    impl PaymentProvider for RecordingProvider {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        fn moves_real_money(&self) -> bool {
+            false
+        }
+        async fn create_charge(&self, _r: ChargeReq) -> Result<ChargeResult, ProviderError> {
+            unreachable!()
+        }
+        async fn transfer_payout(&self, _r: PayoutReq) -> Result<TransferResult, ProviderError> {
+            unreachable!()
+        }
+        async fn refund(&self, req: RefundReq) -> Result<RefundResult, ProviderError> {
+            self.seen.lock().unwrap().push(req.refund_application_fee);
+            Ok(RefundResult {
+                provider_ref: format!("re_{}", self.seen.lock().unwrap().len()),
+                status: RefundStatus::Succeeded,
+            })
+        }
+        fn verify_webhook(&self, _h: &axum::http::HeaderMap, _r: &[u8]) -> Result<InboundWebhook, ProviderError> {
+            Ok(InboundWebhook::ignored())
+        }
+        async fn create_seller_account(&self, _c: &str, _e: &str) -> Result<String, ProviderError> {
+            unreachable!()
+        }
+        async fn seller_onboarding_link(&self, _a: &str, _r: &str, _t: &str) -> Result<String, ProviderError> {
+            unreachable!()
+        }
+    }
+
+    let app = make_app(pool.clone());
+    let org = register(&app, "org@x.co").await;
+    let buyer = register(&app, "b@x.co").await;
+    let event = paid_event(&app, &pool, &org, 5).await;
+    let order = buy(&app, &pool, &buyer, event).await;
+    let mut conn = pool.acquire().await.unwrap();
+    // Two halves of a 100.00 order.
+    for reason in ["half one", "half two"] {
+        assert!(
+            underground_api::refunds::enqueue(&mut conn, order, Decimal::from_str("50").unwrap(), reason)
+                .await
+                .unwrap()
+        );
+    }
+    drop(conn);
+
+    let p = RecordingProvider {
+        seen: Mutex::new(Vec::new()),
+    };
+    let (settled, failed) = underground_api::refunds::run_once(&pool, &p).await.unwrap();
+    assert_eq!((settled, failed), (2, 0));
+    // The invariant is that the fee is claimed back EXACTLY ONCE. Which of the two slices carries
+    // it depends on the order the batch happens to process them in, and that is not the property
+    // worth pinning — "returned twice" is what costs the platform money.
+    let seen = p.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "both slices were sent");
+    assert_eq!(
+        seen.iter().filter(|&&f| f).count(),
+        1,
+        "the commission comes back on exactly one slice, not on every partial: {seen:?}"
+    );
+}
+
+/// The organiser's view of a draining cancellation, and who may see it. Sales figures are the
+/// organiser's business: a stranger gets 403, not a count.
+#[sqlx::test(migrations = "./migrations")]
+async fn refund_progress_is_visible_to_the_owner_and_to_an_admin_only(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let org = register(&app, "org@x.co").await;
+    let buyer = register(&app, "b@x.co").await;
+    let stranger = register(&app, "s@x.co").await;
+    let admin = register(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = paid_event(&app, &pool, &org, 5).await;
+    let order = buy(&app, &pool, &buyer, event).await;
+    send(
+        &app,
+        build("POST", &format!("/api/events/{event}/cancel"), Some(&org), None),
+    )
+    .await;
+
+    let (st, p) = send(
+        &app,
+        build("GET", &format!("/api/events/{event}/refund-progress"), Some(&org), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{p}");
+    assert_eq!(p["total"], 1);
+    assert_eq!(p["in_flight"], 1);
+    assert_eq!(p["done"], 0);
+    assert_eq!(p["needs_attention"], 0);
+    assert_eq!(p["amount_refunded"], "0");
+
+    // The platform admin sees the same figures.
+    let (st, ap) = send(
+        &app,
+        build(
+            "GET",
+            &format!("/api/events/{event}/refund-progress"),
+            Some(&admin),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(ap["total"], 1);
+
+    // Nobody else does.
+    let (st, _) = send(
+        &app,
+        build(
+            "GET",
+            &format!("/api/events/{event}/refund-progress"),
+            Some(&stranger),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "[SEC] sales figures are the organiser's business"
+    );
+
+    // After the executor runs, the figures move.
+    underground_api::refunds::run_once(&pool, &GoodProvider).await.unwrap();
+    let (_, done) = send(
+        &app,
+        build("GET", &format!("/api/events/{event}/refund-progress"), Some(&org), None),
+    )
+    .await;
+    assert_eq!(done["done"], 1);
+    assert_eq!(done["in_flight"], 0);
+    assert_eq!(done["amount_refunded"], "100.00");
+    let _ = order;
+}
+
+/// A platform admin can cancel an event the organiser will not — the case cancellation exists
+/// for when an organiser goes silent.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_platform_admin_can_cancel_an_event(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let org = register(&app, "org@x.co").await;
+    let admin = register(&app, "admin@x.co").await;
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'admin@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let event = paid_event(&app, &pool, &org, 5).await;
+    let buyer = register(&app, "b@x.co").await;
+    buy(&app, &pool, &buyer, event).await;
+
+    let (st, out) = send(
+        &app,
+        build("POST", &format!("/api/events/{event}/cancel"), Some(&admin), None),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    assert_eq!(out["refunds_queued"], 1);
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM events WHERE id = $1")
+        .bind(event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "cancelled");
+}
+
+/// Cancelling an event that does not exist is a 404, not a 403 — and a stranger still cannot
+/// learn whether it exists.
+#[sqlx::test(migrations = "./migrations")]
+async fn cancelling_an_unknown_event_is_not_found(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let org = register(&app, "org@x.co").await;
+    let (st, _) = send(
+        &app,
+        build(
+            "POST",
+            &format!("/api/events/{}/cancel", Uuid::new_v4()),
+            Some(&org),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
 }

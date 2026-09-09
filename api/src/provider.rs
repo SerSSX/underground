@@ -591,6 +591,27 @@ mod tests {
         assert!(TestProvider.cancel_charge("cs_x").await.is_ok());
     }
 
+    /// The money-free providers still have to answer the onboarding calls, because a demo stand
+    /// runs the same organiser flow. Deterministic: the same organiser always gets the same
+    /// account id, which is what lets a test prove a second connect made no second account.
+    #[tokio::test]
+    async fn money_free_providers_onboard_deterministically() {
+        for p in [&NoopProvider as &dyn PaymentProvider, &TestProvider] {
+            let a = p.create_seller_account("PL", " Org@Example.com ").await.unwrap();
+            let b = p.create_seller_account("pl", "org@example.com").await.unwrap();
+            assert_eq!(a, b, "same organiser, same account");
+            assert!(a.contains("pl") && a.contains("org@example.com"), "{a}");
+
+            // One query string, not two: the return URL already carries one.
+            let url = p
+                .seller_onboarding_link(&a, "https://x.test/again", "https://x.test/done?ok=1")
+                .await
+                .unwrap();
+            assert_eq!(url.matches('?').count(), 1, "{url}");
+            assert!(url.contains("onboarding="), "{url}");
+        }
+    }
+
     /// Stripe selected but no key configured is a configuration error, refused at resolve.
     #[test]
     fn resolve_refuses_stripe_without_a_secret_key() {

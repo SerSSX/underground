@@ -59,8 +59,8 @@ pub async fn enqueue(
     amount: Decimal,
     reason: &str,
 ) -> Result<bool, AppError> {
-    if amount <= Decimal::ZERO {
-        return Err(AppError::Validation("сума повернення має бути більшою за нуль".into()));
+    if amount < Decimal::ZERO {
+        return Err(AppError::Validation("сума повернення не може бути відʼємною".into()));
     }
     // FOR UPDATE: the ceiling is read-then-written, so two concurrent enqueues for one order
     // must not both see room for the last hryvnia.
@@ -77,6 +77,13 @@ pub async fn enqueue(
         return Err(AppError::Conflict(
             "за цим замовленням не було оплати — повертати нічого".into(),
         ));
+    }
+    // An order that cost nothing — a 100%-off promo is an ordinary organiser feature — has
+    // nothing to send back. That is not an error: it is a paid order with a zero balance, and
+    // treating it as one used to abort the whole cancellation of an event, leaving the sale open
+    // and every OTHER buyer unrefunded.
+    if paid == Decimal::ZERO || amount == Decimal::ZERO {
+        return Ok(false);
     }
 
     // Everything still in flight counts against the ceiling too. A job that has been sent to the

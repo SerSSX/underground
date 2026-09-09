@@ -295,10 +295,32 @@ pub async fn apply(st: &AppState, provider: &str, hook: InboundWebhook) -> Resul
                     orders::apply_full_refund(&mut tx, order_id).await?;
                 }
                 if let Some(r) = partial {
-                    let (currency,): (String,) = sqlx::query_as("SELECT currency FROM orders WHERE id = $1")
-                        .bind(order_id)
-                        .fetch_one(&mut *tx)
-                        .await?;
+                    let (currency, order_amount): (String, rust_decimal::Decimal) =
+                        sqlx::query_as("SELECT currency, amount FROM orders WHERE id = $1")
+                            .bind(order_id)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                    // A cumulative figure larger than the order is either a mismatched object or
+                    // a currency-scale bug. Writing it would trip the database ceiling, and that
+                    // error would surface as a 500 — which this provider retries for days, on a
+                    // delivery that can never succeed. Refuse it the way every other binding
+                    // failure here is refused: recorded, and answered 200.
+                    if crate::stripe::from_minor(r, &currency) > order_amount {
+                        tracing::warn!(%order_id, refunded = r, "webhook: refunded amount exceeds the order — ignored");
+                        tx.rollback().await?;
+                        if let Err(e) = record_refusal(
+                            &st.db,
+                            provider,
+                            hook.id.as_deref(),
+                            &order_ref,
+                            "refunded amount exceeds the order",
+                        )
+                        .await
+                        {
+                            tracing::error!(error = %e, "webhook: refusal not recorded");
+                        }
+                        return Ok(StatusCode::OK);
+                    }
                     // The provider reports a CUMULATIVE figure, so this is a SET, not an add —
                     // but never downward: a refund that later fails lowers the provider's own
                     // total, and letting that reopen room under the ceiling is how an order gets

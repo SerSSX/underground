@@ -495,31 +495,66 @@ pub async fn cancel_event(
     State(st): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
 ) -> Result<Json<CancelResp>, AppError> {
-    require_owner(&st.db, id, user.id).await?;
+    // Owner OR platform admin: an admin must be able to shut down an event whose organiser has
+    // gone silent or is refusing to refund — which is a large part of what cancellation is for.
+    let allowed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM events e, users u \
+         WHERE e.id = $1 AND u.id = $2 AND (e.organizer_id = u.id OR u.role = 'ADMIN'))",
+    )
+    .bind(id)
+    .bind(user.id)
+    .fetch_one(&st.db)
+    .await?;
+    if !allowed {
+        // Tell "no such event" apart from "not yours", exactly as require_owner does.
+        require_owner(&st.db, id, user.id).await?;
+        return Err(AppError::Forbidden);
+    }
     let mut tx = st.db.begin().await?;
     sqlx::query("UPDATE events SET status = 'cancelled', sales_closed = true WHERE id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
 
+    // Orders that have NOT paid yet still have an open payment page. Closing the event does not
+    // close those, and a payment landing a minute later would mint a valid ticket to an event
+    // that is not happening — with no refund queued, because the sweep above has already run.
+    // The marker is what `fulfill` reads: a payment on a `cancelled` order becomes `refund_due`
+    // instead of a ticket (BR-014). Done BEFORE the paid orders are read, so a payment racing
+    // this transaction lands on one side or the other and never in between.
+    sqlx::query(
+        "UPDATE orders SET terminal_event_seen = COALESCE(terminal_event_seen, 'cancelled') \
+         WHERE event_id = $1 AND status IN ('pending', 'expired')",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+
     // Every order that actually took money. `FOR UPDATE` so a payment landing in this instant
     // cannot slip between the read and the queueing and end up with a ticket to a dead event.
-    let paid: Vec<(Uuid, Option<Uuid>, rust_decimal::Decimal)> =
-        sqlx::query_as("SELECT id, ticket_id, amount FROM orders WHERE event_id = $1 AND status = 'paid' FOR UPDATE")
-            .bind(id)
-            .fetch_all(&mut *tx)
-            .await?;
+    type PaidOrder = (Uuid, Option<Uuid>, rust_decimal::Decimal, Option<String>);
+    let paid: Vec<PaidOrder> = sqlx::query_as(
+        "SELECT id, ticket_id, amount, promo_code FROM orders WHERE event_id = $1 AND status = 'paid' FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
 
     let mut tickets_returned = 0i64;
     let mut refunds_queued = 0i64;
-    for (order_id, ticket_id, amount) in paid {
-        if let Some(ticket_id) = ticket_id {
-            let returned =
-                sqlx::query("UPDATE tickets SET status = 'returned' WHERE id = $1 AND status IN ('active','used')")
-                    .bind(ticket_id)
-                    .execute(&mut *tx)
-                    .await?;
-            tickets_returned += returned.rows_affected() as i64;
+    for (order_id, ticket_id, amount, promo_code) in paid {
+        if let Some(tid) = ticket_id {
+            let was_live: bool = sqlx::query_scalar("SELECT status IN ('active', 'used') FROM tickets WHERE id = $1")
+                .bind(tid)
+                .fetch_one(&mut *tx)
+                .await?;
+            // The SAME routine the admin refund and the buyer's own return use: ticket returned,
+            // seat back, promo use given back. Doing it inline here made cancellation a fourth
+            // writer of that state — the drift PAY-11 exists to remove.
+            crate::orders::return_holdings(&mut tx, id, ticket_id, promo_code.as_deref(), "paid", None).await?;
+            if was_live {
+                tickets_returned += 1;
+            }
         }
         match crate::refunds::enqueue(&mut tx, order_id, amount, "подію скасовано організатором").await
         {

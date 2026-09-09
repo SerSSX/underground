@@ -867,3 +867,82 @@ async fn the_stripe_webhook_is_refused_when_no_provider_resolves(pool: PgPool) {
     );
     assert_eq!(post(&app, &payload, SECRET).await, StatusCode::CONFLICT);
 }
+
+/// [SEC] `account.updated` raises the capability flags of the organiser the account BELONGS to,
+/// and nobody else. Without the account-id binding one organiser finishing onboarding would
+/// switch on every other organiser's ability to take money — the core SEC row of PAY-5.
+#[sqlx::test(migrations = "./migrations")]
+async fn sec_account_updated_raises_flags_only_for_the_matching_organiser(pool: PgPool) {
+    let app = make_app(pool.clone());
+    stripe_settings(&pool).await;
+    let _a = token_for(&app, "a@x.co").await;
+    let _b = token_for(&app, "b@x.co").await;
+    sqlx::query("UPDATE users SET psp_account_id = 'acct_a' WHERE email = 'a@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET psp_account_id = 'acct_b' WHERE email = 'b@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let ev = stripe_event(
+        "evt_acct_a",
+        "account.updated",
+        json!({"id":"acct_a","charges_enabled":true,"payouts_enabled":true,
+               "requirements":{"currently_due":[]}}),
+    );
+    assert_eq!(post(&app, &ev, SECRET).await, StatusCode::OK);
+
+    let flags: Vec<(String, bool, bool)> = sqlx::query_as(
+        "SELECT email, psp_charges_enabled, psp_payouts_enabled FROM users \
+         WHERE email IN ('a@x.co', 'b@x.co') ORDER BY email",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        flags[0],
+        ("a@x.co".to_string(), true, true),
+        "the named account is enabled"
+    );
+    assert_eq!(
+        flags[1],
+        ("b@x.co".to_string(), false, false),
+        "[SEC] and nobody else is"
+    );
+
+    // An account we have never seen is acknowledged and changes nothing.
+    let stranger = stripe_event(
+        "evt_acct_x",
+        "account.updated",
+        json!({"id":"acct_unknown","charges_enabled":true,"payouts_enabled":true,
+               "requirements":{"currently_due":[]}}),
+    );
+    assert_eq!(post(&app, &stranger, SECRET).await, StatusCode::OK);
+    let enabled: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE psp_charges_enabled")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(enabled, 1, "[SEC] an unknown account enables nobody");
+}
+
+/// One connected account belongs to one organiser, held by the database rather than by whoever
+/// remembers to check — this index is what makes the binding above trustworthy.
+#[sqlx::test(migrations = "./migrations")]
+async fn two_organisers_cannot_share_one_connected_account(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let _a = token_for(&app, "a@x.co").await;
+    let _b = token_for(&app, "b@x.co").await;
+    sqlx::query("UPDATE users SET psp_account_id = 'acct_shared' WHERE email = 'a@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let clash = sqlx::query("UPDATE users SET psp_account_id = 'acct_shared' WHERE email = 'b@x.co'")
+        .execute(&pool)
+        .await;
+    assert!(
+        clash.is_err(),
+        "a second organiser must not be able to claim the same account"
+    );
+}

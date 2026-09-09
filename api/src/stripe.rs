@@ -660,9 +660,13 @@ impl PaymentProvider for StripeProvider {
         //
         // `dashboard.type` is immutable per account: changing it later means creating new
         // accounts, so this constant is a decision, not a default.
+        // Normalised ONCE, and the idempotency key below is built from the same value: sending
+        // " Org@Example.com " while keying on "org@example.com" means a retry from a differently
+        // typed email looks like a new request, which is how a second account gets created.
+        let email = email.trim().to_ascii_lowercase();
         let form = Form::new()
             .put("country", country.to_ascii_uppercase())
-            .put("email", email)
+            .put("email", &email)
             .put("controller[stripe_dashboard][type]", "full")
             .put("controller[fees][payer]", "account")
             .put("controller[losses][payments]", "stripe")
@@ -672,7 +676,7 @@ impl PaymentProvider for StripeProvider {
         // Keyed on the organiser: a retry — ours, or a network timeout's — must resume the SAME
         // account. Without this, a timed-out create leaves a second connected account nobody
         // knows about, which can go on to receive real money.
-        let key = format!("seller:{}", email.trim().to_ascii_lowercase());
+        let key = format!("seller:{email}");
         // No `Stripe-Account` header: this call CREATES an account, it does not act as one.
         let body = self.post("/v1/accounts", form, None, Some(&key)).await?;
         body["id"]

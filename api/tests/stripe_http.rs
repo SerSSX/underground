@@ -440,3 +440,113 @@ async fn a_body_cut_off_mid_response_is_retried_then_reported_as_transport() {
         "{err:?}"
     );
 }
+
+/// Creating the organiser's connected account. The shape matters: the deprecated `type=express`
+/// parameter must NOT appear, the controller properties must ask for the full-dashboard account
+/// the owner chose (organiser pays Stripe's fees and carries their own losses), and the call
+/// carries an idempotency key so a retried create resumes the same account instead of leaving a
+/// second one nobody knows about.
+#[tokio::test]
+async fn create_seller_account_asks_for_a_full_dashboard_account_idempotently() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/accounts"))
+        .and(header("authorization", "Bearer sk_test_unit"))
+        .and(header("idempotency-key", "seller:org@example.com"))
+        .and(body_string_contains("country=PL"))
+        .and(body_string_contains("email=org%40example.com"))
+        .and(body_string_contains("controller%5Bstripe_dashboard%5D%5Btype%5D=full"))
+        .and(body_string_contains("controller%5Bfees%5D%5Bpayer%5D=account"))
+        .and(body_string_contains("controller%5Blosses%5D%5Bpayments%5D=stripe"))
+        .and(body_string_contains(
+            "capabilities%5Bcard_payments%5D%5Brequested%5D=true",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id":"acct_1NEW"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let id = provider(&server)
+        .create_seller_account("pl", " Org@Example.com ")
+        .await
+        .unwrap();
+    assert_eq!(id, "acct_1NEW");
+
+    let body = server.received_requests().await.unwrap()[0].body.clone();
+    let body = String::from_utf8(body).unwrap();
+    assert!(
+        !body.contains("type=express"),
+        "the deprecated account type must not be sent: {body}"
+    );
+}
+
+/// An account creation that comes back without an id is not an account we can store.
+#[tokio::test]
+async fn create_seller_account_without_an_id_is_an_upstream_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/accounts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"object":"account"})))
+        .mount(&server)
+        .await;
+    let err = provider(&server)
+        .create_seller_account("pl", "org@example.com")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ProviderError::Upstream(ref m) if m.contains("no account id")),
+        "{err:?}"
+    );
+}
+
+/// The hosted onboarding link. Deliberately NO idempotency key: each link is single-use, so
+/// replaying one would hand the organiser a URL that has already been spent.
+#[tokio::test]
+async fn the_onboarding_link_is_requested_fresh_every_time() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/account_links"))
+        .and(body_string_contains("account=acct_1NEW"))
+        .and(body_string_contains("type=account_onboarding"))
+        .and(body_string_contains("return_url=https%3A%2F%2Fx.test%2Fdone"))
+        .and(body_string_contains("refresh_url=https%3A%2F%2Fx.test%2Fagain"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "url":"https://connect.stripe.com/setup/s/abc"
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let p = provider(&server);
+    for _ in 0..2 {
+        let url = p
+            .seller_onboarding_link("acct_1NEW", "https://x.test/again", "https://x.test/done")
+            .await
+            .unwrap();
+        assert_eq!(url, "https://connect.stripe.com/setup/s/abc");
+    }
+    for r in server.received_requests().await.unwrap() {
+        assert!(
+            !r.headers.contains_key("idempotency-key"),
+            "a single-use link must never be replayed from a key"
+        );
+    }
+}
+
+/// A link response without a url leaves the organiser nowhere to go; report it rather than
+/// handing back an empty string.
+#[tokio::test]
+async fn an_onboarding_link_without_a_url_is_an_upstream_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/account_links"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"object":"account_link"})))
+        .mount(&server)
+        .await;
+    let err = provider(&server)
+        .seller_onboarding_link("acct_1", "https://x.test/again", "https://x.test/done")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ProviderError::Upstream(ref m) if m.contains("no onboarding url")),
+        "{err:?}"
+    );
+}
