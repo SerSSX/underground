@@ -1,6 +1,11 @@
 # Development Manual — Underground
 
-Як вестись розробка згідно з `docs/rules.md` (v0.5.0, STRICT). Цей документ — операційний; правила — авторитет.
+> § numbers in this document refer to the archived v0.5.0 doctrine at
+> `~/Documents/rules-archive-20261102-pre-v3.13/repos/underground/rules.md` (history only). Process today:
+> `~/.claude/rules/rules.md`; project policy: `docs/rules.md`.
+
+
+Як вестись розробка: загальний процес — `~/.claude/rules/rules.md`, політика проєкту — `docs/rules.md`. Цей документ — операційний.
 
 ## Repository layout
 
