@@ -1,6 +1,7 @@
 # Underground — Specification (business truth)
 
-> Per `docs/rules.md` §2.2 this is the business truth. Agents MUST NOT implement behavior contradicting it.
+> This is the business truth (project policy, `docs/rules.md`). Agents MUST NOT implement behavior contradicting it.
+> § numbers here refer to the archived v0.5.0 doctrine (`~/Documents/rules-archive-20261102-pre-v3.13/repos/underground/rules.md`).
 > Per-UC backend/frontend technical contracts (endpoints, screens, Mermaid, schematics, baselines per §2.3)
 > are finalized in each UC's task Speck (`docs/specks/SDD-*`) **before** that UC is implemented — no silent drift.
 

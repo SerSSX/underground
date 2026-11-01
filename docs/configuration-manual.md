@@ -1,5 +1,10 @@
 # Configuration Manual — Underground
 
+> § numbers in this document refer to the archived v0.5.0 doctrine at
+> `~/Documents/rules-archive-20261102-pre-v3.13/repos/underground/rules.md` (history only). Process today:
+> `~/.claude/rules/rules.md`; project policy: `docs/rules.md`.
+
+
 Уся конфігурація — через env (§8.1, §10). Жодних хардкодів портів/CORS/redirect/base-URL.
 
 ## API env (`api/.env`, зразок — `api/.env.example`)
