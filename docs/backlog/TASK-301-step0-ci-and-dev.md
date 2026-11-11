@@ -1,6 +1,6 @@
 # TASK-301 — Step 0: CI and the DEV stand on the shared box
 
-Status: IN PROGRESS (2026-11-12)
+Status: DONE (2026-11-12) — CI green at 2ebbc9b (run 43108774017); DEV deployed, smoke green; msgview browser smoke green after the Caddy change (run 43108860207)
 Lane: TASK (rules.md §0), part of TASK-300 plan step 0 · brief mode: pro (no gaps: plan approved)
 Parent: [TASK-300](TASK-300-mvp-free-tickets.md) · plan: `docs/analysis/2026-11-11-mvp-gap-and-plan.md` §3 step 0
 
