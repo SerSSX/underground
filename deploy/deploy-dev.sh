@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Deploy one CI-green commit to the Underground DEV stand. Idempotent; safe to re-run.
 #
-#   bash deploy/deploy-dev.sh            # newest commit of the DEV branch
-#   bash deploy/deploy-dev.sh <commit>   # a specific commit (also the rollback: the previous commit)
+#   bash deploy/deploy-dev.sh            # the newest commit of the DEV branch whose CI is green
+#   bash deploy/deploy-dev.sh <commit>   # a specific commit — also the rollback (see releases.jsonl)
 #
-# What CI tested is what ships (rules §6): this script builds nothing. It refuses a commit whose CI run is not
-# green, takes the arm64 images CI built for that exact commit, and the compose/smoke files from git at that
-# commit. A red smoke puts the previous release back by itself. Every run appends a record on the box.
+# What CI tested is what ships (rules §6): this script builds nothing. It refuses a commit unless the CI push
+# run on the DEV branch for that exact commit succeeded with every gate job and the image job green, takes the
+# arm64 images CI built for that commit (or the copy already on the box, so a rollback outlives the 3-day
+# artifact retention), and the compose/smoke files from git at that commit. A red smoke puts the previous
+# release back by itself and says whether that worked. Every outcome is appended to releases.jsonl on the box.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -15,34 +17,49 @@ BRANCH=claude/underground-mvp
 HOST=${UG_DEV_HOST:-root@65.108.87.247}
 KEY=${UG_DEV_SSH_KEY:-$HOME/.ssh/hetzner}
 ROOT=/opt/underground-dev
+MIN_FREE_MB=3000   # refuse below this much free disk: the box also serves LIVE products
 ssh_box() { ssh -i "$KEY" -o BatchMode=yes -o ConnectTimeout=15 "$HOST" "$@"; }
 
+# Echo "<run id>" if <commit> has a completed CI push run on the DEV branch whose required jobs all succeeded.
+green_run() {
+  local id
+  id=$(gh run list -R "$REPO" --workflow ci.yml --branch "$BRANCH" --commit "$1" --event push \
+         --status success --json databaseId -q '.[0].databaseId // empty')
+  [ -n "$id" ] || return 1
+  gh run view "$id" -R "$REPO" --json jobs -q '
+    [.jobs[] | select(.name=="api" or .name=="web (web)" or .name=="web (admin)" or .name=="images")
+             | select(.conclusion=="success")] | length' | grep -qx 4 || return 1
+  echo "$id"
+}
+
 git fetch -q origin "$BRANCH"
-SHA=$(git rev-parse --verify "${1:-origin/$BRANCH}^{commit}")
-git merge-base --is-ancestor "$SHA" "origin/$BRANCH" \
-  || { echo "REFUSED: $SHA is not on origin/$BRANCH"; exit 1; }
-echo "→ commit $SHA"
-
-# 1. The deploy step refuses on anything but green CI for this exact commit (rules §6: the host cannot).
-RUN=$(gh run list -R "$REPO" --workflow ci.yml --commit "$SHA" --event push \
-  --json databaseId,status,conclusion -q '.[0] | "\(.databaseId) \(.status) \(.conclusion)"')
-read -r RUN_ID RUN_STATUS RUN_CONCL <<<"${RUN:-none none none}"
-if [ "$RUN_STATUS" != completed ] || [ "$RUN_CONCL" != success ]; then
-  echo "REFUSED: CI for $SHA is '${RUN_STATUS}/${RUN_CONCL}' (run ${RUN_ID}). Deploy only a green commit."
-  echo "  (A docs-only commit has no CI run: deploy the newest commit that has one.)"
-  exit 1
+if [ -n "${1:-}" ]; then
+  SHA=$(git rev-parse --verify "$1^{commit}")
+  git merge-base --is-ancestor "$SHA" "origin/$BRANCH" || { echo "REFUSED: $SHA is not on origin/$BRANCH"; exit 1; }
+  RUN_ID=$(green_run "$SHA") || { echo "REFUSED: $SHA has no green CI push run on $BRANCH (gates + images)"; exit 1; }
+else
+  # The branch tip is often a docs-only commit with no CI run: take the newest commit that has a green one.
+  SHA=""
+  for c in $(git rev-list -n 30 "origin/$BRANCH"); do
+    if RUN_ID=$(green_run "$c"); then SHA=$c; break; fi
+  done
+  [ -n "$SHA" ] || { echo "REFUSED: none of the last 30 commits on $BRANCH has a green CI run"; exit 1; }
 fi
-echo "→ CI run $RUN_ID is green"
+echo "→ commit $SHA (CI run $RUN_ID green)"
 
-# 2. The images CI built for this commit, checked against the checksums CI wrote.
+FREE=$(ssh_box "df -Pm / | awk 'NR==2{print \$4}'")
+[ "$FREE" -ge "$MIN_FREE_MB" ] || { echo "REFUSED: only ${FREE} MB free on the box (need $MIN_FREE_MB)"; exit 1; }
+
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-gh run download "$RUN_ID" -R "$REPO" -n images -D "$TMP"
-(cd "$TMP" && shasum -a 256 -c SHA256SUMS >/dev/null) || { echo "REFUSED: image checksum mismatch"; exit 1; }
 for f in docker-compose.dev.yml smoke-dev.sh; do git show "$SHA:deploy/$f" > "$TMP/$f"; done
-echo "$SHA" > "$TMP/SHA"
-
-echo "→ copy to the box"
 ssh_box "mkdir -p $ROOT/incoming/$SHA"
+if ssh_box "for i in api web admin; do docker image inspect underground-\$i:$SHA >/dev/null 2>&1 || exit 1; done"; then
+  echo "→ images for $SHA already on the box"
+else
+  # The images CI built for this commit, checked against the checksums CI wrote.
+  gh run download "$RUN_ID" -R "$REPO" -n images -D "$TMP"
+  (cd "$TMP" && shasum -a 256 -c SHA256SUMS >/dev/null) || { echo "REFUSED: image checksum mismatch"; exit 1; }
+fi
 scp -q -i "$KEY" -o BatchMode=yes "$TMP"/* "$HOST:$ROOT/incoming/$SHA/"
 
 echo "→ load, switch, smoke"
@@ -50,39 +67,56 @@ ssh_box "bash -s" -- "$SHA" <<'REMOTE'
 set -euo pipefail
 SHA=$1; ROOT=/opt/underground-dev; IN=$ROOT/incoming/$SHA
 cd "$ROOT"
-for f in "$IN"/underground-*.tar.zst; do zstd -dc "$f" | docker load -q >/dev/null; done
+for f in "$IN"/underground-*.tar.zst; do
+  [ -e "$f" ] || continue
+  zstd -dc "$f" | docker load -q >/dev/null
+  rm -f "$f"          # loaded images live in docker; the tarball is redundant disk use
+done
 for i in api web admin; do docker image inspect "underground-$i:$SHA" >/dev/null; done
+touch "$IN"
 
 PREV=$(sed -n 's/^UG_TAG=//p' release.env 2>/dev/null || true)
-up() { # tag
-  cp "$IN/docker-compose.dev.yml" docker-compose.dev.yml
+compose() { docker compose --env-file .env.dev --env-file release.env -f docker-compose.dev.yml "$@"; }
+switch_to() { # tag
+  cp "$ROOT/incoming/$1/docker-compose.dev.yml" docker-compose.dev.yml
   echo "UG_TAG=$1" > release.env
-  docker compose --env-file .env.dev --env-file release.env -f docker-compose.dev.yml up -d --wait --wait-timeout 180
+  compose up -d --wait --wait-timeout 180
 }
-record() { # result
-  printf '{"time":"%s","env":"dev","commit":"%s","previous":"%s","smoke":"%s","rollback":"bash deploy/deploy-dev.sh %s"}\n' \
-    "$(date -u +%FT%TZ)" "$SHA" "${PREV:-none}" "$1" "${PREV:-<none>}" >> "$ROOT/releases.jsonl"
+record() { # commit outcome
+  printf '{"time":"%s","env":"dev","commit":"%s","previous":"%s","outcome":"%s","rollback":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$1" "${PREV:-}" "$2" \
+    "$([ -n "${PREV:-}" ] && echo "bash deploy/deploy-dev.sh $PREV" || echo "none: first release")" \
+    >> "$ROOT/releases.jsonl"
 }
 
-if up "$SHA" && bash "$IN/smoke-dev.sh" "$SHA"; then
-  record green
-  # Keep the current and two previous releases' images; drop older ones.
+if switch_to "$SHA" && bash "$IN/smoke-dev.sh" "$SHA"; then
+  record "$SHA" green
+  # Keep the images of the current release, the previous one, and the last three green releases.
+  KEEP=$( { echo "$SHA"; echo "${PREV:-}"; grep '"outcome":"green"' releases.jsonl | tail -3 \
+            | sed -n 's/.*"commit":"\([0-9a-f]*\)".*/\1/p'; } | sort -u)
   for i in api web admin; do
-    docker image ls "underground-$i" --format '{{.CreatedAt}}\t{{.Tag}}' | sort -r | awk 'NR>3{print $NF}' \
-      | while read -r t; do docker image rm -f "underground-$i:$t" >/dev/null || true; done
+    for t in $(docker image ls "underground-$i" --format '{{.Tag}}'); do
+      grep -qx "$t" <<<"$KEEP" || docker image rm "underground-$i:$t" >/dev/null 2>&1 || true
+    done
   done
-  ls -dt "$ROOT"/incoming/*/ | tail -n +4 | xargs -r rm -rf
+  for d in "$ROOT"/incoming/*/; do
+    grep -qx "$(basename "$d")" <<<"$KEEP" || rm -rf "$d"
+  done
   echo "DEPLOYED $SHA"
-else
-  record red
-  if [ -n "${PREV:-}" ] && [ "$PREV" != "$SHA" ]; then
-    echo "SMOKE RED — restoring the previous release $PREV"
-    cp "$ROOT/incoming/$PREV/docker-compose.dev.yml" docker-compose.dev.yml 2>/dev/null || true
-    echo "UG_TAG=$PREV" > release.env
-    docker compose --env-file .env.dev --env-file release.env -f docker-compose.dev.yml up -d --wait --wait-timeout 180 \
-      && bash "$ROOT/incoming/$PREV/smoke-dev.sh" "$PREV" && echo "restored $PREV"
-  fi
+  exit 0
+fi
+
+record "$SHA" red
+if [ -z "${PREV:-}" ] || [ "$PREV" = "$SHA" ]; then
+  echo "SMOKE RED — no previous release to restore; DEV stays on $SHA"
   exit 1
 fi
+echo "SMOKE RED — restoring the previous release $PREV"
+if switch_to "$PREV" && bash "$ROOT/incoming/$PREV/smoke-dev.sh" "$PREV"; then
+  record "$PREV" restored-green; echo "RESTORED $PREV (smoke green)"
+else
+  record "$PREV" restore-failed; echo "RESTORE FAILED — DEV is down or broken; see docker logs underground-dev-api"
+fi
+exit 1
 REMOTE
 echo "→ https://underground-dev.65-108-87-247.sslip.io"

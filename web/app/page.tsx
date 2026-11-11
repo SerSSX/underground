@@ -23,7 +23,11 @@ export const metadata: Metadata = {
 /** Published events, SSR-cached, for the home JSON-LD (crawlable structured data). */
 async function fetchEvents(): Promise<EventDto[]> {
   try {
-    const res = await fetch(`${API}/api/events`, { next: { revalidate: 300 } });
+    const res = await fetch(`${API}/api/events`, {
+      next: { revalidate: 300 },
+      // Bounded: `next build` prerenders this page, and a slow API must not hang the image build.
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!res.ok) return [];
     return (await res.json()) as EventDto[];
   } catch {

@@ -13,11 +13,19 @@
 
 name: underground-dev
 
+# Bounded logs and CPU for every service: the disk and the 2 vCPUs are shared with LIVE products.
+x-limits: &limits
+  restart: unless-stopped
+  cpus: "1.0"
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
 services:
   db:
     image: postgres:16-alpine
     container_name: underground-dev-db
-    restart: unless-stopped
+    <<: *limits
     mem_limit: 256m
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -35,7 +43,7 @@ services:
   api:
     image: underground-api:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-api
-    restart: unless-stopped
+    <<: *limits
     mem_limit: 256m
     environment:
       PORT: 8080
@@ -58,7 +66,7 @@ services:
   web:
     image: underground-web:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-web
-    restart: unless-stopped
+    <<: *limits
     mem_limit: 256m
     networks: [caddynet]
     depends_on: [api]
@@ -66,7 +74,7 @@ services:
   admin:
     image: underground-admin:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-admin
-    restart: unless-stopped
+    <<: *limits
     mem_limit: 192m
     networks: [caddynet]
     depends_on: [api]
