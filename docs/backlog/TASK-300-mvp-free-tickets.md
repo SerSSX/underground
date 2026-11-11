@@ -1,6 +1,6 @@
 # TASK-300 — MVP without payments (free bookings)
 
-Status: INTAKE (brief written, waiting for the owner's «ок»)
+Status: REFINED — owner «Ок, далі» on the brief, 2026-11-11
 Lane: PROJECT (rules.md §0) · brief mode: guided
 Brief: [docs/briefs/2026-11-11-mvp-bez-oplaty.md](../briefs/2026-11-11-mvp-bez-oplaty.md)
 
