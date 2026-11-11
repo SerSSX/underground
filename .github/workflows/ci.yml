@@ -91,7 +91,7 @@ jobs:
       - name: Format
         run: cargo fmt --check
       - name: Tests (unit + Postgres-backed)
-        run: cargo test --locked
+        run: cargo test --locked --no-fail-fast
       - name: Dependency audit (RustSec)
         run: |
           command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
