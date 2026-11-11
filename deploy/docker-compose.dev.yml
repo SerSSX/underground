@@ -13,10 +13,11 @@
 
 name: underground-dev
 
-# Bounded logs and CPU for every service: the disk and the 2 vCPUs are shared with LIVE products.
+# Bounded logs for every service, and CPU caps that sum to 1.5 of the box's 2 vCPUs (db 0.5, api 0.5, web 0.25,
+# admin 0.25) with a low CPU weight, so the LIVE products sharing the box win any contention.
 x-limits: &limits
   restart: unless-stopped
-  cpus: "1.0"
+  cpu_shares: 256
   logging:
     driver: json-file
     options: { max-size: "10m", max-file: "3" }
@@ -26,13 +27,19 @@ services:
     image: postgres:16-alpine
     container_name: underground-dev-db
     <<: *limits
+    cpus: "0.5"
     mem_limit: 256m
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - ${DATA_DIR}/pg:/var/lib/postgresql/data
+      # create_host_path false: pg/ exists only on the mounted 4 GB data fs (bootstrap-dev.sh). If that mount is
+      # missing, the container refuses to start instead of silently writing to the disk LIVE products share.
+      - type: bind
+        source: ${DATA_DIR}/pg
+        target: /var/lib/postgresql/data
+        bind: { create_host_path: false }
     networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -44,6 +51,7 @@ services:
     image: underground-api:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-api
     <<: *limits
+    cpus: "0.5"
     mem_limit: 256m
     environment:
       PORT: 8080
@@ -57,7 +65,10 @@ services:
       WEB_APP_URL: ${PUBLIC_WEB_URL}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
     volumes:
-      - ${DATA_DIR}/uploads:/app/uploads
+      - type: bind
+        source: ${DATA_DIR}/uploads
+        target: /app/uploads
+        bind: { create_host_path: false }
     networks: [internal, caddynet]
     depends_on:
       db:
@@ -67,6 +78,7 @@ services:
     image: underground-web:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-web
     <<: *limits
+    cpus: "0.25"
     mem_limit: 256m
     networks: [caddynet]
     depends_on: [api]
@@ -75,6 +87,7 @@ services:
     image: underground-admin:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-admin
     <<: *limits
+    cpus: "0.25"
     mem_limit: 192m
     networks: [caddynet]
     depends_on: [api]

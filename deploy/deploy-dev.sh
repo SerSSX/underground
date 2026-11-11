@@ -67,6 +67,7 @@ ssh_box "bash -s" -- "$SHA" <<'REMOTE'
 set -euo pipefail
 SHA=$1; ROOT=/opt/underground-dev; IN=$ROOT/incoming/$SHA
 cd "$ROOT"
+mountpoint -q "$ROOT/data" || { echo "REFUSED: $ROOT/data (the 4 GB data fs) is not mounted"; exit 1; }
 for f in "$IN"/underground-*.tar.zst; do
   [ -e "$f" ] || continue
   zstd -dc "$f" | docker load -q >/dev/null

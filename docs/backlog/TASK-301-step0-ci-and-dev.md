@@ -46,3 +46,13 @@ Reading recorded: the plan is approved («погнали в розробку»);
 | 16 | TRIVIAL | `version_reports_build` cannot prove the sha is wired | accepted: the deploy smoke proves it against the real sha |
 | 17 | TRIVIAL | JWT on a command line; login rate limit lets anyone lock maker@ (red smoke) | JWT fixed (Python). Lockout accepted on DEV: a red smoke restores the previous release, no harm |
 | 18 | TRIVIAL | README overstated maker's events; one password incl. admin | fixed |
+
+## Closure check (distinct, opus/high, of b515a21)
+
+15 of 18 rows closed; NEW: NF-1 data cap bypassed if the loop mount is missing (docker would create the bind
+path on the root fs), NF-2 CPU caps summed to 4.0 on 2 vCPUs, NF-3 a failed dispatch/lookup of msgview's smoke
+left the Caddy change in place. All three MINOR, fixed in the next commit: long-syntax binds with
+`create_host_path: false` + `mountpoint` guard in deploy; caps db 0.5 / api 0.5 / web 0.25 / admin 0.25 +
+`cpu_shares: 256`; dispatch or lookup failure undoes the Caddy change like a red smoke.
+Pre-existing app issue raised by the closure check — login rate limit keyed by email lets anyone lock any
+account — added to plan step 1 (Б6). Not in this diff; tracked there.

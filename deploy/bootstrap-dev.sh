@@ -89,17 +89,26 @@ REMOTE
 # discard any later edit to the shared file.
 grep -qx CADDY_CHANGED "$LOG" || exit 0
 
-# msgview's own browser smoke, from outside the box. Red undoes the Caddy change.
+# msgview's own browser smoke, from outside the box. Red — or no run to read — undoes the Caddy change: a change
+# to the shared Caddyfile never stays without msgview's own proof.
+undo_caddy() {
+  ssh_box 'BK=$(cat /opt/underground-dev/caddy-backup.path 2>/dev/null) && [ -f "$BK" ] && cat "$BK" > /opt/caddy/Caddyfile \
+    && docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile && echo "restored $BK"' \
+    || echo "UNDO FAILED — restore the Caddyfile from /opt/backups by hand"
+  exit 1
+}
 TAG=ug-bootstrap-$(date +%s)
-gh workflow run prod-smoke.yml -R SerSSX/msgview -f base_url=https://msgview.app -f run_tag="$TAG" >/dev/null
+gh workflow run prod-smoke.yml -R SerSSX/msgview -f base_url=https://msgview.app -f run_tag="$TAG" >/dev/null \
+  || { echo "msgview smoke could not be dispatched — undoing the Caddy change"; undo_caddy; }
+RID=""
 for _ in $(seq 1 30); do
   RID=$(gh run list -R SerSSX/msgview --workflow prod-smoke.yml --event workflow_dispatch -L 10 \
-          --json databaseId,displayTitle -q ".[] | select(.displayTitle | contains(\"$TAG\")) | .databaseId" | head -1)
+          --json databaseId,displayTitle -q ".[] | select(.displayTitle | contains(\"$TAG\")) | .databaseId" | head -1 || true)
   [ -n "$RID" ] && break; sleep 5
 done
-[ -n "${RID:-}" ] || { echo "ERROR: msgview smoke run not found"; exit 1; }
-gh run watch "$RID" -R SerSSX/msgview --exit-status >/dev/null 2>&1 && { echo "→ msgview browser smoke green (run $RID)"; exit 0; }
-echo "msgview browser smoke RED (run $RID) — undoing the Caddy change"
-ssh_box 'BK=$(cat /opt/underground-dev/caddy-backup.path 2>/dev/null) && [ -f "$BK" ] && cat "$BK" > /opt/caddy/Caddyfile \
-  && docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile && echo "restored $BK"'
-exit 1
+[ -n "$RID" ] || { echo "msgview smoke run not found — undoing the Caddy change"; undo_caddy; }
+if gh run watch "$RID" -R SerSSX/msgview --exit-status >/dev/null 2>&1; then
+  echo "→ msgview browser smoke green (run $RID)"
+else
+  echo "msgview browser smoke RED (run $RID) — undoing the Caddy change"; undo_caddy
+fi
