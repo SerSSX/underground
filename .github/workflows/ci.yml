@@ -109,6 +109,16 @@ jobs:
         run: cargo fmt --check
       - name: Tests (unit + Postgres-backed)
         run: cargo test --locked --no-fail-fast
+      - name: Unreachable advisories stay unreachable
+        # api/.cargo/audit.toml ignores two advisories ONLY because these crates are not in the build graph.
+        run: |
+          for c in rsa libsqlite3-sys; do
+            out=$(cargo tree -q -i "$c" -e normal,build --target all 2>&1 || true)
+            if [ -n "$out" ] && ! grep -q "did not match any packages" <<<"$out"; then
+              echo "::error::$c is now compiled into the API; its ignored advisory in api/.cargo/audit.toml no longer holds"
+              exit 1
+            fi
+          done
       - name: Dependency audit (RustSec)
         run: |
           command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
