@@ -1,12 +1,15 @@
-# Underground DEV stack on the shared host (rules §8.1 — one command brings it up).
+# Underground DEV stack on the shared arm64 box 65.108.87.247 (rules §6: one command brings it up).
 #
-# Shape: db + api + web + admin, all on a private network, fronted by the shared Caddy on
-# `caddynet`. No host ports are published — Caddy reaches the containers by name, so the
-# database and the API are unreachable from the internet except through the routes Caddy
-# exposes. Every URL/port/secret comes from deploy/.env.dev (never hardcoded — §10).
+# Images are NOT built here: CI builds them for the exact commit on an arm64 runner, and
+# deploy/deploy-dev.sh loads them onto the box and sets UG_TAG (= that commit) in release.env.
+# Nothing compiles on the box, which also serves LIVE products.
 #
-# Usage (from the repo root on the server):
-#   docker compose --env-file deploy/.env.dev -f deploy/docker-compose.dev.yml up -d --build
+# Shape: db + api + web + admin. No host ports are published; the shared Caddy (network `caddynet`)
+# reaches the containers by name. Memory limits keep this stand from starving the LIVE neighbours.
+#
+# Usage on the box (deploy-dev.sh runs exactly this):
+#   cd /opt/underground-dev && docker compose --env-file .env.dev --env-file release.env \
+#     -f docker-compose.dev.yml up -d --wait
 
 name: underground-dev
 
@@ -15,6 +18,7 @@ services:
     image: postgres:16-alpine
     container_name: underground-dev-db
     restart: unless-stopped
+    mem_limit: 256m
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -29,11 +33,10 @@ services:
       retries: 10
 
   api:
-    build:
-      context: ../api
-    image: underground-dev-api
+    image: underground-api:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-api
     restart: unless-stopped
+    mem_limit: 256m
     environment:
       PORT: 8080
       RUST_LOG: ${RUST_LOG}
@@ -41,9 +44,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       JWT_SECRET: ${JWT_SECRET}
       UPLOADS_DIR: /app/uploads
-      # Absolute URLs the API mints (upload links, password-reset links) must be the
-      # PUBLIC ones, not the container names — they are opened in a browser or a phone.
-      PUBLIC_BASE_URL: ${PUBLIC_API_URL}
+      # Absolute URLs the API mints (uploads, links in mail) must be the PUBLIC ones.
+      PUBLIC_BASE_URL: ${PUBLIC_WEB_URL}
       WEB_APP_URL: ${PUBLIC_WEB_URL}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
     volumes:
@@ -54,25 +56,18 @@ services:
         condition: service_healthy
 
   web:
-    build:
-      context: ../web
-      args:
-        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL}
-        NEXT_PUBLIC_SITE_URL: ${PUBLIC_WEB_URL}
-    image: underground-dev-web
+    image: underground-web:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-web
     restart: unless-stopped
+    mem_limit: 256m
     networks: [caddynet]
     depends_on: [api]
 
   admin:
-    build:
-      context: ../admin
-      args:
-        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_ADMIN_API_URL}
-    image: underground-dev-admin
+    image: underground-admin:${UG_TAG:?set by deploy-dev.sh in release.env}
     container_name: underground-dev-admin
     restart: unless-stopped
+    mem_limit: 192m
     networks: [caddynet]
     depends_on: [api]
 

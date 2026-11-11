@@ -1,0 +1,207 @@
+# Underground CI — the gate every commit passes before it can reach DEV (rules §6, §9).
+#
+# Private repo on a free plan: Actions minutes are a shared budget with msgview, and every job is billed
+# at least one minute. So: one job per stack, the Android job only when android/ changed (or on main),
+# caches for cargo, npm and Gradle, and an in-progress run is cancelled by a newer push to the same ref.
+#
+# deploy/deploy-dev.sh reads this workflow's conclusion for the exact commit and refuses anything but
+# success, so a red or missing run here blocks the DEV deploy.
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths-ignore: ["docs/**", "**/*.md"]
+  pull_request:
+    paths-ignore: ["docs/**", "**/*.md"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The branch whose green commits deploy to DEV, and DEV's public URLs (not secrets; baked into the Next.js
+  # bundles at build time — see web/Dockerfile).
+  DEV_BRANCH: claude/underground-mvp
+  DEV_WEB_URL: https://underground-dev.65-108-87-247.sslip.io
+  DEV_ADMIN_URL: https://underground-admin-dev.65-108-87-247.sslip.io
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      android: ${{ steps.diff.outputs.android }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          REF: ${{ github.ref }}
+        run: |
+          # A new branch (before = 0000…) or main: run everything.
+          if [ "$REF" = "refs/heads/main" ] || [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "android=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BEFORE" HEAD | grep -qE '^(android/|\.github/workflows/)'; then
+            echo "android=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "android=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      # Throwaway CI database; sqlx::test creates one database per test on this server.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (same minor as api/Dockerfile)
+        run: rustup toolchain install 1.96 --profile minimal --component rustfmt && rustup default 1.96
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cargo/bin/cargo-audit
+            api/target
+          key: api-${{ runner.os }}-1.96-${{ hashFiles('api/Cargo.lock') }}
+          restore-keys: api-${{ runner.os }}-1.96-
+      - name: Format
+        run: cargo fmt --check
+      - name: Tests (unit + Postgres-backed)
+        run: cargo test --locked
+      - name: Dependency audit (RustSec)
+        run: |
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+          cargo audit
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [web, admin]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+      - name: Dependency audit (high and above)
+        run: npm audit --audit-level=high
+
+  android:
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+          cache: gradle
+      - name: Build debug APK and run unit tests
+        run: ./gradlew --no-daemon assembleDebug testDebugUnitTest
+
+  # arm64 images for the DEV stand, built natively on an arm64 runner (the box is arm64), only for pushes
+  # to the DEV branch and only after the API and web gates passed. deploy/deploy-dev.sh downloads this
+  # artifact for the exact commit; nothing is built on the shared box.
+  images:
+    needs: [api, web]
+    if: github.event_name == 'push' && github.ref_name == 'claude/underground-mvp'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: api image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: api
+          platforms: linux/arm64
+          build-args: UG_BUILD_SHA=${{ github.sha }}
+          tags: underground-api:${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/underground-api.tar
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+      - name: web image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: web
+          platforms: linux/arm64
+          build-args: |
+            UG_BUILD_SHA=${{ github.sha }}
+            NEXT_PUBLIC_API_BASE_URL=${{ env.DEV_WEB_URL }}
+            NEXT_PUBLIC_SITE_URL=${{ env.DEV_WEB_URL }}
+          tags: underground-web:${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/underground-web.tar
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+      - name: admin image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: admin
+          platforms: linux/arm64
+          build-args: |
+            UG_BUILD_SHA=${{ github.sha }}
+            NEXT_PUBLIC_API_BASE_URL=${{ env.DEV_ADMIN_URL }}
+            NEXT_PUBLIC_SITE_URL=${{ env.DEV_ADMIN_URL }}
+          tags: underground-admin:${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/underground-admin.tar
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,scope=admin,mode=max
+      - name: Compress
+        working-directory: ${{ runner.temp }}
+        run: |
+          zstd -q -T0 -9 --rm underground-api.tar underground-web.tar underground-admin.tar
+          sha256sum underground-*.tar.zst > SHA256SUMS
+          ls -l underground-*.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: |
+            ${{ runner.temp }}/underground-*.tar.zst
+            ${{ runner.temp }}/SHA256SUMS
+          retention-days: 3
+          compression-level: 0

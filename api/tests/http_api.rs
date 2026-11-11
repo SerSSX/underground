@@ -39,6 +39,22 @@ async fn version_returns_name(pool: PgPool) {
     assert!(body.contains("underground-api"), "version body: {body}");
 }
 
+/// The deploy smoke reads `build` to prove the served binary is the commit just deployed.
+#[sqlx::test(migrations = "./migrations")]
+async fn version_reports_build(pool: PgPool) {
+    let resp = router(AppState {
+        db: pool,
+        jwt_secret: "test-secret".into(),
+    })
+    .oneshot(get("/api/version"))
+    .await
+    .unwrap();
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let build = v["build"].as_str().expect("build field");
+    assert_eq!(build, option_env!("UG_BUILD_SHA").unwrap_or("local"));
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn events_returns_empty_json_array(pool: PgPool) {
     let resp = router(AppState {

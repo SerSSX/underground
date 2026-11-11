@@ -10,7 +10,7 @@
 ## Застосувати на DEV-стенді
 
 ```bash
-bash scripts/seed-demo.sh
+bash deploy/seed-dev.sh
 ```
 
 Скрипт: збирає SQL з `demo.json` → копіює на бокс → застосовує однією транзакцією →

@@ -144,11 +144,15 @@ async fn health() -> Json<Health> {
 struct Version {
     name: &'static str,
     version: &'static str,
+    /// Git commit the binary was built from (CI passes it as a Docker build arg). The DEV/prod smoke
+    /// compares it with the commit it just deployed, so a stale container cannot pass as the new one.
+    build: &'static str,
 }
 
 async fn version() -> Json<Version> {
     Json(Version {
         name: env!("CARGO_PKG_NAME"),
         version: env!("CARGO_PKG_VERSION"),
+        build: option_env!("UG_BUILD_SHA").unwrap_or("local"),
     })
 }

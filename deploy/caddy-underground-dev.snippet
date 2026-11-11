@@ -1,26 +1,23 @@
-# Underground DEV — append to the shared /opt/signalops/caddy/Caddyfile.
+# Underground DEV — appended once to the shared /opt/caddy/Caddyfile by deploy/bootstrap-dev.sh.
 #
-# Web and API share one hostname on purpose: the browser then talks to the API same-origin,
-# so no CORS preflight and no third-party-cookie surface. The API owns /api, /uploads and
-# /health; everything else is the Next.js app.
-underground.159-69-159-230.sslip.io {
+# Web and API share one hostname on purpose: the browser talks to the API same-origin, so there is no CORS
+# preflight. The API owns /api, /uploads and /health; everything else is the Next.js app.
+underground-dev.65-108-87-247.sslip.io {
 	encode gzip zstd
 
-	# A dev deployment must never be indexed, and the app itself ships SEO landing pages
-	# (city/category) that would otherwise compete with production. Header, not robots.txt:
-	# a robots-blocked URL is never fetched, so the header would never be read, and Google
-	# can keep a blocked URL indexed on inbound links alone.
+	# A dev stand must never be indexed (the app ships SEO landing pages that would compete with prod).
+	# A header, not robots.txt: a robots-blocked URL is never fetched, so the header would never be read.
 	header X-Robots-Tag "noindex, nofollow"
 
-	# No Basic Auth: the Android client and the QR door-scan flow both talk to this host,
-	# and neither can answer a Basic Auth challenge. The gate is the app's own JWT auth.
+	# No Basic Auth: the Android client and the door-scan flow talk to this host and cannot answer a Basic
+	# Auth challenge. The gate is the app's own sign-in.
 	@api path /api/* /uploads/* /health
 	reverse_proxy @api underground-dev-api:8080
 
 	reverse_proxy underground-dev-web:3001
 }
 
-underground-admin.159-69-159-230.sslip.io {
+underground-admin-dev.65-108-87-247.sslip.io {
 	encode gzip zstd
 	header X-Robots-Tag "noindex, nofollow"
 
