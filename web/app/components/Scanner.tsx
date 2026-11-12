@@ -98,6 +98,7 @@ export default function Scanner({ eventId }: { eventId: string }) {
     wrong_event: ["Квиток на іншу подію", "Ticket for another event"],
     returned: ["Бронь скасована", "Booking was cancelled"],
     inactive: ["Квиток недійсний", "Ticket is not valid"],
+    event_cancelled: ["Подію скасовано — вхід закрито", "The event is cancelled"],
     not_found: ["Код не розпізнано або застарів — попросіть оновити QR", "Unknown or expired code — ask the guest to refresh the QR"],
   };
 
