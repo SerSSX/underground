@@ -3,7 +3,7 @@
 import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { login, requestEmailCode, verifyEmailCode, setToken, errorMessage, safeNext } from "../../lib/api";
+import { login, requestEmailCode, verifyEmailCode, setToken, errorMessage, isUnauthorized, safeNext } from "../../lib/api";
 import { EMAIL_CODE_LOGIN } from "../../lib/flags";
 import { useLang, tr } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
@@ -24,13 +24,14 @@ function LoginForm() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function run(fn: () => Promise<void>) {
+  async function run(fn: () => Promise<void>, wrong?: string) {
     setBusy(true);
     setError(null);
     try {
       await fn();
     } catch (err) {
-      setError(errorMessage(err));
+      // A 401 here means the credentials were wrong, not that a sign-in is needed.
+      setError(wrong && isUnauthorized(err) ? wrong : errorMessage(err));
       setBusy(false);
     }
   }
@@ -42,7 +43,7 @@ function LoginForm() {
 
   const submitPassword = (e: FormEvent) => {
     e.preventDefault();
-    void run(async () => done(await login(email.trim(), password)));
+    void run(async () => done(await login(email.trim(), password)), tr(lang, "Невірний email або пароль", "Wrong email or password"));
   };
   const sendCode = (e: FormEvent) => {
     e.preventDefault();
@@ -54,7 +55,7 @@ function LoginForm() {
   };
   const submitCode = (e: FormEvent) => {
     e.preventDefault();
-    void run(async () => done(await verifyEmailCode(email.trim(), code.trim())));
+    void run(async () => done(await verifyEmailCode(email.trim(), code.trim())), tr(lang, "Невірний або прострочений код", "Wrong or expired code"));
   };
 
   return (
