@@ -167,6 +167,7 @@ export interface TicketDto {
   event_title: string;
   event_venue_address?: string | null;
   event_poster_url?: string | null;
+  event_timezone?: string | null;
   event_city: string | null;
   event_starts_at: string | null;
   qr_token: string;

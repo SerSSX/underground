@@ -12,13 +12,13 @@ import Poster from "../../components/Poster";
 import { Toast, useToast } from "../../components/Toast";
 import { QrCode, Navigation, Gift, X, Ticket, Compass, CircleCheck, ChevronLeft, ChevronRight } from "../../components/Icon";
 
-type Group = { eventId: string; title: string; startsAt: string | null; city: string | null; venue: string | null; poster: string | null; tickets: TicketDto[] };
+type Group = { eventId: string; title: string; startsAt: string | null; tz: string | null; city: string | null; venue: string | null; poster: string | null; tickets: TicketDto[] };
 
 /** Tickets grouped by event: one card per event with all its places. */
 function group(list: TicketDto[]): Group[] {
   const map = new Map<string, Group>();
   for (const t of list) {
-    const g = map.get(t.event_id) ?? { eventId: t.event_id, title: t.event_title, startsAt: t.event_starts_at, city: t.event_city, venue: t.event_venue_address ?? null, poster: t.event_poster_url ?? null, tickets: [] };
+    const g = map.get(t.event_id) ?? { eventId: t.event_id, title: t.event_title, startsAt: t.event_starts_at, tz: t.event_timezone ?? null, city: t.event_city, venue: t.event_venue_address ?? null, poster: t.event_poster_url ?? null, tickets: [] };
     g.tickets.push(t);
     map.set(t.event_id, g);
   }
@@ -182,7 +182,7 @@ function TicketsInner() {
                 <Link href={`/events/${g.eventId}`} className="thumb" aria-label={g.title}><Poster src={g.poster} title={g.title} category={null} /></Link>
                 <div style={{ minWidth: 0 }}>
                   <Link href={`/events/${g.eventId}`}><h3>{g.title}</h3></Link>
-                  <div className="muted small" style={{ marginTop: 2 }}>{shortWhen(g.startsAt, lang)}</div>
+                  <div className="muted small" style={{ marginTop: 2 }}>{shortWhen(g.startsAt, lang, g.tz)}</div>
                   <div className="muted small">{[g.venue, g.city].filter(Boolean).join(", ")}</div>
                   <div className="row gap wrap" style={{ marginTop: 8 }}>
                     {act.length > 0 && <span className="badge ok">{placesLabel(act.length, lang)}</span>}
@@ -215,7 +215,7 @@ function TicketsInner() {
             <p className="muted">{tr(lang, "Активних квитків немає.", "No active tickets.")}</p>
           ) : (
             <div className="stack lg" style={{ alignItems: "center", textAlign: "center" }}>
-              <div className="muted small">{longDate(qrFor.startsAt, lang)} · {timeOf(qrFor.startsAt)}</div>
+              <div className="muted small">{longDate(qrFor.startsAt, lang, qrFor.tz)} · {timeOf(qrFor.startsAt, qrFor.tz)}</div>
               <div className="qr-box">
                 {qrImg ? <img src={qrImg} alt={tr(lang, "QR-код квитка", "Ticket QR code")} /> : <div className="skeleton" style={{ width: "100%", height: "100%" }} />}
               </div>

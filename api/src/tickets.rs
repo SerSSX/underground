@@ -17,7 +17,7 @@ use crate::state::AppState;
 
 const TICKET_SELECT: &str = "SELECT t.id, t.event_id, t.qr_token, t.status, t.price, t.created_at, \
         e.title AS event_title, e.starts_at AS event_starts_at, e.city AS event_city, \
-        e.venue_address AS event_venue_address, e.poster_url AS event_poster_url, \
+        e.venue_address AS event_venue_address, e.poster_url AS event_poster_url, e.timezone AS event_timezone, \
         o.id AS order_id, o.escrow_status AS escrow_status \
      FROM tickets t JOIN events e ON e.id = t.event_id \
      LEFT JOIN orders o ON o.ticket_id = t.id AND o.buyer_id = t.owner_id";
@@ -35,6 +35,9 @@ pub struct Ticket {
     pub event_city: Option<String>,
     pub event_venue_address: Option<String>,
     pub event_poster_url: Option<String>,
+    /// IANA zone the event's local time is shown in, so a ticket reads the same time as the event page.
+    #[sqlx(default)]
+    pub event_timezone: Option<String>,
     /// The paid order this ticket came from (None for free reservations) — lets the buyer
     /// dispute from "My tickets". `escrow_status` says whether a dispute is still possible
     /// (held|clearing → yes; frozen → already disputed; cleared/refunded/paid_out → no).

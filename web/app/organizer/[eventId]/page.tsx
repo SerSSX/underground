@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   myEvents, myStaffEvents, eventGuests, inviteStaff, updateEvent, cancelEvent, getToken, errorMessage, isPast,
@@ -72,6 +72,8 @@ function ManageInner() {
     const g = guests ?? [];
     return { people: g.length, places: g.reduce((a, x) => a + x.places, 0), inside: g.reduce((a, x) => a + x.checked_in, 0) };
   }, [guests]);
+
+  const refreshGuests = useCallback(() => { eventGuests(eventId).then(setGuests).catch(() => {}); }, [eventId]);
 
   async function makeInvite() {
     setBusy(true);
@@ -229,7 +231,7 @@ function ManageInner() {
         )
       )}
 
-      {tab === "scan" && (live ? <Scanner eventId={event.id} /> : (
+      {tab === "scan" && (live ? <Scanner eventId={event.id} onAdmitted={owner ? refreshGuests : undefined} /> : (
         <div className="alert warn">{tr(lang, "Сканер працює для опублікованих подій, що ще не минули.", "The scanner works for published events that haven't ended.")}</div>
       ))}
 

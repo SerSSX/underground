@@ -11,7 +11,7 @@ type BarcodeDetectorLike = { detect: (src: CanvasImageSource) => Promise<{ rawVa
 /** Door scanner in the browser: the phone camera reads the guest's rotating QR and the API marks the
  *  ticket used. Native BarcodeDetector where the browser has it (Chrome on Android), jsQR otherwise
  *  (Safari). Full-screen green / red verdict with the guest's name and number of places. */
-export default function Scanner({ eventId }: { eventId: string }) {
+export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAdmitted?: () => void }) {
   const { lang } = useLang();
   const video = useRef<HTMLVideoElement>(null);
   const canvas = useRef<HTMLCanvasElement | null>(null);
@@ -40,14 +40,14 @@ export default function Scanner({ eventId }: { eventId: string }) {
     try {
       const r = await scanTicket(eventId, code);
       setResult(r);
-      if (r.valid) setCount((c) => c + 1);
+      if (r.valid) { setCount((c) => c + 1); onAdmitted?.(); }
       if ("vibrate" in navigator) navigator.vibrate(r.valid ? 80 : [60, 60, 60]);
     } catch (e) {
       setResult({ valid: false, reason: "error", event_title: errorMessage(e) });
     } finally {
       setTimeout(() => { busy.current = false; setResult(null); }, 2200);
     }
-  }, [eventId]);
+  }, [eventId, onAdmitted]);
 
   async function start() {
     setCamError(null);
@@ -107,7 +107,7 @@ export default function Scanner({ eventId }: { eventId: string }) {
       <div className="scanner">
         <video ref={video} playsInline muted aria-label={tr(lang, "Камера сканера", "Scanner camera")} />
         {on && <div className="frame" aria-hidden />}
-        {!on && (
+        {!on && !result && (
           <div className="scan-result" style={{ background: "transparent" }}>
             <Camera className="ico lg" />
             <p className="muted">{tr(lang, "Наведіть камеру на QR гостя", "Point the camera at the guest's QR")}</p>
