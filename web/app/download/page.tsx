@@ -17,7 +17,7 @@ export default function AppPage() {
   useEffect(() => {
     setAndroid(/android/i.test(navigator.userAgent));
     getAndroidRelease().then(setRel);
-    QRCode.toDataURL(`${window.location.origin}/app`, { margin: 0, width: 360, color: { dark: "#08090d", light: "#ffffff" } }).then(setQr).catch(() => {});
+    QRCode.toDataURL(`${window.location.origin}/download`, { margin: 0, width: 360, color: { dark: "#08090d", light: "#ffffff" } }).then(setQr).catch(() => {});
   }, []);
 
   const mb = rel?.size_bytes ? `${(rel.size_bytes / 1024 / 1024).toFixed(1)} МБ` : null;

@@ -16,7 +16,7 @@ export default function Footer() {
             <Link href="/terms">{tr(lang, "Умови", "Terms")}</Link>
             <Link href="/privacy">{tr(lang, "Конфіденційність", "Privacy")}</Link>
             <Link href="/abuse">{tr(lang, "Поскаржитися", "Report abuse")}</Link>
-            <Link href="/app">{tr(lang, "Застосунок", "App")}</Link>
+            <Link href="/download">{tr(lang, "Застосунок", "App")}</Link>
           </nav>
         </div>
       </div>

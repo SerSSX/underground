@@ -29,6 +29,10 @@ ENV HOSTNAME=0.0.0.0
 WORKDIR /app
 COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+# Source files must never ship: on 2026-11-12 file tracing put app/page.tsx and app/layout.tsx into the
+# standalone output, and the server took that app/ folder for the router root (DEV served the wrong page with
+# no layout). The runtime needs only .next/, server.js and node_modules.
+RUN rm -rf ./app ./src ./pages
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \

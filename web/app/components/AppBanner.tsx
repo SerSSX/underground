@@ -19,7 +19,7 @@ export default function AppBanner() {
   }, []);
   useEffect(() => {
     if (!rel) return;
-    QRCode.toDataURL(`${window.location.origin}/app`, { margin: 0, width: 240, color: { dark: "#08090d", light: "#ffffff" } })
+    QRCode.toDataURL(`${window.location.origin}/download`, { margin: 0, width: 240, color: { dark: "#08090d", light: "#ffffff" } })
       .then(setQr)
       .catch(() => setQr(null));
   }, [rel]);
@@ -32,7 +32,7 @@ export default function AppBanner() {
         <div className="row gap" style={{ marginBottom: 6 }}><Smartphone className="ico" /><h3>{tr(lang, "Underground для Android", "Underground for Android")}</h3></div>
         <p className="muted">{tr(lang, "Афіша, квитки з QR і сканер на вході — у застосунку. Наведіть камеру на QR або натисніть «Завантажити».", "Events, QR tickets and the door scanner in an app. Point your camera at the QR or tap Download.")}</p>
       </div>
-      <Link href="/app" className="btn"><Download className="ico sm" />{tr(lang, "Завантажити", "Download")}</Link>
+      <Link href="/download" className="btn"><Download className="ico sm" />{tr(lang, "Завантажити", "Download")}</Link>
     </section>
   );
 }

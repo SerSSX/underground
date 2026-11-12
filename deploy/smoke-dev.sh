@@ -33,17 +33,23 @@ def api_build():
     got = json.loads(b).get("build")
     return got == sha, f"build={got}"
 
-def page(base):
+def page(base, must=()):
     def run():
         _, _, b = fetch(base + "/")
         html = b.decode("utf-8", "replace")
         if sha not in html:
             return False, "page does not carry the build id"
+        # The page must be the real home: a full document with the site shell, not just "some 200".
+        for needle in ("<html",) + tuple(must):
+            if needle not in html:
+                return False, f"home lacks {needle!r} (wrong page or no layout)"
         chunk = re.search(r'(/_next/static/chunks/[^"\'\s]+\.js)', html)
-        if not chunk:
-            return False, "no JS chunk referenced"
+        css = re.search(r'(/_next/static/css/[^"\'\s]+\.css)', html)
+        if not chunk or not css:
+            return False, "no JS chunk or stylesheet referenced"
         st, _, _ = fetch(base + chunk.group(1))
-        return st == 200, f"chunk {chunk.group(1).rsplit('/', 1)[-1]} HTTP {st}"
+        st2, _, _ = fetch(base + css.group(1))
+        return st == 200 and st2 == 200, f"chunk HTTP {st}, stylesheet HTTP {st2}"
     return run
 
 def catalogue():
@@ -68,8 +74,8 @@ def noindex():
     return "noindex" in v.lower(), v or "header missing"
 
 check(f"api serves build {sha[:12]}", api_build)
-check("web serves this build and its JS loads", page(W))
-check("admin serves this build and its JS loads", page(A))
+check("web home is the real page (shell, styles, JS) of this build", page(W, ("class=\"topbar\"", "<title>Underground")))
+check("admin serves this build with styles and JS", page(A))
 check("catalogue is served", catalogue)
 check("demo organiser signs in and sees own events", organiser)
 check("DEV is noindex", noindex)
