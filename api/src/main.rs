@@ -71,6 +71,9 @@ async fn main() -> anyhow::Result<()> {
         db: pool,
         jwt_secret: config.jwt_secret,
     };
+    let free_only = underground_api::events::free_events_only_from_env();
+    underground_api::events::set_free_events_only(free_only);
+    tracing::info!(free_only, "events: free-only mode (FREE_EVENTS_ONLY)");
     let app = routes::router(state)
         .layer(TraceLayer::new_for_http())
         .layer(underground_api::cors::cors_layer(&cors_origins));
@@ -81,7 +84,10 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind {addr}"))?;
     tracing::info!("underground-api listening on http://{addr}");
 
-    axum::serve(listener, app).await.context("server error")?;
+    // Connect info gives `ratelimit::ClientIp` the socket peer when no proxy header is present.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .context("server error")?;
 
     Ok(())
 }

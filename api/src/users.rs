@@ -121,9 +121,11 @@ pub async fn find_by_email(db: &PgPool, email: &str) -> Result<Option<User>, sql
 }
 
 /// Create a passwordless user (Google / email-code sign-up) — `password_hash` stays NULL.
-/// The display name defaults to the email's local part. Fails on a duplicate email.
+/// The display name starts as [`GUEST_FALLBACK_NAME`] — never derived from the email, which
+/// would publish most of the address on profiles, reviews, chats and gift previews (TASK-302
+/// fix batch 1). The user sets a real name in their profile. Fails on a duplicate email.
 pub async fn create_passwordless_user(db: &PgPool, email: &str) -> Result<User, sqlx::Error> {
-    let name = email.split('@').next().filter(|s| !s.is_empty()).unwrap_or("user");
+    let name = GUEST_FALLBACK_NAME;
     let sql = format!("INSERT INTO users (email, name) VALUES ($1, $2) RETURNING {USER_COLS}");
     sqlx::query_as::<_, User>(&sql)
         .bind(email)

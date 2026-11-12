@@ -468,3 +468,54 @@ commit `e5b24ec`: the local Postgres 14 runs with `lc_ctype = C`, where `lower('
 `postgres:16-alpine` folds Cyrillic case. The shared local `postgres` database also carries migrations 40–42 from
 another branch, which makes `db_connect::connect_runs_migrations_and_queries` fail there with any new migration 40;
 it passes on a fresh database.
+
+## Fix batch 1
+
+From the two independent reviews (API + web). Implementer: the same identity as above. Tests in
+`api/tests/task302_fix1.rs` unless noted.
+
+| # | Item | Done | Test(s) | Mutation-proven |
+|---|---|---|---|---|
+| 1 | Password-less sign-up stores "Гість", never the email local part; 0048 resets existing auto-named password-less accounts; the CT8 display fallback stays | yes | `item1_email_code_account_never_shows_its_local_part` (profile, reviews, conversations, gift preview, event social, staff list), `item1_item5_migration_backfill_is_idempotent` | yes |
+| 2 | P15 step-up: password-less `DELETE /api/me` needs a token issued ≤ 10 min ago, else 401 "увійдіть ще раз…" (new `AppError::ReauthRequired`; `CurrentUser` now carries `iat`) | yes | `item2_passwordless_delete_needs_a_recent_login` | yes |
+| 3 | Register: email uniqueness checked before argon2; per-IP limit (rightmost `X-Forwarded-For`, else socket peer; `SIGNUP_LIMIT_PER_IP`, 10/h) shared with `POST /api/auth/email/request-code`; per-email limit (`REGISTER_LIMIT_PER_EMAIL`, 5/h); `main` serves with connect info | yes | `item3_register_is_rate_limited_per_ip_and_per_email`, `item3_taken_email_is_refused_before_hashing`; unit `ratelimit::tests::client_ip_*` | yes (both the per-IP limit and the check before hashing) |
+| 4 | P16: deletion revokes the user's pending gifts and returns `active` + `pending_claim` tickets, filtered by `events.cost_type = 'free'` | yes | `item4_delete_returns_gifted_places_and_revokes_gifts` | no |
+| 5 | Migration renumbered 0040 → 0048, idempotent (IF [NOT] EXISTS, guarded UPDATEs) | yes | `item1_item5_migration_backfill_is_idempotent` (runs 0048 twice more) | no |
+| 6 | Concurrency: one QR at `/scan` and `/validate` at once; reserve + claim by one user at the cap | yes (no code change needed) | `item6_same_qr_at_both_doors_admits_once`, `item6_concurrent_reserve_and_claim_respect_the_cap` | no |
+| 7 | At most 20 live (pending, unexpired) invites per event, under the event row lock; list limit raised to 200 | yes | `item7_pending_invites_are_capped_at_twenty` (25 parallel → 20) | yes |
+| 8 | Stale comments in `tickets_reserve.rs::free_ticket_deduped_per_user` | yes, comments only | — | — |
+| 9 | Global `ratelimit::prune` runs in `tokio::spawn` | yes | `task302_controls::p13_rate_events_are_pruned` | — |
+| 10 | `GET /api/events/:id/social` → 404 unless published | yes | `item10_social_is_404_unless_published` | no |
+| 11a | Ticket DTO `event_ends_at` (`#[sqlx(default)]`) | yes | `item11a_ticket_carries_event_ends_at` | — |
+| 11b | `links`, `video_url`, `gallery_urls`, `poster_url`: only absolute `http(s)://` with a host (poster/gallery also `/uploads/…` without `..` or `//`); empty string allowed; else 422, on create and update | yes (`events::is_safe_url`) | `item11b_url_rule`, `item11b_event_urls_must_be_http` | yes |
+| 11c | Free-only mode: create coerces `cost_type` → free and `price` → 0; update coerces a sent `price` → 0 | yes | `item11c_free_only_mode_coerces_paid_events` | no |
+| 12 | Transfer 409 "recipient already holds 5" reveals that a known email holds places at that event | accepted for the MVP (MINOR); recorded only | — | — |
+
+Readings:
+- Free-only mode is a process-wide switch set by `main` from `FREE_EVENTS_ONLY` (on unless exactly "0"). In-process
+  tests never call `main`, so the existing paid-flow tests keep running with it off; the item 11c test turns it on.
+  `UpdateEventReq` has no `cost_type`, so an update can only change the price, and a sent price becomes 0. Existing paid
+  events are not converted.
+- Item 3: requests with no `X-Forwarded-For` and no connect info (in-process tests only) share one `"unknown"` bucket.
+  Behind NAT (a venue Wi-Fi), 10 sign-ups and code requests per hour per IP is tight; raise `SIGNUP_LIMIT_PER_IP` if
+  it bites.
+- Item 1 backfill renames only password-less accounts whose name equals the email local part. A password account that
+  typed its local part as its name keeps it; the CT8 fallback still hides it from organisers and staff.
+- Item 4: the sender's gifts are revoked, and the gifted places go back on sale. Paid tickets and gifts are untouched.
+
+Changed assertion in a test written in this task: `task302_controls.rs::p9_attendance_is_shown_to_mutual_friends_on_published_events_only`.
+Was: a hidden event answers 200 with empty friend lists. Now: 404. Why: item 10.
+
+### Fix batch 1 mutation proofs
+
+Same procedure as above: a script kept the original bytes, restored them in `finally` and compared SHA-256. The diff
+stat was identical before and after. Each red below is an assertion failure.
+
+| Control → mutation | Test | Red when removed |
+|---|---|---|
+| 1 → `create_passwordless_user` names the account after the local part again | `item1_email_code_account_never_shows_its_local_part` (name was `loc.part.x7q`) | yes |
+| 2 → step-up check disabled | `item2_passwordless_delete_needs_a_recent_login` (11-minute-old token erased: 204) | yes |
+| 3 → per-IP sign-up limit removed from register | `item3_register_is_rate_limited_per_ip_and_per_email` (11th sign-up: 201) | yes |
+| 3 → uniqueness check before argon2 disabled | `item3_taken_email_is_refused_before_hashing` (300 ms per 409 vs 322 ms per sign-up) | yes |
+| 7 → event row lock removed from invite creation | `item7_pending_invites_are_capped_at_twenty` (21 of 25 created) | yes |
+| 11b → URL check always passes | `item11b_event_urls_must_be_http` (`javascript:` link stored: 201) | yes |

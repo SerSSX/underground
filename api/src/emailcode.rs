@@ -44,7 +44,13 @@ pub struct RequestCodeReq {
 }
 
 /// `POST /api/auth/email/request-code` — email a login code. Always 204 (anti-enumeration).
-pub async fn request_code(State(st): State<AppState>, Json(req): Json<RequestCodeReq>) -> Result<StatusCode, AppError> {
+pub async fn request_code(
+    State(st): State<AppState>,
+    ip: crate::ratelimit::ClientIp,
+    Json(req): Json<RequestCodeReq>,
+) -> Result<StatusCode, AppError> {
+    // Same per-IP sign-up bucket as register (TASK-302 fix batch 1, item 3).
+    crate::ratelimit::hit_signup_ip(&st.db, &ip).await?;
     let email = normalize_email(&req.email);
     if !valid_email(&email) {
         return Err(AppError::Validation("invalid email".into()));

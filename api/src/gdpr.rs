@@ -25,6 +25,9 @@ pub struct DeleteMeReq {
     pub confirm: Option<String>,
 }
 
+/// How recent a password-less user's sign-in must be to erase the account.
+const RECENT_LOGIN_SECS: i64 = 10 * 60;
+
 /// `DELETE /api/me` — GDPR Art. 17 erasure.
 pub async fn delete_me(
     user: CurrentUser,
@@ -50,6 +53,11 @@ pub async fn delete_me(
                     "підтвердіть видалення: {\"confirm\": \"DELETE\"}".into(),
                 ));
             }
+            // Step-up (TASK-302 fix batch 1, item 2): with no password to re-enter, the sign-in
+            // itself must be recent, so a week-old stolen token cannot erase the account.
+            if Utc::now().timestamp() - user.iat > RECENT_LOGIN_SECS {
+                return Err(AppError::ReauthRequired("увійдіть ще раз, щоб видалити акаунт".into()));
+            }
         }
     }
 
@@ -70,12 +78,23 @@ pub async fn delete_me(
     ] {
         sqlx::query(sql).bind(user.id).execute(&mut *tx).await?;
     }
-    // P16: the account's unused free places go back to their events (the account can no longer
-    // fetch a QR). Paid tickets are left alone: returning them is a refund decision.
+    // P16: the account's free places go back to their events (the account can no longer fetch a
+    // QR). Outstanding gifts it sent are revoked first, so those `pending_claim` places return
+    // too. Free events only (by `events.cost_type`): paid tickets are a refund decision.
+    sqlx::query(
+        "UPDATE ticket_gifts g SET status = 'revoked' \
+         FROM tickets t JOIN events e ON e.id = t.event_id \
+         WHERE g.ticket_id = t.id AND g.status = 'pending' AND t.owner_id = $1 AND e.cost_type = 'free'",
+    )
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         "WITH r AS ( \
-             UPDATE tickets SET status = 'returned' \
-             WHERE owner_id = $1 AND status = 'active' AND price = 0 RETURNING event_id) \
+             UPDATE tickets t SET status = 'returned' FROM events e \
+             WHERE e.id = t.event_id AND t.owner_id = $1 AND e.cost_type = 'free' \
+               AND t.status IN ('active', 'pending_claim') \
+             RETURNING t.event_id) \
          UPDATE events e SET tickets_left = e.tickets_left + c.n \
          FROM (SELECT event_id, count(*)::int AS n FROM r GROUP BY event_id) c \
          WHERE e.id = c.event_id",

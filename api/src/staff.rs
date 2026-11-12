@@ -52,16 +52,22 @@ pub struct InviteResp {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Most live (pending, unexpired) staff invites one event may have at once.
+pub const MAX_PENDING_INVITES: i64 = 20;
+
 /// `POST /api/events/:id/staff/invite` — owner creates a single-use controller invite.
 pub async fn invite_staff(
     user: CurrentUser,
     State(st): State<AppState>,
     Path(event_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<InviteResp>), AppError> {
-    let event: Option<(Option<Uuid>, String)> = sqlx::query_as("SELECT organizer_id, status FROM events WHERE id = $1")
-        .bind(event_id)
-        .fetch_optional(&st.db)
-        .await?;
+    let mut tx = st.db.begin().await?;
+    // Row lock: concurrent invite calls for one event are serialised, so the cap below holds.
+    let event: Option<(Option<Uuid>, String)> =
+        sqlx::query_as("SELECT organizer_id, status FROM events WHERE id = $1 FOR UPDATE")
+            .bind(event_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     match event {
         None => return Err(AppError::NotFound),
         Some((o, _)) if o != Some(user.id) => return Err(AppError::Forbidden),
@@ -71,6 +77,19 @@ pub async fn invite_staff(
         }
         Some(_) => {}
     }
+    // Fix batch 1, item 7: at most MAX_PENDING_INVITES live invites per event, so a leaked or
+    // scripted organiser session cannot mint an unbounded number of bearer tokens.
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM staff_invites WHERE event_id = $1 AND status = 'pending' AND expires_at > now()",
+    )
+    .bind(event_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if pending >= MAX_PENDING_INVITES {
+        return Err(AppError::Conflict(format!(
+            "забагато активних запрошень (до {MAX_PENDING_INVITES}); скасуйте непотрібні"
+        )));
+    }
     let raw = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
     let expires_at = Utc::now() + Duration::hours(invite_ttl_hours());
     sqlx::query("INSERT INTO staff_invites (event_id, invited_by, token_hash, expires_at) VALUES ($1, $2, $3, $4)")
@@ -78,8 +97,9 @@ pub async fn invite_staff(
         .bind(user.id)
         .bind(token_hash(&raw))
         .bind(expires_at)
-        .execute(&st.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok((
         StatusCode::CREATED,
         Json(InviteResp {
@@ -325,7 +345,7 @@ pub async fn list_staff(
         "SELECT id, CASE WHEN expires_at < now() THEN 'expired' ELSE 'pending' END AS status, \
             expires_at, created_at \
          FROM staff_invites WHERE event_id = $1 AND status = 'pending' \
-         ORDER BY created_at DESC LIMIT 100",
+         ORDER BY created_at DESC LIMIT 200",
     )
     .bind(event_id)
     .fetch_all(&st.db)

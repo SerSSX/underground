@@ -11,6 +11,9 @@ pub enum AppError {
     Db(#[from] sqlx::Error),
     #[error("unauthorized")]
     Unauthorized,
+    /// 401 with a message telling the user to sign in again (step-up for destructive actions).
+    #[error("{0}")]
+    ReauthRequired(String),
     #[error("forbidden")]
     Forbidden,
     #[error("not found")]
@@ -36,7 +39,7 @@ impl IntoResponse for AppError {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
             AppError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-            AppError::Unauthorized => StatusCode::UNAUTHORIZED,
+            AppError::Unauthorized | AppError::ReauthRequired(_) => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
@@ -74,6 +77,10 @@ mod tests {
         );
         assert_eq!(status_of(AppError::RateLimited), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(status_of(AppError::BadRequest("z".into())), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            status_of(AppError::ReauthRequired("r".into())),
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[test]

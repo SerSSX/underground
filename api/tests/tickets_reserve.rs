@@ -126,7 +126,7 @@ async fn free_ticket_deduped_per_user(pool: PgPool) {
         .to_string();
 
     // Same user reserving again → 201: up to 5 places per person per event (TASK-302 Change C;
-    // was 409 "one free ticket per user" — assertion change recorded for owner approval).
+    // was 409 "one free ticket per user"; the owner approved this change on 2026-11-12).
     let resp = app.clone().oneshot(reserve_req(&event, Some(&a))).await.unwrap();
     assert_eq!(
         resp.status(),
@@ -138,7 +138,7 @@ async fn free_ticket_deduped_per_user(pool: PgPool) {
     let resp = app.clone().oneshot(reserve_req(&event, Some(&b))).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // After returning, the first user may reserve again (constraint is active-scoped).
+    // After returning, the first user may reserve again (returned places do not count).
     let ret = Request::post(format!("/api/tickets/{ticket_id}/return"))
         .header("authorization", format!("Bearer {a}"))
         .body(Body::empty())

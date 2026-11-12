@@ -16,7 +16,7 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 const TICKET_SELECT: &str = "SELECT t.id, t.event_id, t.qr_token, t.status, t.price, t.created_at, \
-        e.title AS event_title, e.starts_at AS event_starts_at, e.city AS event_city, \
+        e.title AS event_title, e.starts_at AS event_starts_at, e.ends_at AS event_ends_at, e.city AS event_city, \
         e.venue_address AS event_venue_address, e.poster_url AS event_poster_url, e.timezone AS event_timezone, \
         o.id AS order_id, o.escrow_status AS escrow_status \
      FROM tickets t JOIN events e ON e.id = t.event_id \
@@ -32,6 +32,10 @@ pub struct Ticket {
     pub created_at: DateTime<Utc>,
     pub event_title: String,
     pub event_starts_at: Option<DateTime<Utc>>,
+    /// When the event ends, if set. The web treats an event as over at `ends_at ?? starts_at + 12h`
+    /// so late guests can still open their QR.
+    #[sqlx(default)]
+    pub event_ends_at: Option<DateTime<Utc>>,
     pub event_city: Option<String>,
     pub event_venue_address: Option<String>,
     pub event_poster_url: Option<String>,

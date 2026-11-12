@@ -1814,15 +1814,10 @@ async fn p9_attendance_is_shown_to_mutual_friends_on_published_events_only(pool:
         .execute(&pool)
         .await
         .unwrap();
-    let (_, s) = call(&app, "GET", &social, Some(&viewer), None).await;
-    assert!(
-        s["friends_going"].as_array().unwrap().is_empty(),
-        "[SEC] hidden event: {s}"
-    );
-    assert!(
-        s["friends_interested"].as_array().unwrap().is_empty(),
-        "[SEC] hidden event: {s}"
-    );
+    // Fix batch 1, item 10: a non-published event has no social data at all (was: 200 with
+    // empty friend lists).
+    let (status, _) = call(&app, "GET", &social, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "[SEC] hidden event");
 }
 
 // ── P12, P15, P16 ───────────────────────────────────────────────────────────────────

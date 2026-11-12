@@ -30,6 +30,15 @@ pub async fn social(
     Path(event_id): Path<Uuid>,
 ) -> Result<Json<EventSocial>, AppError> {
     let viewer_id = viewer.map(|v| v.id);
+    // Fix batch 1, item 10: no social data at all for an event the public cannot see.
+    let published: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM events WHERE id = $1 AND status = 'published')")
+            .bind(event_id)
+            .fetch_one(&st.db)
+            .await?;
+    if !published {
+        return Err(AppError::NotFound);
+    }
 
     let interested_count: i64 = sqlx::query_scalar("SELECT count(*) FROM event_saves WHERE event_id = $1")
         .bind(event_id)

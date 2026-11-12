@@ -10,9 +10,68 @@
 //! (TASK-302 P5): a parallel burst for one bucket is serialised, so N concurrent attempts
 //! against a limit of `max` let at most `max` through.
 
+use std::net::{IpAddr, SocketAddr};
+
+use async_trait::async_trait;
+use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::http::request::Parts;
 use sqlx::PgPool;
 
 use crate::error::AppError;
+
+/// The caller's IP for per-client buckets (TASK-302 fix batch 1, item 3).
+///
+/// The rightmost `X-Forwarded-For` entry is the address the reverse proxy (Caddy) itself saw and
+/// appended, so a client cannot choose it; entries to its left are client-supplied and ignored.
+/// Without the header (no proxy) the socket peer is used (`main` serves with connect info). If
+/// neither is available (in-process tests) the key is `"unknown"`, one shared bucket.
+pub struct ClientIp(pub String);
+
+impl ClientIp {
+    pub fn from_parts(parts: &Parts) -> Self {
+        let forwarded = parts
+            .headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .last()
+            .and_then(|s| s.trim().parse::<IpAddr>().ok());
+        let peer = || {
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| addr.ip())
+        };
+        ClientIp(
+            forwarded
+                .or_else(peer)
+                .map(|ip| ip.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+        )
+    }
+}
+
+#[async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(ClientIp::from_parts(parts))
+    }
+}
+
+/// Per-IP sign-up bucket shared by `POST /api/auth/register` and the email-code request
+/// (both create or start creating accounts). Default 10 per hour.
+pub async fn hit_signup_ip(db: &PgPool, ip: &ClientIp) -> Result<(), AppError> {
+    hit(
+        db,
+        &format!("signup-ip:{}", ip.0),
+        env_limit("SIGNUP_LIMIT_PER_IP", 10),
+        3600,
+    )
+    .await
+}
 
 /// Namespace for the advisory lock key (first half of the two-int key), so a bucket hash can
 /// never collide with an advisory lock taken by another feature.
@@ -66,8 +125,11 @@ pub async fn hit(db: &PgPool, bucket: &str, max: i64, window_secs: i32) -> Resul
         .await?;
     tx.commit().await?;
     if uuid::Uuid::new_v4().as_bytes()[0] < 4 {
-        // ~1 in 64 calls; failure here is harmless and never fails the request.
-        let _ = prune(db).await;
+        // ~1 in 64 calls, off the request path; failure here is harmless.
+        let db = db.clone();
+        tokio::spawn(async move {
+            let _ = prune(&db).await;
+        });
     }
     Ok(())
 }
@@ -79,4 +141,50 @@ pub async fn prune(db: &PgPool) -> Result<u64, sqlx::Error> {
         .execute(db)
         .await?;
     Ok(done.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+
+    fn ip_of(req: Request<()>) -> String {
+        let (parts, _) = req.into_parts();
+        ClientIp::from_parts(&parts).0
+    }
+
+    #[test]
+    fn client_ip_takes_the_rightmost_forwarded_entry() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "6.6.6.6, 10.0.0.1, 203.0.113.7")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            ip_of(req),
+            "203.0.113.7",
+            "[SEC] the client-chosen left entries are ignored"
+        );
+        let req = Request::builder()
+            .header("x-forwarded-for", "6.6.6.6")
+            .header("x-forwarded-for", "198.51.100.2")
+            .body(())
+            .unwrap();
+        assert_eq!(ip_of(req), "198.51.100.2", "last header line, last entry");
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_the_socket_peer() {
+        let mut req = Request::builder().body(()).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([192, 0, 2, 9], 4000))));
+        assert_eq!(ip_of(req), "192.0.2.9");
+        let mut req = Request::builder()
+            .header("x-forwarded-for", "not-an-ip")
+            .body(())
+            .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([192, 0, 2, 9], 4000))));
+        assert_eq!(ip_of(req), "192.0.2.9", "garbage header → peer");
+        assert_eq!(ip_of(Request::builder().body(()).unwrap()), "unknown");
+    }
 }

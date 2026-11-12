@@ -29,6 +29,74 @@ fn validate_age_rating(age_rating: Option<&str>) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Accept only an absolute `http(s)://` URL, or (when `allow_uploads`) a same-site `/uploads/...`
+/// path. Anything else — `javascript:`, `data:`, protocol-relative `//host`, relative paths —
+/// would be stored and later rendered as an `href`/`src` by some client (TASK-302 fix batch 1,
+/// item 11b). An empty string is allowed: clients use it to clear a field.
+pub fn is_safe_url(raw: &str, allow_uploads: bool) -> bool {
+    let s = raw.trim();
+    if s.is_empty() {
+        return true;
+    }
+    if s.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\') {
+        return false;
+    }
+    if allow_uploads && s.starts_with("/uploads/") {
+        return !s.contains("..") && !s.contains("//");
+    }
+    let lower = s.to_ascii_lowercase();
+    let rest = if let Some(r) = lower.strip_prefix("https://") {
+        r
+    } else if let Some(r) = lower.strip_prefix("http://") {
+        r
+    } else {
+        return false;
+    };
+    // A host must follow the scheme.
+    rest.split(['/', '?', '#'])
+        .next()
+        .is_some_and(|host| !host.is_empty() && !host.starts_with('@'))
+}
+
+fn validate_urls(
+    poster_url: Option<&str>,
+    video_url: Option<&str>,
+    gallery_urls: &[String],
+    links: &[String],
+) -> Result<(), AppError> {
+    let ok = poster_url.map_or(true, |u| is_safe_url(u, true))
+        && video_url.map_or(true, |u| is_safe_url(u, false))
+        && gallery_urls.iter().all(|u| is_safe_url(u, true))
+        && links.iter().all(|u| is_safe_url(u, false));
+    if ok {
+        Ok(())
+    } else {
+        Err(AppError::Validation(
+            "посилання мають починатися з https:// (або http://)".into(),
+        ))
+    }
+}
+
+static FREE_EVENTS_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Free-only mode (plan Б2, TASK-302 fix batch 1, item 11c): every created or edited event is
+/// free, whatever an old client sends. `main` turns it on from `FREE_EVENTS_ONLY` (on unless
+/// set to "0"); in-process tests that never call this run with it off.
+pub fn set_free_events_only(on: bool) {
+    FREE_EVENTS_ONLY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn free_events_only() -> bool {
+    FREE_EVENTS_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reads `FREE_EVENTS_ONLY`: on unless it is exactly "0".
+pub fn free_events_only_from_env() -> bool {
+    std::env::var("FREE_EVENTS_ONLY")
+        .map(|v| v.trim() != "0")
+        .unwrap_or(true)
+}
+
 /// Default timezone for events whose organizer doesn't specify one (launch market).
 const DEFAULT_TIMEZONE: &str = "Europe/Kyiv";
 
@@ -235,8 +303,18 @@ pub async fn my_events(user: CurrentUser, State(st): State<AppState>) -> Result<
 pub async fn create_event(
     user: CurrentUser,
     State(st): State<AppState>,
-    Json(req): Json<CreateEventReq>,
+    Json(mut req): Json<CreateEventReq>,
 ) -> Result<(StatusCode, Json<Event>), AppError> {
+    if free_events_only() {
+        req.cost_type = Some("free".into());
+        req.price = Decimal::ZERO;
+    }
+    validate_urls(
+        req.poster_url.as_deref(),
+        req.video_url.as_deref(),
+        &req.gallery_urls,
+        &req.links,
+    )?;
     if req.title.trim().is_empty() {
         return Err(AppError::Validation("title is required".into()));
     }
@@ -333,9 +411,18 @@ pub async fn update_event(
     user: CurrentUser,
     State(st): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
-    Json(req): Json<UpdateEventReq>,
+    Json(mut req): Json<UpdateEventReq>,
 ) -> Result<Json<Event>, AppError> {
     require_owner(&st.db, id, user.id).await?;
+    if free_events_only() && req.price.is_some() {
+        req.price = Some(Decimal::ZERO);
+    }
+    validate_urls(
+        req.poster_url.as_deref(),
+        req.video_url.as_deref(),
+        req.gallery_urls.as_deref().unwrap_or(&[]),
+        req.links.as_deref().unwrap_or(&[]),
+    )?;
     if req.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
         return Err(AppError::Validation("title must not be blank".into()));
     }

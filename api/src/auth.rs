@@ -107,9 +107,20 @@ pub struct AuthResp {
 
 pub async fn register(
     State(st): State<AppState>,
+    ip: crate::ratelimit::ClientIp,
     Json(req): Json<RegisterReq>,
 ) -> Result<(StatusCode, Json<AuthResp>), AppError> {
     let email = normalize_email(&req.email);
+    // TASK-302 fix batch 1, item 3: the 409 below says whether an email has an account, and each
+    // attempt used to cost an argon2 hash. Throttle per client IP and per email first.
+    crate::ratelimit::hit_signup_ip(&st.db, &ip).await?;
+    crate::ratelimit::hit(
+        &st.db,
+        &format!("register:{email}"),
+        crate::ratelimit::env_limit("REGISTER_LIMIT_PER_EMAIL", 5),
+        3600,
+    )
+    .await?;
     if !validate_email(&email) {
         return Err(AppError::Validation("invalid email".into()));
     }
@@ -122,6 +133,14 @@ pub async fn register(
     // Same cap as `PATCH /api/me` (TASK-302 P12): the name fills guest lists and scanner screens.
     if req.name.trim().len() > 80 {
         return Err(AppError::Validation("name is too long".into()));
+    }
+    // Cheap uniqueness check before the expensive hash; the unique index stays the race backstop.
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)")
+        .bind(&email)
+        .fetch_one(&st.db)
+        .await?;
+    if taken {
+        return Err(AppError::Conflict("email already registered".into()));
     }
     let hash = hash_password(&req.password)?;
     let user = match users::create_user(&st.db, &email, req.name.trim(), &hash).await {
@@ -156,6 +175,9 @@ pub async fn login(State(st): State<AppState>, Json(req): Json<LoginReq>) -> Res
 
 pub struct CurrentUser {
     pub id: Uuid,
+    /// Issued-at of the bearer token (unix seconds): how recently the user signed in. Used for
+    /// step-up checks on destructive actions (TASK-302 fix batch 1, item 2).
+    pub iat: i64,
 }
 
 #[async_trait]
@@ -181,7 +203,9 @@ impl FromRequestParts<AppState> for CurrentUser {
                 .fetch_optional(&state.db)
                 .await?;
         match row {
-            Some((false, valid_after)) if claims.iat >= valid_after.timestamp() => Ok(CurrentUser { id }),
+            Some((false, valid_after)) if claims.iat >= valid_after.timestamp() => {
+                Ok(CurrentUser { id, iat: claims.iat })
+            }
             _ => Err(AppError::Unauthorized),
         }
     }
