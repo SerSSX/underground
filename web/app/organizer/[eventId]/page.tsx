@@ -173,7 +173,7 @@ function ManageInner() {
         <div className="thumb"><Poster src={event.poster_url} title={event.title} category={event.category} /></div>
         <div style={{ minWidth: 0 }}>
           <h1 style={{ fontSize: 24 }}>{event.title}</h1>
-          <div className="muted small" style={{ marginTop: 4 }}>{shortWhen(event.starts_at, lang)}{event.city ? ` · ${event.city}` : ""}</div>
+          <div className="muted small" style={{ marginTop: 4 }}>{shortWhen(event.starts_at, lang, event.timezone)}{event.city ? ` · ${event.city}` : ""}</div>
           {owner && (
             <div className="row gap wrap" style={{ marginTop: 8 }}>
               <span className="badge accent">{tr(lang, `Заброньовано ${booked}${total ? ` з ${total}` : ""}`, `${booked}${total ? ` of ${total}` : ""} booked`)}</span>

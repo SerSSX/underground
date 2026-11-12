@@ -38,7 +38,7 @@ export default function EditEventPage() {
     category: event.category,
     city: event.city ?? "",
     venue_address: event.venue_address ?? "",
-    starts_at_local: isoToLocalInput(event.starts_at),
+    starts_at_local: isoToLocalInput(event.starts_at, event.timezone),
     price: event.price,
     tickets_total: String(event.tickets_total ?? event.tickets_left),
     is_free: event.cost_type === "free",
@@ -57,11 +57,12 @@ export default function EditEventPage() {
       <EventForm
         initial={initial}
         editing
+        tz={event.timezone ?? null}
         submitLabel={draft ? tr(lang, "Опублікувати", "Publish") : tr(lang, "Зберегти зміни", "Save changes")}
         allowDraft={draft}
         onSubmit={async (f) => {
           // tickets_total and cost_type are fixed after creation; send only what the API updates.
-          const { tickets_total: _t, cost_type: _c, ...body } = toEventInput(f, toIso(f.starts_at_local));
+          const { tickets_total: _t, cost_type: _c, ...body } = toEventInput(f, toIso(f.starts_at_local, event.timezone));
           await updateEvent(eventId, { ...body, ...(draft ? { status: f.is_draft ? "draft" : "published" } : {}) });
           router.push(`/organizer/${eventId}`);
         }}

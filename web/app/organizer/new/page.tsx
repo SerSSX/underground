@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import EventForm, { EMPTY_EVENT, toEventInput } from "../../components/EventForm";
-import { createEvent, getToken, toIso, type EventDto } from "../../../lib/api";
+import { createEvent, getToken, toIso, browserTz, type EventDto } from "../../../lib/api";
 import { useLang, tr } from "../../../lib/i18n";
 import { Toast, useToast } from "../../components/Toast";
 import { CircleCheck, Copy, ExternalLink, Users } from "../../components/Icon";
@@ -14,6 +14,8 @@ export default function NewEventPage() {
   const { lang } = useLang();
   const [created, setCreated] = useState<EventDto | null>(null);
   const [toast, showToast] = useToast();
+  const [tz, setTz] = useState<string | null>(null);
+  useEffect(() => setTz(browserTz()), []);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login?next=/organizer/new");
@@ -64,10 +66,11 @@ export default function NewEventPage() {
       </div>
       <EventForm
         initial={EMPTY_EVENT}
+        tz={tz}
         submitLabel={tr(lang, "Опублікувати", "Publish")}
         allowDraft
         onSubmit={async (f) => {
-          const ev = await createEvent({ ...toEventInput(f, toIso(f.starts_at_local)), status: f.is_draft ? "draft" : "published" });
+          const ev = await createEvent({ ...toEventInput(f, toIso(f.starts_at_local, tz)), timezone: tz, status: f.is_draft ? "draft" : "published" });
           setCreated(ev);
           window.scrollTo({ top: 0 });
         }}

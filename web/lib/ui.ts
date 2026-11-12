@@ -68,37 +68,50 @@ const WEEKDAYS_SHORT: Record<Lang, string[]> = {
   en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
 };
 
-function d(iso: string | null | undefined): Date | null {
+type Parts = { y: number; m: number; day: number; hh: number; mi: number; dow: number };
+
+/** Calendar parts of an instant in a time zone (the event's own, so a Kyiv concert reads 19:00 everywhere);
+ *  without a zone, the visitor's local time. */
+function parts(iso: string | null | undefined, tz?: string | null): Parts | null {
   if (!iso) return null;
   const x = new Date(iso);
-  return Number.isNaN(x.getTime()) ? null : x;
+  if (Number.isNaN(x.getTime())) return null;
+  if (tz) {
+    try {
+      const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", weekday: "short", hourCycle: "h23" });
+      const p = Object.fromEntries(f.formatToParts(x).map((q) => [q.type, q.value]));
+      const dows = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      return { y: +p.year, m: +p.month - 1, day: +p.day, hh: +p.hour % 24, mi: +p.minute, dow: dows.indexOf(p.weekday) };
+    } catch { /* unknown zone: fall through to local */ }
+  }
+  return { y: x.getFullYear(), m: x.getMonth(), day: x.getDate(), hh: x.getHours(), mi: x.getMinutes(), dow: x.getDay() };
 }
 
 /** { day: "17", mon: "лис" } for the date badge on cards. */
-export function dateBadge(iso: string | null | undefined, lang: Lang): { day: string; mon: string } | null {
-  const x = d(iso);
-  return x ? { day: String(x.getDate()), mon: MONTHS_SHORT[lang][x.getMonth()] } : null;
+export function dateBadge(iso: string | null | undefined, lang: Lang, tz?: string | null): { day: string; mon: string } | null {
+  const x = parts(iso, tz);
+  return x ? { day: String(x.day), mon: MONTHS_SHORT[lang][x.m] } : null;
 }
 
-export function timeOf(iso: string | null | undefined): string {
-  const x = d(iso);
-  return x ? `${String(x.getHours()).padStart(2, "0")}:${String(x.getMinutes()).padStart(2, "0")}` : "";
+export function timeOf(iso: string | null | undefined, tz?: string | null): string {
+  const x = parts(iso, tz);
+  return x ? `${String(x.hh).padStart(2, "0")}:${String(x.mi).padStart(2, "0")}` : "";
 }
 
 /** "пт, 17 лис · 19:00" */
-export function shortWhen(iso: string | null | undefined, lang: Lang): string {
-  const x = d(iso);
+export function shortWhen(iso: string | null | undefined, lang: Lang, tz?: string | null): string {
+  const x = parts(iso, tz);
   if (!x) return "";
-  return `${WEEKDAYS_SHORT[lang][x.getDay()]}, ${x.getDate()} ${MONTHS_SHORT[lang][x.getMonth()]} · ${timeOf(iso)}`;
+  return `${WEEKDAYS_SHORT[lang][x.dow]}, ${x.day} ${MONTHS_SHORT[lang][x.m]} · ${timeOf(iso, tz)}`;
 }
 
 /** "пʼятниця, 17 листопада" */
-export function longDate(iso: string | null | undefined, lang: Lang): string {
-  const x = d(iso);
+export function longDate(iso: string | null | undefined, lang: Lang, tz?: string | null): string {
+  const x = parts(iso, tz);
   if (!x) return "";
   return lang === "en"
-    ? `${WEEKDAYS[lang][x.getDay()]}, ${MONTHS_LONG_GEN[lang][x.getMonth()]} ${x.getDate()}`
-    : `${WEEKDAYS[lang][x.getDay()]}, ${x.getDate()} ${MONTHS_LONG_GEN[lang][x.getMonth()]}`;
+    ? `${WEEKDAYS[lang][x.dow]}, ${MONTHS_LONG_GEN[lang][x.m]} ${x.day}`
+    : `${WEEKDAYS[lang][x.dow]}, ${x.day} ${MONTHS_LONG_GEN[lang][x.m]}`;
 }
 
 export type When = "all" | "today" | "tomorrow" | "weekend" | "week";
@@ -106,11 +119,11 @@ export type When = "all" | "today" | "tomorrow" | "weekend" | "week";
 /** Does an event start inside the chosen window (local time)? */
 export function inWindow(iso: string | null | undefined, w: When, now = new Date()): boolean {
   if (w === "all") return true;
-  const x = d(iso);
+  const x = parts(iso);
   if (!x) return false;
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const day = 86_400_000;
-  const dayIdx = Math.floor((new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime() - start.getTime()) / day);
+  const dayIdx = Math.round((new Date(x.y, x.m, x.day).getTime() - start.getTime()) / day);
   if (w === "today") return dayIdx === 0;
   if (w === "tomorrow") return dayIdx === 1;
   if (w === "week") return dayIdx >= 0 && dayIdx < 7;

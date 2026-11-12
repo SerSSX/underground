@@ -3,7 +3,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import CityInput from "./CityInput";
 import EventCard from "./EventCard";
-import { AGE_RATINGS, EVENT_CATEGORIES, uploadImage, errorMessage, toIso, type EventInput, type EventDto } from "../../lib/api";
+import { AGE_RATINGS, EVENT_CATEGORIES, uploadImage, errorMessage, toIso, tzOffsetMs, type EventInput, type EventDto } from "../../lib/api";
 import { FREE_ONLY } from "../../lib/flags";
 import { useLang, tr } from "../../lib/i18n";
 import { categoryLabel } from "../../lib/ui";
@@ -32,13 +32,14 @@ export const EMPTY_EVENT: EventFormInitial = {
   is_draft: false, age_rating: "",
 };
 
-/** ISO instant → the value a datetime-local input expects, in the visitor's own time zone. */
-export function isoToLocalInput(iso: string | null | undefined): string {
+/** ISO instant → the value a datetime-local input expects: wall-clock time in the event's zone (or the
+ *  visitor's, when none). */
+export function isoToLocalInput(iso: string | null | undefined, tz?: string | null): string {
   if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+  const d = new Date(tz ? t + tzOffsetMs(t, tz) : t - new Date(t).getTimezoneOffset() * 60_000);
+  return d.toISOString().slice(0, 16);
 }
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
@@ -58,6 +59,7 @@ export default function EventForm({
   allowDraft = false,
   minSeats = 1,
   editing = false,
+  tz = null,
 }: {
   initial: EventFormInitial;
   submitLabel: string;
@@ -67,6 +69,8 @@ export default function EventForm({
   minSeats?: number;
   /** Editing a published event: capacity is fixed after creation (the API does not change it). */
   editing?: boolean;
+  /** Zone the date input is in: the event's when editing, the organiser's own when creating. */
+  tz?: string | null;
 }) {
   const { lang } = useLang();
   const [f, setF] = useState<EventFormInitial>(FREE_ONLY ? { ...initial, is_free: true } : initial);
@@ -97,7 +101,7 @@ export default function EventForm({
   }
 
   const seats = Number(f.tickets_total);
-  const startIso = toIso(f.starts_at_local);
+  const startIso = toIso(f.starts_at_local, tz);
   const problems = {
     title: !f.title.trim() ? tr(lang, "Вкажіть назву", "Enter a title") : null,
     date: !startIso ? tr(lang, "Вкажіть дату й час", "Pick a date and time") : new Date(startIso).getTime() < Date.now() ? tr(lang, "Дата вже минула", "That date has passed") : null,
@@ -129,7 +133,7 @@ export default function EventForm({
     poster_url: f.poster_url, category: f.category, city: f.city || null, venue_address: f.venue_address || null,
     starts_at: startIso, price: f.price || "0", currency: "UAH", tickets_left: seats > 0 ? seats : 0, tickets_total: seats,
     status: "published", cost_type: f.is_free ? "free" : "paid", video_url: null, gallery_urls: [], links: [], sales_closed: false,
-    age_rating: f.age_rating || null,
+    age_rating: f.age_rating || null, timezone: tz ?? undefined,
   };
 
   return (
@@ -159,7 +163,7 @@ export default function EventForm({
 
           <Section title={tr(lang, "Коли й де", "When and where")}>
             <div className="field">
-              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}</label>
+              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{tz ? <span className="subtle" style={{ fontWeight: 500 }}> · {tz.replace("_", " ")}</span> : null}</label>
               <input id="ev-date" className="input" type="datetime-local" value={f.starts_at_local} onChange={(e) => set("starts_at_local", e.target.value)} aria-invalid={!!show("date")} />
               {show("date") && <span className="err">{show("date")}</span>}
             </div>

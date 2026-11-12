@@ -224,7 +224,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
             {event.starts_at && (
               <div className="info-item">
                 <span className="ib"><Calendar className="ico" /></span>
-                <div><div className="t">{longDate(event.starts_at, lang)}</div><div className="s">{tr(lang, "Початок о", "Starts at")} {timeOf(event.starts_at)}</div></div>
+                <div><div className="t">{longDate(event.starts_at, lang, event.timezone)}</div><div className="s">{tr(lang, "Початок о", "Starts at")} {timeOf(event.starts_at, event.timezone)}</div></div>
               </div>
             )}
             {(event.venue_address || event.city) && (
@@ -332,7 +332,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
             <span className="free">{priceLabel}</span>
             <button className={`round-btn ${saved ? "on" : ""}`} style={{ background: "var(--surface-2)" }} aria-pressed={saved} aria-label={tr(lang, "Зберегти", "Save")} onClick={toggleSave}><Heart className="ico sm" /></button>
           </div>
-          {event.starts_at && <div className="when" style={{ marginTop: 10 }}>{longDate(event.starts_at, lang)} · {timeOf(event.starts_at)}</div>}
+          {event.starts_at && <div className="when" style={{ marginTop: 10 }}>{longDate(event.starts_at, lang, event.timezone)} · {timeOf(event.starts_at, event.timezone)}</div>}
           <div className="muted small" style={{ marginTop: 2 }}>{[event.venue_address, event.city].filter(Boolean).join(", ")}</div>
           <hr />
           <div className="row spread small" style={{ marginBottom: 14 }}>
@@ -367,7 +367,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
           <div className="stack lg">
             <div>
               <div className="strong">{event.title}</div>
-              <div className="muted small">{longDate(event.starts_at, lang)} · {timeOf(event.starts_at)}</div>
+              <div className="muted small">{longDate(event.starts_at, lang, event.timezone)} · {timeOf(event.starts_at, event.timezone)}</div>
             </div>
             <div className="row spread">
               <div>

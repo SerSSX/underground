@@ -113,6 +113,8 @@ export interface EventDto {
   price: string;
   currency: string;
   tickets_left: number;
+  /** IANA zone the event's local time is shown in (e.g. Europe/Kyiv). */
+  timezone?: string;
   /** Capacity the organiser set (0 when an older API omits it). */
   tickets_total?: number;
   status: string;
@@ -403,6 +405,8 @@ export interface EventInput {
   status?: string;
   /** Minimum-age rating: 13|16|18|21 or "" for unrestricted (P1 #77). */
   age_rating?: string | null;
+  /** IANA zone the times are local to (default on the API: Europe/Kyiv). */
+  timezone?: string | null;
 }
 
 // ---- promo codes (organizer, TASK-017 M8) ----
@@ -471,9 +475,38 @@ export async function cancelEvent(id: string): Promise<void> {
 }
 
 // ---- helpers ----
-export function toIso(local: string): string | null {
+/** A datetime-local value ("2026-12-12T19:30", the organiser's own clock) → a real UTC instant.
+ *  (It used to append "Z", storing wall-clock time as if it were UTC; pages that converted to local time then
+ *  showed it shifted by the time-zone offset.) */
+export function toIso(local: string, tz?: string | null): string | null {
   if (!local) return null;
-  return local.length === 16 ? `${local}:00Z` : `${local}Z`;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(local);
+  if (!m) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  if (!tz) {
+    const d = new Date(local);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  // Wall-clock time in `tz` → UTC: subtract the zone's offset at that moment (twice, to settle DST edges).
+  let t = wall - tzOffsetMs(wall, tz);
+  t = wall - tzOffsetMs(t, tz);
+  return new Date(t).toISOString();
+}
+
+/** Offset of an IANA zone from UTC at an instant, in ms (Kyiv in winter → +2 h). */
+export function tzOffsetMs(at: number, tz: string): number {
+  try {
+    const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23" });
+    const p = Object.fromEntries(f.formatToParts(new Date(at)).map((q) => [q.type, q.value]));
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - Math.floor(at / 1000) * 1000;
+  } catch {
+    return -new Date(at).getTimezoneOffset() * 60_000;
+  }
+}
+
+/** The visitor's own IANA zone (sent with a new event so its local time is the organiser's clock). */
+export function browserTz(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
 }
 export function mapsUrl(address: string | null, city: string | null): string | null {
   const q = [address, city].filter(Boolean).join(", ");

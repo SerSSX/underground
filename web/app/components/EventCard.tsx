@@ -22,9 +22,9 @@ export default function EventCard({
 }) {
   const { lang } = useLang();
   const free = FREE_ONLY || event.cost_type.toLowerCase() === "free";
-  const badge = dateBadge(event.starts_at, lang);
+  const badge = dateBadge(event.starts_at, lang, event.timezone);
   const left = event.tickets_left;
-  const place = [timeOf(event.starts_at), event.venue_address ? event.venue_address.split(",")[0] : null, event.city]
+  const place = [timeOf(event.starts_at, event.timezone), event.venue_address ? event.venue_address.split(",")[0] : null, event.city]
     .filter(Boolean)
     .join(" · ");
 

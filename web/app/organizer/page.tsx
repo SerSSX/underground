@@ -103,7 +103,7 @@ export default function OrganizerPage() {
                 <div style={{ minWidth: 0 }}>
                   <div className="row gap wrap" style={{ marginBottom: 4 }}>{statusBadge(e)}</div>
                   <Link href={`/organizer/${e.id}`}><h3 style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.title}</h3></Link>
-                  <div className="muted small">{shortWhen(e.starts_at, lang) || tr(lang, "Дата не вказана", "No date")}{e.city ? ` · ${e.city}` : ""}</div>
+                  <div className="muted small">{shortWhen(e.starts_at, lang, e.timezone) || tr(lang, "Дата не вказана", "No date")}{e.city ? ` · ${e.city}` : ""}</div>
                   {total > 0 && (
                     <div style={{ marginTop: 10, maxWidth: 360 }}>
                       <div className={`progress ${pct >= 90 ? "warn" : ""}`}><i style={{ width: `${pct}%` }} /></div>
