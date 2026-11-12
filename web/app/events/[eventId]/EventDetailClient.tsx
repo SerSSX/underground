@@ -43,6 +43,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
   const [similar, setSimilar] = useState<EventDto[]>([]);
   const [saved, setSaved] = useState(false);
   const [mine, setMine] = useState(0);
+  const [mineLoaded, setMineLoaded] = useState(false);
   const [qty, setQty] = useState(1);
   const [booking, setBooking] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -62,20 +63,20 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
     if (getToken()) {
       mySaves().then((l) => setSaved(l.some((e) => e.id === eventId))).catch(() => {});
       // Counted like the API's cap: active + being transferred + already scanned (D1).
-      myTickets().then((l) => setMine(l.filter((t) => t.event_id === eventId && ["active", "pending_claim", "used"].includes(t.status)).length)).catch(() => {});
+      myTickets().then((l) => setMine(l.filter((t) => t.event_id === eventId && ["active", "pending_claim", "used"].includes(t.status)).length)).catch(() => {}).finally(() => setMineLoaded(true));
     }
   }
   useEffect(load, [eventId]);
   // Back from sign-in with ?book=1: open the booking dialog the visitor asked for, once.
   const autoBook = useRef(false);
   useEffect(() => {
-    if (autoBook.current || !me || !event) return;
+    if (autoBook.current || !me || !event || !mineLoaded) return;
     if (new URLSearchParams(window.location.search).get("book") !== "1") return;
     autoBook.current = true;
     window.history.replaceState(null, "", `/events/${eventId}`);
     setQty(1);
-    setBooking(true);
-  }, [me, event, eventId]);
+    setBooking(true); // the dialog renders only when booking is actually possible (see below)
+  }, [me, event, eventId, mineLoaded]);
   useEffect(() => {
     if (event?.organizer_id) getProfile(event.organizer_id).then(setOrganizer).catch(() => {});
   }, [event?.organizer_id]);
@@ -99,7 +100,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
   const canMore = Math.max(0, Math.min(MAX_PLACES - mine, left));
   const needDob = ageMin > 0 && !!me && !me.dob;
   const tooYoung = ageMin > 0 && !!me?.dob && ageFrom(me.dob) < ageMin;
-  const login = () => router.push(`/login?next=${encodeURIComponent(`/events/${eventId}?book=1`)}`);
+  const login = (book = false) => router.push(`/login?next=${encodeURIComponent(`/events/${eventId}${book ? "?book=1" : ""}`)}`);
 
   let blocked: string | null = null;
   if (over) blocked = tr(lang, "Подія завершилась", "This event has ended");
@@ -111,7 +112,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
 
   function openBooking() {
     if (me === undefined) return; // still checking the session
-    if (!me) return login();
+    if (!me) return login(true);
     setError(null);
     setQty(1);
     setBooking(true);
@@ -377,7 +378,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
         {bookButton(false)}
       </div>
 
-      {booking && (
+      {booking && !blocked && !isOwner && (
         <Modal title={tr(lang, "Бронювання", "Booking")} onClose={() => !busy && setBooking(false)}>
           <div className="stack lg">
             <div>

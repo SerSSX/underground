@@ -85,7 +85,7 @@ export default function HomeClient() {
     const needle = q.trim().toLowerCase();
     return (events ?? [])
       .filter((e) => (!city || e.city === city) && (!cat || e.category.trim().toLowerCase() === cat))
-      .filter((e) => !needle || `${e.title} ${e.description ?? ""}`.toLowerCase().includes(needle))
+      .filter((e) => !needle || `${e.title} ${e.description ?? ""} ${e.venue_address ?? ""}`.toLowerCase().includes(needle))
       .filter((e) => e.starts_at && Date.parse(e.starts_at) > Date.now())
       .slice(0, 4);
   }, [events, when, city, cat, q]);

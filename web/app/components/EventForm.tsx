@@ -86,6 +86,8 @@ export default function EventForm({
   // as tz, is only the fallback). Editing keeps the event's stored zone.
   useEffect(() => {
     if (editing) return;
+    // Forget the previous city's zone at once: until the lookup answers, the browser zone applies.
+    setF((prev) => (prev.timezone === undefined ? prev : { ...prev, timezone: undefined }));
     const city = f.city.trim();
     if (city.length < 2) return;
     let live = true;
@@ -94,7 +96,7 @@ export default function EventForm({
         const hit = list.find((c) => c.name.toLowerCase() === city.toLowerCase()) ?? null;
         const z = hit ? countryTz(hit.country) : null;
         if (live) setF((prev) => ({ ...prev, timezone: z }));
-      }).catch(() => {});
+      }).catch(() => { /* lookup failed: keep the browser zone */ });
     }, 350);
     return () => { live = false; clearTimeout(t); };
   }, [f.city, editing]);
