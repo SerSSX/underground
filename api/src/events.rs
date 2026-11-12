@@ -469,8 +469,12 @@ pub async fn update_event(
             .bind(id)
             .fetch_one(&st.db)
             .await?;
-    let new_ends = if clear_ends_at { None } else { req.ends_at.or(cur_ends) };
-    validate_time_order(req.starts_at.or(cur_starts), new_ends)?;
+    // Only an edit that touches the times is checked (NF3): a legacy row with a bad pair must not block an
+    // unrelated edit such as closing booking. Moving the start past a kept end is still caught.
+    if req.starts_at.is_some() || req.ends_at.is_some() || clear_ends_at {
+        let new_ends = if clear_ends_at { None } else { req.ends_at.or(cur_ends) };
+        validate_time_order(req.starts_at.or(cur_starts), new_ends)?;
+    }
     // Re-resolve geo when the city changes; null fields leave the old geo untouched (COALESCE).
     let geo = match req.city.as_deref() {
         Some(_) => crate::cities::resolve(&st.db, req.city.as_deref()).await?,

@@ -41,7 +41,10 @@ async function check(res: Response): Promise<Response> {
   if (res.ok) return res;
   const body = (await res.json().catch(() => null)) as { error?: string } | null;
   const fallback = res.status === 401 ? "Потрібен вхід" : res.status === 403 ? "Недостатньо прав" : `Помилка ${res.status}`;
-  throw new ApiError(res.status, body?.error || fallback);
+  // The API's generic auth errors are English codes ("unauthorized", "forbidden"); show those in Ukrainian.
+  // Specific messages (validation, "увійдіть ще раз…") come through as written.
+  const text = body?.error && !/^(unauthorized|forbidden)$/i.test(body.error) ? body.error : fallback;
+  throw new ApiError(res.status, text);
 }
 export async function apiGet<T>(path: string): Promise<T> {
   return (await (await check(await fetch(`${BASE}${path}`, { headers: authHeaders() }))).json()) as T;

@@ -957,3 +957,35 @@ async fn n6_gift_reveals_nothing_and_the_cap_holds_at_claim(pool: PgPool) {
     assert_eq!(s, StatusCode::CONFLICT, "[SEC] the cap holds at claim");
     assert_eq!(holdings(&pool, v, event).await, 5);
 }
+
+/// NF3: a row stored with end ≤ start (written before the N1 rule) must not block an unrelated edit such as
+/// closing booking; an edit that touches the times is still checked.
+#[sqlx::test(migrations = "./migrations")]
+async fn nf3_legacy_bad_times_do_not_block_unrelated_edits(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "o@x.co", "Org").await;
+    let event = free_event(&app, &org, json!({"starts_at":"2031-11-20T19:00:00Z"})).await;
+    sqlx::query("UPDATE events SET ends_at = '2031-11-20T18:00:00Z' WHERE id = $1")
+        .bind(event)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let path = format!("/api/events/{event}");
+
+    let (s, body) = call(&app, "PUT", &path, Some(&org), Some(json!({"sales_closed": true}))).await;
+    assert_eq!(s, StatusCode::OK, "[NF3] closing booking on a legacy row: {body}");
+
+    let (s, body) = call(
+        &app,
+        "PUT",
+        &path,
+        Some(&org),
+        Some(json!({"starts_at":"2031-11-21T19:00:00Z"})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "[NF3] a time edit is still checked: {body}"
+    );
+}
