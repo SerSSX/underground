@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
-import { clearToken, getMe, getToken, type UserDto } from "./api";
+import { clearToken, getMe, getToken, isUnauthorized, type UserDto } from "./api";
 
 type Session = {
   /** undefined while the first check runs, null when signed out. */
@@ -27,7 +27,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       .then(setMe)
       .catch((e: unknown) => {
         // Only a rejected token signs out; offline or a 5xx keeps the session (door staff on bad signal).
-        if (e instanceof Error && e.message === "Потрібен вхід") {
+        if (isUnauthorized(e)) {
           clearToken();
           setMe(null);
         }

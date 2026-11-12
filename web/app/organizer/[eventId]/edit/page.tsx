@@ -64,7 +64,9 @@ export default function EditEventPage() {
         onSubmit={async (f) => {
           // tickets_total and cost_type are fixed after creation; send only what the API updates.
           const { tickets_total: _t, cost_type: _c, ...body } = toEventInput(f, toIso(f.starts_at_local, event.timezone), event.timezone);
-          await updateEvent(eventId, { ...body, ...(draft ? { status: f.is_draft ? "draft" : "published" } : {}) });
+          // An emptied end field must remove the stored end (null alone would keep the old one).
+          const clear = !f.ends_at_local && !!event.ends_at;
+          await updateEvent(eventId, { ...body, ...(clear ? { clear_ends_at: true, ends_at: null } : {}), ...(draft ? { status: f.is_draft ? "draft" : "published" } : {}) });
           router.push(`/organizer/${eventId}`);
         }}
       />

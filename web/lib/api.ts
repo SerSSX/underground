@@ -28,14 +28,20 @@ function authHeaders(): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
-async function check(res: Response): Promise<Response> {
-  if (res.status === 401) throw new Error("Потрібен вхід");
-  if (res.status === 403) throw new Error("Недостатньо прав");
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error || `Помилка ${res.status}`);
+/** An API error with its HTTP status, so callers decide by status (401 = signed out) and show the server's
+ *  own text (e.g. "увійдіть ще раз, щоб видалити акаунт") instead of a generic one. */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
   }
-  return res;
+}
+async function check(res: Response): Promise<Response> {
+  if (res.ok) return res;
+  const body = (await res.json().catch(() => null)) as { error?: string } | null;
+  const fallback = res.status === 401 ? "Потрібен вхід" : res.status === 403 ? "Недостатньо прав" : `Помилка ${res.status}`;
+  throw new ApiError(res.status, body?.error || fallback);
 }
 export async function apiGet<T>(path: string): Promise<T> {
   return (await (await check(await fetch(`${BASE}${path}`, { headers: authHeaders() }))).json()) as T;
@@ -56,6 +62,9 @@ export async function uploadImage(file: File): Promise<string> {
   form.append("file", file);
   const res = await check(await fetch(`${BASE}/api/uploads`, { method: "POST", headers: authHeaders(), body: form }));
   return ((await res.json()) as { url: string }).url;
+}
+export function isUnauthorized(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 401;
 }
 export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : "Невідома помилка";
@@ -324,6 +333,7 @@ export async function disputeOrder(orderId: string): Promise<void> {
 
 // ---- gift / claim (TASK-110/114, WF-GiftClaim) ----
 export interface GiftPreviewDto {
+  event_timezone?: string | null;
   from_name: string;
   event_title: string;
   event_starts_at: string | null;
@@ -411,6 +421,8 @@ export interface EventInput {
   age_rating?: string | null;
   /** IANA zone the times are local to (default on the API: Europe/Kyiv). */
   timezone?: string | null;
+  /** Update only: true removes the end time (sent when the organiser empties the field). */
+  clear_ends_at?: boolean;
 }
 
 // ---- promo codes (organizer, TASK-017 M8) ----
@@ -552,7 +564,10 @@ export async function syncUserLocale(locale: string): Promise<void> {
 /** An event is over at its end time, or 12 h after the start when no end is set. Until then a guest can
  *  still show the QR and staff can still scan (a concert that started at 19:00 still admits at 19:05). */
 export function isOver(startsAt: string | null | undefined, endsAt?: string | null): boolean {
-  const end = endsAt ? Date.parse(endsAt) : startsAt ? Date.parse(startsAt) + 12 * 3600_000 : NaN;
+  const start = startsAt ? Date.parse(startsAt) : NaN;
+  let end = endsAt ? Date.parse(endsAt) : NaN;
+  // An end at or before the start is bad data: ignore it rather than close the doors early.
+  if (!Number.isFinite(end) || (Number.isFinite(start) && end <= start)) end = Number.isFinite(start) ? start + 12 * 3600_000 : NaN;
   return Number.isFinite(end) && end < Date.now();
 }
 /** Has it started? (Booking closes at the start; the API refuses after that.) */

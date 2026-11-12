@@ -109,7 +109,7 @@ export default function ClaimGiftPage() {
       <div style={card}>
         <div style={{ fontWeight: 500 }}>{preview.event_title}</div>
         <div className="muted">
-          {shortWhen(preview.event_starts_at, lang)}
+          {shortWhen(preview.event_starts_at, lang, preview.event_timezone)}
           {preview.event_city ? ` · ${preview.event_city}` : ""}
         </div>
       </div>

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { acceptStaffInvite, getToken, errorMessage } from "../../../lib/api";
+import { acceptStaffInvite, getToken, errorMessage, ApiError } from "../../../lib/api";
 import { useLang, tr } from "../../../lib/i18n";
 import { ScanLine } from "../../components/Icon";
 
@@ -45,6 +45,7 @@ function AcceptInner() {
     } catch (e) {
       setError(errorMessage(e));
       setBusy(false);
+      if (e instanceof ApiError && (e.status === 404 || e.status === 409)) { try { sessionStorage.removeItem(KEY); } catch { /* ignore */ } }
     }
   }
 
