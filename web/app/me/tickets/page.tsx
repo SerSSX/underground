@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
-import { myTickets, returnTicket, giftTicket, revokeGift, ticketQr, getToken, errorMessage, mapsUrl, isPast, type TicketDto } from "../../../lib/api";
+import { myTickets, returnTicket, giftTicket, revokeGift, ticketQr, getToken, errorMessage, mapsUrl, isOver, type TicketDto } from "../../../lib/api";
 import { useLang, tr } from "../../../lib/i18n";
 import { longDate, timeOf, placesLabel, shortWhen } from "../../../lib/ui";
 import Modal from "../../components/Modal";
@@ -12,13 +12,13 @@ import Poster from "../../components/Poster";
 import { Toast, useToast } from "../../components/Toast";
 import { QrCode, Navigation, Gift, X, Ticket, Compass, CircleCheck, ChevronLeft, ChevronRight } from "../../components/Icon";
 
-type Group = { eventId: string; title: string; startsAt: string | null; tz: string | null; city: string | null; venue: string | null; poster: string | null; tickets: TicketDto[] };
+type Group = { eventId: string; title: string; startsAt: string | null; endsAt: string | null; tz: string | null; city: string | null; venue: string | null; poster: string | null; tickets: TicketDto[] };
 
 /** Tickets grouped by event: one card per event with all its places. */
 function group(list: TicketDto[]): Group[] {
   const map = new Map<string, Group>();
   for (const t of list) {
-    const g = map.get(t.event_id) ?? { eventId: t.event_id, title: t.event_title, startsAt: t.event_starts_at, tz: t.event_timezone ?? null, city: t.event_city, venue: t.event_venue_address ?? null, poster: t.event_poster_url ?? null, tickets: [] };
+    const g = map.get(t.event_id) ?? { eventId: t.event_id, title: t.event_title, startsAt: t.event_starts_at, endsAt: t.event_ends_at ?? null, tz: t.event_timezone ?? null, city: t.event_city, venue: t.event_venue_address ?? null, poster: t.event_poster_url ?? null, tickets: [] };
     g.tickets.push(t);
     map.set(t.event_id, g);
   }
@@ -29,8 +29,9 @@ function TicketsInner() {
   const router = useRouter();
   const params = useSearchParams();
   const { lang } = useLang();
-  const bookedEvent = params.get("booked");
-  const bookedN = Number(params.get("n") ?? "0");
+  // The success banner is shown once, right after a booking; the numbers come from the data, not the URL.
+  const [bookedEvent] = useState(params.get("booked"));
+  useEffect(() => { if (params.get("booked")) router.replace("/me/tickets"); }, [params, router]);
   const [tickets, setTickets] = useState<TicketDto[] | null>(null);
   const [tab, setTab] = useState<"upcoming" | "past">("upcoming");
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +59,8 @@ function TicketsInner() {
 
   const groups = useMemo(() => {
     const all = group((tickets ?? []).filter((t) => t.status !== "returned"));
-    const upcoming = all.filter((g) => !isPast(g.startsAt) && g.tickets.some((t) => t.status === "active" || t.status === "pending_claim"));
+    // An event stays here until it is over (its end, or 12 h after the start), so a late guest still has the QR.
+    const upcoming = all.filter((g) => !isOver(g.startsAt, g.endsAt) && g.tickets.some((t) => t.status === "active" || t.status === "pending_claim"));
     const past = all.filter((g) => !upcoming.includes(g));
     upcoming.sort((a, b) => (a.startsAt ?? "").localeCompare(b.startsAt ?? ""));
     past.sort((a, b) => (b.startsAt ?? "").localeCompare(a.startsAt ?? ""));
@@ -143,7 +145,7 @@ function TicketsInner() {
             <div className="grow">
               <h3>{tr(lang, "Готово! Місця заброньовано", "Done! Your places are booked")}</h3>
               <p className="muted small" style={{ marginTop: 4 }}>
-                {bookedGroup.title} · {placesLabel(bookedN || bookedGroup.tickets.length, lang)}. {tr(lang, "На вході покажіть QR — для кожного місця свій.", "Show the QR at the door — one per place.")}
+                {bookedGroup.title} · {placesLabel(bookedGroup.tickets.filter((t) => t.status === "active").length, lang)}. {tr(lang, "На вході покажіть QR — для кожного місця свій.", "Show the QR at the door — one per place.")}
               </p>
               <div className="row gap wrap" style={{ marginTop: 12 }}>
                 <button className="btn sm" onClick={() => { setQrIdx(0); setQrFor(bookedGroup); }}><QrCode className="ico sm" />{tr(lang, "Показати QR", "Show QR")}</button>
@@ -260,7 +262,7 @@ function TicketsInner() {
           {giftLink ? (
             <div className="stack lg">
               <div className="alert ok"><CircleCheck className="ico" />{tr(lang, "Готово. Надішліть другові це посилання — він забере місце у свій акаунт.", "Done. Send this link to your friend to claim the place.")}</div>
-              <input className="input" readOnly value={giftLink} onFocus={(e) => e.currentTarget.select()} />
+              <input className="input" readOnly value={giftLink} onFocus={(e) => e.currentTarget.select()} aria-label={tr(lang, "Посилання для друга", "Link for your friend")} />
               <button className="btn block" onClick={() => { void navigator.clipboard.writeText(giftLink); showToast(tr(lang, "Скопійовано", "Copied")); }}>{tr(lang, "Скопіювати посилання", "Copy link")}</button>
             </div>
           ) : (

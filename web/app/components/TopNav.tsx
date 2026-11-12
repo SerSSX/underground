@@ -29,7 +29,8 @@ export default function TopNav() {
   }, [open]);
 
   const is = (p: string) => (p === "/" ? pathname === "/" || pathname.startsWith("/c/") || pathname.startsWith("/city/") : pathname.startsWith(p));
-  const gated = (href: string) => (authed ? href : `/login?next=${encodeURIComponent(href)}`);
+  // While the session check runs (me === undefined) links go straight to the page; it redirects if needed.
+  const gated = (href: string) => (me !== null ? href : `/login?next=${encodeURIComponent(href)}`);
   const createHref = gated("/organizer/new");
 
   function signOut() {

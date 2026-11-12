@@ -55,3 +55,33 @@ look-and-feel is built and shown, not asked — rules §9) · parent: TASK-300
 | P2 read as `admin_locked` (organiser keeps own hide/publish; cannot undo moderation/cancellation) | accept — better than my wording, keeps an existing test |
 | CT5 cancel-all not built | accept — the web cancels per ticket through the existing return endpoint |
 | Local `notifications::city_match…` fails on Postgres 14 `lc_ctype=C`, same at base | to verify in CI (postgres:16) |
+
+## Web review 1 (distinct, opus/xhigh, of ab835f6) — triage
+
+| # | Sev | Finding | Decision |
+|---|---|---|---|
+| B1 | BLOCKER | event "over" at its start: late guests lose the QR, staff lose the scanner | fixed: `isOver` = `ends_at` or start + 12 h, used by tickets, dashboard, manage page, event page; booking still closes at the start ("already under way"); API adds `event_ends_at` to tickets |
+| M1 | MAJOR | open redirect via `safeNext` ("/\t/evil") | fixed: `lib/safe-next.mjs` (control chars, backslash, "//", parsed-origin check) + node:test, mutation-proven |
+| M2 | MAJOR | staff invite token copied into `/login?next=` | fixed: token waits in sessionStorage, fragment cleared, `?token=` fallback dropped |
+| M3 | MAJOR | `node --test lib/` red on Node 22 (glob) | fixed: `node --test lib/*.test.mjs` |
+| M4 | MAJOR | `javascript:` href sink (links, video) | fixed client-side (`safeHref`, gallery filter); API scheme validation in the API fix batch |
+| M5 | MAJOR | APK / gift page show times in a different convention | gift page fixed; APK publish held behind `UG_PUBLISH_APK=1` until the Android step fixes times (dev data has no legacy rows to backfill; no prod) |
+| 1 | MINOR | cap counted on `active` only | fixed: active + pending_claim + used |
+| 2 | MINOR | fake "Готово" banner from URL | fixed: count from data, params cleared on arrival |
+| 3–4 | MINOR | camera stream leak on double tap / tab leave; red flash after admit | fixed: start guard + unmount check; admitted codes remembered 120 s |
+| 5 | MINOR | any `getMe` failure signs out | fixed: only 401 |
+| 6 | MINOR | modal re-focuses on every render, no trap | fixed: effect once, Tab trap, focus restore |
+| 7, 20 | MINOR | inbox re-selects deep-linked peer, stale thread; `?to=` unencoded into API path | fixed: applied once + URL cleared; messages cleared on switch; uuid check |
+| 8 | MINOR | staff have no way back to the scanner | fixed: "You scan tickets at these events" on My events |
+| 9 | MINOR | banner claimed offline + notifications | fixed: copy claims only what exists |
+| 10 | MINOR | debug-signed APKs may not update over each other | moot while the APK is held; stable keystore + versionCode in the Android step |
+| 11 | MINOR | paid events shown as free | API fix batch: free-only coercion on create/update |
+| 12 | MINOR | /terms and /privacy still describe escrow/KYC | owner: legal text approval (plan step 6) |
+| 13 | MINOR | guest CSV export removed | fixed: restored, `lib/csv.mjs` (RFC 4180 + formula guard) + node:test, mutation-proven |
+| 14 | MINOR | mobile booking bar covers footer | fixed: extra footer padding when the bar exists |
+| 15 | MINOR | `--muted-2` contrast 3.8–4.1:1 | fixed: #8a8fa1 |
+| 16 | MINOR | date filter in visitor's zone vs card in event's zone | fixed: filter in the event's zone |
+| 17 | MINOR | remembered city with no events filters to nothing | fixed: dropped when absent |
+| 18 | MINOR | mobile chat compose under the tab bar | fixed: height allowance |
+| 19 | MINOR | no end time in the form | fixed: optional "Кінець", validated after start |
+| T | TRIVIAL | decodeURIComponent throw, loading treated as signed out, missing labels, deploy APK messages/atomic manifest | fixed |

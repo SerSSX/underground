@@ -19,6 +19,7 @@ import {
   type GiftPreviewDto,
 } from "../../../lib/api";
 import { EMAIL_CODE_LOGIN } from "../../../lib/flags";
+import { shortWhen } from "../../../lib/ui";
 import { Gift } from "../../components/Icon";
 import { useLang, tr } from "../../../lib/i18n";
 
@@ -108,7 +109,7 @@ export default function ClaimGiftPage() {
       <div style={card}>
         <div style={{ fontWeight: 500 }}>{preview.event_title}</div>
         <div className="muted">
-          {fmtDate(preview.event_starts_at)}
+          {shortWhen(preview.event_starts_at, lang)}
           {preview.event_city ? ` · ${preview.event_city}` : ""}
         </div>
       </div>

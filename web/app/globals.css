@@ -385,7 +385,7 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 .bubble .tm { display: block; font-size: 11px; opacity: .65; margin-top: 4px; }
 .chat-compose { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
 @media (max-width: 860px) {
-  .chat-layout { grid-template-columns: 1fr; height: calc(100dvh - 56px - var(--tabbar-h) - 110px - env(safe-area-inset-bottom)); border-radius: var(--r-lg); }
+  .chat-layout { grid-template-columns: 1fr; height: calc(100dvh - 56px - var(--tabbar-h) - 160px - env(safe-area-inset-bottom)); border-radius: var(--r-lg); }
   .chat-layout.has-thread .chat-list { display: none; }
   .chat-layout:not(.has-thread) .chat-thread { display: none; }
 }
@@ -422,3 +422,4 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 .form-layout.narrow-aside { grid-template-columns: minmax(0, 1fr) 220px; }
 @media (max-width: 960px) { .form-layout, .form-layout.narrow-aside { grid-template-columns: 1fr; } .form-preview { display: none !important; } }
 @media (max-width: 860px) { .hide-mobile { display: none !important; } }
+@media (max-width: 960px) { body:has(.mobile-cta) .footer { padding-bottom: calc(var(--tabbar-h) + 110px + env(safe-area-inset-bottom)) !important; } }

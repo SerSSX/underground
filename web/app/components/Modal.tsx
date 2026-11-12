@@ -7,8 +7,21 @@ import { X } from "./Icon";
 // Under 560 px it renders as a bottom sheet (globals.css).
 export default function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  // Runs once per opening: focus in, Escape closes, Tab stays inside, body does not scroll, focus goes back after.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const back = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close.current();
+      if (e.key === "Tab" && ref.current) {
+        const f = ref.current.querySelectorAll<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+        if (f.length === 0) return;
+        const first = f[0], lastEl = f[f.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); lastEl.focus(); }
+        else if (!e.shiftKey && document.activeElement === lastEl) { e.preventDefault(); first.focus(); }
+      }
+    };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -16,8 +29,9 @@ export default function Modal({ title, onClose, children }: { title: string; onC
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
+      back?.focus?.();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div className="modal-scrim" onClick={onClose}>

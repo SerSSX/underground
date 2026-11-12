@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
-  myEvents, myStaffEvents, eventGuests, inviteStaff, updateEvent, cancelEvent, getToken, errorMessage, isPast,
+  myEvents, myStaffEvents, eventGuests, inviteStaff, updateEvent, cancelEvent, getToken, errorMessage, isOver,
   listStaff, revokeStaffInvite, removeStaff,
   type EventDto, type GuestDto, type StaffList,
 } from "../../../lib/api";
@@ -15,7 +15,8 @@ import Modal from "../../components/Modal";
 import Poster from "../../components/Poster";
 import Scanner from "../../components/Scanner";
 import { Toast, useToast } from "../../components/Toast";
-import { Users, ScanLine, UserPlus, Pencil, Share2, ExternalLink, Search, ChevronLeft, Copy, Lock, X } from "../../components/Icon";
+import { Users, ScanLine, UserPlus, Pencil, Share2, ExternalLink, Search, ChevronLeft, Copy, Lock, X, Download } from "../../components/Icon";
+import { toCsv } from "../../../lib/csv.mjs";
 
 type Tab = "guests" | "scan" | "staff";
 
@@ -142,6 +143,16 @@ function ManageInner() {
     }
   }
 
+  /** Guest list as a spreadsheet: name, places, checked in — nothing else (no email exists here). */
+  function exportCsv() {
+    if (!event || !guests) return;
+    const rows = [[tr(lang, "Імʼя", "Name"), tr(lang, "Місць", "Places"), tr(lang, "Прийшли", "Checked in")], ...guests.map((g) => [g.name, g.places, g.checked_in])];
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob(["\ufeff" + toCsv(rows)], { type: "text/csv;charset=utf-8" }));
+    a.download = `guests-${event.id.slice(0, 8)}.csv`;
+    a.click();
+  }
+
   function share() {
     if (!event) return;
     const url = `${window.location.origin}/events/${event.id}`;
@@ -165,7 +176,7 @@ function ManageInner() {
 
   const total = event.tickets_total ?? 0;
   const booked = total > 0 ? total - event.tickets_left : totals.places;
-  const live = event.status === "published" && !isPast(event.starts_at);
+  const live = event.status === "published" && !isOver(event.starts_at, event.ends_at);
 
   return (
     <main className="container">
@@ -213,11 +224,14 @@ function ManageInner() {
           <div className="card" style={{ padding: 16 }}>
             <div className="row spread wrap" style={{ gap: 12, marginBottom: 6 }}>
               <span className="muted small">{tr(lang, `${totals.people} ${plural(totals.people, ["гість", "гості", "гостей"])} · ${placesLabel(totals.places, lang)}`, `${totals.people} guests · ${totals.places} places`)}</span>
+              <div className="row gap wrap">
+              <button className="btn ghost sm" onClick={exportCsv}><Download className="ico sm" />CSV</button>
               <label className="input-icon" style={{ minWidth: 220 }}>
                 <span className="sr-only">{tr(lang, "Пошук гостя", "Find a guest")}</span>
                 <Search className="ico" />
                 <input className="input" style={{ minHeight: 40 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr(lang, "Пошук за імʼям", "Search by name")} />
               </label>
+              </div>
             </div>
             {shown.map((g, i) => (
               <div key={`${g.name}-${i}`} className="guest">

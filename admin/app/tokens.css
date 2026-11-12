@@ -22,7 +22,7 @@
   /* text */
   --text: #f4f5f8;
   --muted: #a3a8b8;
-  --muted-2: #6c7183;
+  --muted-2: #8a8fa1;   /* ≥ 4.5:1 on --bg and --surface (WCAG AA) */
 
   /* brand: one electric blue for the main action on a screen */
   --accent: #4c6fff;

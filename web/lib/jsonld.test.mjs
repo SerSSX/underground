@@ -1,4 +1,4 @@
-// node --test lib/  (runs in CI's web job)
+// node --test lib/*.test.mjs  (runs in CI's web job)
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { jsonLdString } from "./jsonld.mjs";

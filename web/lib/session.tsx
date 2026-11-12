@@ -25,9 +25,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
     getMe()
       .then(setMe)
-      .catch(() => {
-        clearToken();
-        setMe(null);
+      .catch((e: unknown) => {
+        // Only a rejected token signs out; offline or a 5xx keeps the session (door staff on bad signal).
+        if (e instanceof Error && e.message === "Потрібен вхід") {
+          clearToken();
+          setMe(null);
+        }
       });
   }, []);
 

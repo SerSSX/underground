@@ -27,7 +27,7 @@ export default function AppPage() {
       <div className="card" style={{ marginTop: 16, padding: 28, borderRadius: "var(--r-xl)", background: "radial-gradient(120% 120% at 0% 0%, rgba(76,111,255,.22), transparent 60%), var(--surface)" }}>
         <div className="row gap" style={{ marginBottom: 10 }}><Smartphone className="ico lg" /><span className="muted strong">Android</span></div>
         <h1 style={{ fontSize: 32 }}>{tr(lang, "Underground у телефоні", "Underground on your phone")}</h1>
-        <p className="muted" style={{ marginTop: 10, maxWidth: 540 }}>{tr(lang, "Квитки з QR завжди під рукою, нагадування про події й сканер для організаторів.", "QR tickets always at hand, event reminders and a scanner for organisers.")}</p>
+        <p className="muted" style={{ marginTop: 10, maxWidth: 540 }}>{tr(lang, "Афіша, бронювання, квитки з QR і сканер для організаторів — у застосунку.", "Events, booking, QR tickets and a scanner for organisers — in an app.")}</p>
 
         {rel === undefined ? (
           <div className="skeleton" style={{ height: 52, width: 240, marginTop: 22 }} />

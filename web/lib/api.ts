@@ -1,3 +1,4 @@
+import { safeNextFor } from "./safe-next.mjs";
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const TOKEN_KEY = "ug_web_token";
 
@@ -65,11 +66,10 @@ export function errorMessage(e: unknown): string {
  * Rejects absolute URLs (`https://evil.com`), protocol-relative (`//evil.com`),
  * and anything not starting with a single `/` — preventing open-redirect abuse.
  */
+/** A same-site path to go to after sign-in, or `fallback` (logic and tests in lib/safe-next.mjs). */
 export function safeNext(next: string | null | undefined, fallback = "/"): string {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) {
-    return fallback;
-  }
-  return next;
+  if (typeof window === "undefined") return fallback;
+  return safeNextFor(next, window.location.origin, fallback);
 }
 
 /** Best-effort product telemetry (TASK-017 M4). Never blocks or throws into the UI. */
@@ -110,6 +110,7 @@ export interface EventDto {
   city: string | null;
   venue_address: string | null;
   starts_at: string | null;
+  ends_at?: string | null;
   price: string;
   currency: string;
   tickets_left: number;
@@ -168,6 +169,7 @@ export interface TicketDto {
   event_venue_address?: string | null;
   event_poster_url?: string | null;
   event_timezone?: string | null;
+  event_ends_at?: string | null;
   event_city: string | null;
   event_starts_at: string | null;
   qr_token: string;
@@ -396,6 +398,7 @@ export interface EventInput {
   city?: string | null;
   venue_address?: string | null;
   starts_at?: string | null;
+  ends_at?: string | null;
   price: string;
   tickets_total: number;
   cost_type: string;
@@ -546,6 +549,29 @@ export async function syncUserLocale(locale: string): Promise<void> {
     /* ignore: locale sync is non-essential */
   }
 }
+/** An event is over at its end time, or 12 h after the start when no end is set. Until then a guest can
+ *  still show the QR and staff can still scan (a concert that started at 19:00 still admits at 19:05). */
+export function isOver(startsAt: string | null | undefined, endsAt?: string | null): boolean {
+  const end = endsAt ? Date.parse(endsAt) : startsAt ? Date.parse(startsAt) + 12 * 3600_000 : NaN;
+  return Number.isFinite(end) && end < Date.now();
+}
+/** Has it started? (Booking closes at the start; the API refuses after that.) */
+export function hasStarted(startsAt: string | null | undefined): boolean {
+  const t = startsAt ? Date.parse(startsAt) : NaN;
+  return Number.isFinite(t) && t <= Date.now();
+}
+
+/** Only absolute http(s) URLs become links; anything else (javascript:, data:, relative junk) renders as nothing. */
+export function safeHref(u: string | null | undefined): string | null {
+  if (!u) return null;
+  try {
+    const x = new URL(u);
+    return x.protocol === "https:" || x.protocol === "http:" ? x.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isPast(iso: string | null): boolean {
   if (!iso || iso.length < 19) return false;
   return iso.slice(0, 19) < new Date().toISOString().slice(0, 19);

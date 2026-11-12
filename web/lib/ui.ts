@@ -117,18 +117,19 @@ export function longDate(iso: string | null | undefined, lang: Lang, tz?: string
 export type When = "all" | "today" | "tomorrow" | "weekend" | "week";
 
 /** Does an event start inside the chosen window (local time)? */
-export function inWindow(iso: string | null | undefined, w: When, now = new Date()): boolean {
+export function inWindow(iso: string | null | undefined, w: When, now = new Date(), tz?: string | null): boolean {
   if (w === "all") return true;
-  const x = parts(iso);
-  if (!x) return false;
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Calendar days in the event's zone, so the filter agrees with the date printed on the card.
+  const x = parts(iso, tz);
+  const n = parts(now.toISOString(), tz);
+  if (!x || !n) return false;
   const day = 86_400_000;
-  const dayIdx = Math.round((new Date(x.y, x.m, x.day).getTime() - start.getTime()) / day);
+  const dayIdx = Math.round((Date.UTC(x.y, x.m, x.day) - Date.UTC(n.y, n.m, n.day)) / day);
   if (w === "today") return dayIdx === 0;
   if (w === "tomorrow") return dayIdx === 1;
   if (w === "week") return dayIdx >= 0 && dayIdx < 7;
   // weekend: the coming Saturday and Sunday (today included if it is one)
-  const dow = now.getDay();
+  const dow = n.dow;
   const toSat = dow === 0 ? -1 : 6 - dow;
   return dayIdx === toSat || dayIdx === toSat + 1;
 }

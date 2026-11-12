@@ -2,20 +2,29 @@
 
 import Link from "next/link";
 import { Suspense, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { acceptStaffInvite, getToken, errorMessage } from "../../../lib/api";
 import { useLang, tr } from "../../../lib/i18n";
 import { ScanLine } from "../../components/Icon";
 
+const KEY = "ug_staff_invite";
+
 /** Landing for the door-staff invite link the organiser shares: signs the person in, then grants scan rights. */
 function AcceptInner() {
   const router = useRouter();
-  const query = useSearchParams().get("token");
-  // The invite link keeps its token after "#", so it never reaches a server log or a Referer header.
-  const [token, setToken] = useState(query ?? "");
+  // The invite link keeps its token after "#", so it never reaches a server, a log or a Referer header. While
+  // the person signs in, it waits in sessionStorage (this tab only), never in the ?next= query.
+  const [token, setToken] = useState("");
   useEffect(() => {
     const m = window.location.hash.match(/token=([^&]+)/);
-    if (m) setToken(decodeURIComponent(m[1]));
+    let t = "";
+    if (m) { try { t = decodeURIComponent(m[1]); } catch { t = ""; } }
+    try {
+      if (t) sessionStorage.setItem(KEY, t);
+      else t = sessionStorage.getItem(KEY) ?? "";
+    } catch { /* storage blocked */ }
+    if (m) history.replaceState(null, "", "/staff/accept");
+    setToken(t);
   }, []);
   const { lang } = useLang();
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +32,7 @@ function AcceptInner() {
 
   useEffect(() => {
     if (!token) return;
-    if (!getToken()) router.replace(`/login?next=${encodeURIComponent(`/staff/accept#token=${token}`)}`);
+    if (!getToken()) router.replace(`/login?next=${encodeURIComponent("/staff/accept")}`);
   }, [router, token]);
 
   async function accept() {
@@ -31,6 +40,7 @@ function AcceptInner() {
     setError(null);
     try {
       const r = await acceptStaffInvite(token);
+      try { sessionStorage.removeItem(KEY); } catch { /* ignore */ }
       router.push(r?.event_id ? `/organizer/${r.event_id}?tab=scan` : "/organizer");
     } catch (e) {
       setError(errorMessage(e));

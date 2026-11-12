@@ -16,6 +16,7 @@ export interface EventFormInitial {
   city: string;
   venue_address: string;
   starts_at_local: string;
+  ends_at_local: string;
   price: string;
   tickets_total: string;
   is_free: boolean;
@@ -28,7 +29,7 @@ export interface EventFormInitial {
 
 export const EMPTY_EVENT: EventFormInitial = {
   title: "", description: "", category: "Concert", city: "Київ", venue_address: "",
-  starts_at_local: "", price: "", tickets_total: "50", is_free: true, poster_url: null, video_url: "", links: "",
+  starts_at_local: "", ends_at_local: "", price: "", tickets_total: "50", is_free: true, poster_url: null, video_url: "", links: "",
   is_draft: false, age_rating: "",
 };
 
@@ -102,9 +103,11 @@ export default function EventForm({
 
   const seats = Number(f.tickets_total);
   const startIso = toIso(f.starts_at_local, tz);
+  const endIso = toIso(f.ends_at_local, tz);
   const problems = {
     title: !f.title.trim() ? tr(lang, "Вкажіть назву", "Enter a title") : null,
     date: !startIso ? tr(lang, "Вкажіть дату й час", "Pick a date and time") : new Date(startIso).getTime() < Date.now() ? tr(lang, "Дата вже минула", "That date has passed") : null,
+    end: endIso && startIso && Date.parse(endIso) <= Date.parse(startIso) ? tr(lang, "Кінець має бути після початку", "The end must be after the start") : null,
     city: !f.city.trim() ? tr(lang, "Вкажіть місто", "Enter a city") : null,
     seats: editing ? null : !Number.isInteger(seats) || seats < Math.max(1, minSeats) || seats > 100000
       ? minSeats > 1 ? tr(lang, `Не менше ${minSeats} — стільки вже заброньовано`, `At least ${minSeats} — already booked`) : tr(lang, "Від 1 до 100 000 місць", "1 to 100,000 places")
@@ -162,10 +165,17 @@ export default function EventForm({
           </Section>
 
           <Section title={tr(lang, "Коли й де", "When and where")}>
+            <div className="grid-2">
             <div className="field">
               <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{tz ? <span className="subtle" style={{ fontWeight: 500 }}> · {tz.replace("_", " ")}</span> : null}</label>
               <input id="ev-date" className="input" type="datetime-local" value={f.starts_at_local} onChange={(e) => set("starts_at_local", e.target.value)} aria-invalid={!!show("date")} />
               {show("date") && <span className="err">{show("date")}</span>}
+            </div>
+            <div className="field">
+              <label htmlFor="ev-end">{tr(lang, "Кінець (необовʼязково)", "Ends (optional)")}</label>
+              <input id="ev-end" className="input" type="datetime-local" value={f.ends_at_local} onChange={(e) => set("ends_at_local", e.target.value)} aria-invalid={!!show("end")} />
+              {show("end") ? <span className="err">{show("end")}</span> : <span className="hint">{tr(lang, "До цього часу гості можуть пройти за QR.", "Guests can check in until then.")}</span>}
+            </div>
             </div>
             <div className="grid-2">
               <div className="field">
@@ -256,7 +266,7 @@ export default function EventForm({
   );
 }
 
-export function toEventInput(f: EventFormInitial, startsAtIso: string | null): EventInput {
+export function toEventInput(f: EventFormInitial, startsAtIso: string | null, tz?: string | null): EventInput {
   const free = FREE_ONLY || f.is_free;
   return {
     title: f.title.trim(),
@@ -265,6 +275,7 @@ export function toEventInput(f: EventFormInitial, startsAtIso: string | null): E
     city: f.city.trim() || null,
     venue_address: f.venue_address.trim() || null,
     starts_at: startsAtIso,
+    ends_at: toIso(f.ends_at_local, tz) ?? null,
     price: free ? "0" : f.price.trim() || "0",
     tickets_total: Number(f.tickets_total) || 0,
     cost_type: free ? "free" : "paid",

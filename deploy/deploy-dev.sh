@@ -122,8 +122,15 @@ exit 1
 REMOTE
 # The Android APK CI built for this commit (only when android/ changed): publish it for the /app page.
 # Served by the API's /uploads route from the stand's data fs; the manifest makes the site show the banner.
+# Held by default (UG_PUBLISH_APK=1 to publish): the current Android build still shows event times differently
+# from the site (it prints UTC; the web shows the event's zone), so the site must not offer it yet. The Android
+# step fixes the app and turns this on.
 APK_DIR="$TMP/apk"
-if gh run download "$RUN_ID" -R "$REPO" -n android-apk -D "$APK_DIR" >/dev/null 2>&1 && [ -s "$APK_DIR/app-debug.apk" ]; then
+if [ "${UG_PUBLISH_APK:-0}" != 1 ]; then
+  echo "→ Android APK publish is held (UG_PUBLISH_APK=1 to publish)"
+elif ! gh run download "$RUN_ID" -R "$REPO" -n android-apk -D "$APK_DIR" >/dev/null 2>&1; then
+  echo "→ this CI run has no android-apk artifact (android/ unchanged, or download failed); the previous APK stays"
+elif [ -s "$APK_DIR/app-debug.apk" ]; then
   SHORT=${SHA:0:7}
   SUM=$(shasum -a 256 "$APK_DIR/app-debug.apk" | cut -d' ' -f1)
   SIZE=$(wc -c < "$APK_DIR/app-debug.apk" | tr -d ' ')
@@ -131,10 +138,12 @@ if gh run download "$RUN_ID" -R "$REPO" -n android-apk -D "$APK_DIR" >/dev/null 
     "$SHORT" "$SHORT" "$SIZE" "$SUM" "$(date -u +%FT%TZ)" > "$APK_DIR/latest.json"
   ssh_box "mkdir -p $ROOT/data/uploads/app && chown 10001:10001 $ROOT/data/uploads/app"
   scp -q -i "$KEY" -o BatchMode=yes "$APK_DIR/app-debug.apk" "$HOST:$ROOT/data/uploads/app/underground-$SHORT.apk"
-  scp -q -i "$KEY" -o BatchMode=yes "$APK_DIR/latest.json" "$HOST:$ROOT/data/uploads/app/latest.json"
+  # Manifest last and atomically: the site never sees a manifest that points at a missing file.
+  scp -q -i "$KEY" -o BatchMode=yes "$APK_DIR/latest.json" "$HOST:$ROOT/data/uploads/app/latest.json.tmp"
+  ssh_box "mv -f $ROOT/data/uploads/app/latest.json.tmp $ROOT/data/uploads/app/latest.json"
   ssh_box "cd $ROOT/data/uploads/app && chown 10001:10001 * && ls -t underground-*.apk | tail -n +4 | xargs -r rm -f"
   echo "→ Android APK published: /uploads/app/underground-$SHORT.apk"
 else
-  echo "→ no Android APK in this CI run (android/ unchanged); the previous one stays"
+  echo "→ the android-apk artifact is empty; nothing published"
 fi
 echo "→ https://underground-dev.65-108-87-247.sslip.io"

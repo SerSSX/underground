@@ -64,13 +64,16 @@ export default function HomeClient() {
     return [...top, ...rest];
   }, [events, lang]);
 
+  // A remembered city with no events right now would filter to nothing while the select shows "all".
+  useEffect(() => { if (city && events && !cities.includes(city)) chooseCity(""); }, [city, cities, events]);
+
   const filtering = !!q.trim() || !!cat || when !== "all";
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return (events ?? []).filter((e) => {
       if (city && e.city !== city) return false;
       if (cat && e.category.trim().toLowerCase() !== cat) return false;
-      if (!inWindow(e.starts_at, when)) return false;
+      if (!inWindow(e.starts_at, when, new Date(), e.timezone)) return false;
       if (needle && !`${e.title} ${e.description ?? ""} ${e.venue_address ?? ""}`.toLowerCase().includes(needle)) return false;
       return true;
     });

@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   getEvent, getEventReviews, postReview, reserveTickets, saveEvent, unsaveEvent, mySaves, eventSocial,
-  similarEvents, createReport, getProfile, myTickets, patchMe, logTelemetry, getToken, isPast, mapsUrl,
-  errorMessage, fmtPrice,
+  similarEvents, createReport, getProfile, myTickets, patchMe, logTelemetry, getToken, isPast, isOver, hasStarted, mapsUrl,
+  errorMessage, fmtPrice, safeHref,
   type EventDto, type EventReviews, type EventSocial, type PublicProfile,
 } from "../../../lib/api";
 import { FREE_ONLY, MAX_PLACES } from "../../../lib/flags";
@@ -61,7 +61,8 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
     similarEvents(eventId).then(setSimilar).catch(() => {});
     if (getToken()) {
       mySaves().then((l) => setSaved(l.some((e) => e.id === eventId))).catch(() => {});
-      myTickets().then((l) => setMine(l.filter((t) => t.event_id === eventId && t.status === "active").length)).catch(() => {});
+      // Counted like the API's cap: active + being transferred + already scanned (D1).
+      myTickets().then((l) => setMine(l.filter((t) => t.event_id === eventId && ["active", "pending_claim", "used"].includes(t.status)).length)).catch(() => {});
     }
   }
   useEffect(load, [eventId]);
@@ -79,6 +80,8 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
 
   const free = FREE_ONLY || event.cost_type.toLowerCase() === "free";
   const past = isPast(event.starts_at);
+  const over = isOver(event.starts_at, event.ends_at);
+  const started = hasStarted(event.starts_at);
   const maps = mapsUrl(event.venue_address, event.city);
   const ageMin = event.age_rating ? parseInt(event.age_rating, 10) : 0;
   const left = event.tickets_left;
@@ -89,13 +92,15 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
   const login = () => router.push(`/login?next=${encodeURIComponent(`/events/${eventId}`)}`);
 
   let blocked: string | null = null;
-  if (past) blocked = tr(lang, "Подія вже минула", "This event has ended");
+  if (over) blocked = tr(lang, "Подія завершилась", "This event has ended");
+  else if (started) blocked = tr(lang, "Подія вже триває — бронювання закрите", "Already under way — booking closed");
   else if (event.sales_closed) blocked = tr(lang, "Бронювання закрите", "Booking is closed");
   else if (left <= 0) blocked = tr(lang, "Усі місця заброньовані", "All places are booked");
   else if (tooYoung) blocked = tr(lang, `Подія лише для ${ageMin}+`, `${ageMin}+ only`);
   else if (me && canMore === 0) blocked = tr(lang, `У вас ${placesLabel(mine, lang)} — це максимум`, `You have ${mine} — that's the maximum`);
 
   function openBooking() {
+    if (me === undefined) return; // still checking the session
     if (!me) return login();
     setError(null);
     setQty(1);
@@ -261,14 +266,14 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
 
           {event.gallery_urls.length > 0 && (
             <div className="section gallery">
-              {event.gallery_urls.map((u) => <img key={u} src={u} alt={tr(lang, "фото події", "event photo")} loading="lazy" />)}
+              {event.gallery_urls.filter((u) => safeHref(u) || u.startsWith("/uploads/")).map((u) => <img key={u} src={u} alt={tr(lang, "фото події", "event photo")} loading="lazy" />)}
             </div>
           )}
-          {(event.video_url || event.links.length > 0) && (
+          {(safeHref(event.video_url) || event.links.some((l) => safeHref(l))) && (
             <div className="section row gap wrap">
-              {event.video_url && <a className="btn secondary sm" href={event.video_url} target="_blank" rel="noreferrer">{tr(lang, "Відео", "Video")}<ExternalLink className="ico sm" /></a>}
-              {event.links.map((l) => (
-                <a key={l} className="btn secondary sm" href={l} target="_blank" rel="noreferrer">{l.replace(/^https?:\/\//, "").split("/")[0]}<ExternalLink className="ico sm" /></a>
+              {safeHref(event.video_url) && <a className="btn secondary sm" href={safeHref(event.video_url)!} target="_blank" rel="noopener noreferrer">{tr(lang, "Відео", "Video")}<ExternalLink className="ico sm" /></a>}
+              {event.links.map((l) => safeHref(l)).filter((l): l is string => !!l).map((l) => (
+                <a key={l} className="btn secondary sm" href={l} target="_blank" rel="noopener noreferrer">{new URL(l).hostname}<ExternalLink className="ico sm" /></a>
               ))}
             </div>
           )}

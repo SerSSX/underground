@@ -30,7 +30,7 @@ export default function AppBanner() {
       {qr ? <div className="qr"><img src={qr} alt={tr(lang, "QR-код для завантаження", "Download QR code")} /></div> : <span />}
       <div>
         <div className="row gap" style={{ marginBottom: 6 }}><Smartphone className="ico" /><h3>{tr(lang, "Underground для Android", "Underground for Android")}</h3></div>
-        <p className="muted">{tr(lang, "Квитки під рукою навіть без інтернету, сповіщення про події й сканер на вході. Наведіть камеру на QR або натисніть «Завантажити».", "Tickets at hand even offline, event alerts and a door scanner. Point your camera at the QR or tap Download.")}</p>
+        <p className="muted">{tr(lang, "Афіша, квитки з QR і сканер на вході — у застосунку. Наведіть камеру на QR або натисніть «Завантажити».", "Events, QR tickets and the door scanner in an app. Point your camera at the QR or tap Download.")}</p>
       </div>
       <Link href="/app" className="btn"><Download className="ico sm" />{tr(lang, "Завантажити", "Download")}</Link>
     </section>

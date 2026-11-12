@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { myEvents, organizerStats, getToken, errorMessage, isPast, type EventDto, type OrganizerStats } from "../../lib/api";
+import { myEvents, myStaffEvents, organizerStats, getToken, errorMessage, isOver, type EventDto, type OrganizerStats } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
 import { shortWhen, plural } from "../../lib/ui";
 import Poster from "../components/Poster";
@@ -19,6 +19,7 @@ export default function OrganizerPage() {
   const [events, setEvents] = useState<EventDto[] | null>(null);
   const [tab, setTab] = useState<Tab>("upcoming");
   const [error, setError] = useState<string | null>(null);
+  const [staffOf, setStaffOf] = useState<EventDto[]>([]);
   const [toast, showToast] = useToast();
 
   useEffect(() => {
@@ -27,14 +28,18 @@ export default function OrganizerPage() {
       return;
     }
     organizerStats().then(setStats).catch(() => {});
-    myEvents().then(setEvents).catch((e) => { setError(errorMessage(e)); setEvents([]); });
+    myEvents().then((own) => {
+      setEvents(own);
+      // Events this person scans for as invited staff (not their own): their way back to the scanner.
+      myStaffEvents().then((all) => setStaffOf(all.filter((x) => !own.some((o) => o.id === x.id) && !isOver(x.starts_at, x.ends_at)))).catch(() => {});
+    }).catch((e) => { setError(errorMessage(e)); setEvents([]); });
   }, [router]);
 
   const groups = useMemo(() => {
     const all = events ?? [];
     return {
-      upcoming: all.filter((e) => e.status === "published" && !isPast(e.starts_at)),
-      past: all.filter((e) => e.status !== "draft" && (isPast(e.starts_at) || e.status !== "published")).reverse(),
+      upcoming: all.filter((e) => e.status === "published" && !isOver(e.starts_at, e.ends_at)),
+      past: all.filter((e) => e.status !== "draft" && (isOver(e.starts_at, e.ends_at) || e.status !== "published")).reverse(),
       drafts: all.filter((e) => e.status === "draft"),
     };
   }, [events]);
@@ -49,7 +54,7 @@ export default function OrganizerPage() {
     if (e.status === "draft") return <span className="badge warn">{tr(lang, "Чернетка", "Draft")}</span>;
     if (e.status === "cancelled") return <span className="badge danger">{tr(lang, "Скасовано", "Cancelled")}</span>;
     if (e.status === "hidden") return <span className="badge danger">{tr(lang, "Приховано модератором", "Hidden by moderator")}</span>;
-    if (isPast(e.starts_at)) return <span className="badge">{tr(lang, "Минула", "Ended")}</span>;
+    if (isOver(e.starts_at, e.ends_at)) return <span className="badge">{tr(lang, "Минула", "Ended")}</span>;
     if (e.sales_closed) return <span className="badge warn">{tr(lang, "Бронювання закрите", "Booking closed")}</span>;
     return <span className="badge ok">{tr(lang, "Опубліковано", "Live")}</span>;
   };
@@ -72,6 +77,20 @@ export default function OrganizerPage() {
           <div className="stat"><div className="v">{stats.tickets_sold}</div><div className="l">{tr(lang, "Заброньовано місць", "Places booked")}</div></div>
           <div className="stat"><div className="v">{stats.tickets_validated}</div><div className="l">{tr(lang, "Прийшли", "Checked in")}</div></div>
         </div>
+      )}
+
+      {staffOf.length > 0 && (
+        <section className="card" style={{ marginBottom: 20 }}>
+          <h3 style={{ marginBottom: 10 }}>{tr(lang, "Ви скануєте квитки на цих подіях", "You scan tickets at these events")}</h3>
+          <div className="stack">
+            {staffOf.map((e) => (
+              <div key={e.id} className="row spread gap wrap">
+                <span><span className="strong">{e.title}</span> <span className="muted small">· {shortWhen(e.starts_at, lang, e.timezone)}</span></span>
+                <Link className="btn sm" href={`/organizer/${e.id}?tab=scan`}><ScanLine className="ico sm" />{tr(lang, "Сканер", "Scanner")}</Link>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       <div className="tabs" role="tablist">
@@ -114,7 +133,7 @@ export default function OrganizerPage() {
                   )}
                 </div>
                 <div className="actions row gap wrap" style={{ justifyContent: "flex-end" }}>
-                  {e.status === "published" && !isPast(e.starts_at) && <Link className="btn sm" href={`/organizer/${e.id}?tab=scan`}><ScanLine className="ico sm" />{tr(lang, "Сканер", "Scan")}</Link>}
+                  {e.status === "published" && !isOver(e.starts_at, e.ends_at) && <Link className="btn sm" href={`/organizer/${e.id}?tab=scan`}><ScanLine className="ico sm" />{tr(lang, "Сканер", "Scan")}</Link>}
                   <Link className="btn secondary sm" href={`/organizer/${e.id}`}><Users className="ico sm" />{tr(lang, "Гості", "Guests")}</Link>
                   <Link className="btn ghost sm icon" href={`/organizer/${e.id}/edit`} aria-label={tr(lang, "Редагувати", "Edit")} title={tr(lang, "Редагувати", "Edit")}><Pencil className="ico sm" /></Link>
                   {e.status === "published" && <button className="btn ghost sm icon" onClick={() => share(e)} aria-label={tr(lang, "Поділитися", "Share")} title={tr(lang, "Поділитися", "Share")}><Share2 className="ico sm" /></button>}

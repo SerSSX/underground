@@ -41,15 +41,20 @@ function InboxInner() {
   }, [router, params, loadConvs]);
 
   // Deep link from an event page: /inbox?to=<organizer id> opens (or starts) that conversation.
+  const applied = useRef(false);
   useEffect(() => {
     const to = params.get("to");
-    if (!to || !convs) return;
+    if (!to || !convs || applied.current) return;
+    applied.current = true;
+    router.replace("/inbox");
+    if (!/^[0-9a-f-]{36}$/i.test(to)) return; // only a user id, never a path into the API
     const c = convs.find((x) => x.peer_id === to);
     if (c) setPeer({ id: c.peer_id, name: c.peer_name, avatar: c.peer_avatar });
     else getProfile(to).then((p) => setPeer({ id: p.id, name: p.name, avatar: p.avatar_url })).catch(() => {});
   }, [params, convs]);
 
   useEffect(() => {
+    setMsgs([]);
     if (!peer) return;
     let stop = false;
     const pull = () => messageThread(peer.id).then((m) => { if (!stop) setMsgs(m); }).catch(() => {});
@@ -119,7 +124,7 @@ function InboxInner() {
               {peer ? (
                 <>
                   <div className="chat-head">
-                    <button className="btn quiet icon sm" onClick={() => { setPeer(null); router.replace("/inbox"); }} aria-label={tr(lang, "До списку", "Back to list")}><ChevronLeft className="ico" /></button>
+                    <button className="btn quiet icon sm" onClick={() => setPeer(null)} aria-label={tr(lang, "До списку", "Back to list")}><ChevronLeft className="ico" /></button>
                     <span className="avatar sm">{peer.avatar ? <img src={peer.avatar} alt="" /> : initials(peer.name)}</span>
                     <span className="strong">{peer.name}</span>
                   </div>

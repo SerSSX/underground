@@ -17,7 +17,12 @@ export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAd
   const canvas = useRef<HTMLCanvasElement | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const busy = useRef(false);
+  // Codes admitted in this session: the same QR still in view for the next 2 minutes is not re-sent, so the
+  // guard does not flash red "already used" right after a green "welcome".
+  const admitted = useRef<Map<string, number>>(new Map());
   const last = useRef<{ code: string; at: number } | null>(null);
+  const starting = useRef(false);
+  const alive = useRef(true);
   const [on, setOn] = useState(false);
   const [camError, setCamError] = useState<string | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
@@ -29,18 +34,23 @@ export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAd
     stream.current = null;
     setOn(false);
   }, []);
-  useEffect(() => stop, [stop]);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; stop(); };
+  }, [stop]);
 
   const verdict = useCallback(async (code: string) => {
     const now = Date.now();
     if (busy.current) return;
+    const seen = admitted.current.get(code);
+    if (seen && now - seen < 120_000) return;
     if (last.current && last.current.code === code && now - last.current.at < 4000) return; // same QR still in view
     busy.current = true;
     last.current = { code, at: now };
     try {
       const r = await scanTicket(eventId, code);
       setResult(r);
-      if (r.valid) { setCount((c) => c + 1); onAdmitted?.(); }
+      if (r.valid) { admitted.current.set(code, now); setCount((c) => c + 1); onAdmitted?.(); }
       if ("vibrate" in navigator) navigator.vibrate(r.valid ? 80 : [60, 60, 60]);
     } catch (e) {
       setResult({ valid: false, reason: "error", event_title: errorMessage(e) });
@@ -50,9 +60,12 @@ export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAd
   }, [eventId, onAdmitted]);
 
   async function start() {
+    if (starting.current || stream.current) return; // a double tap must not open a second camera stream
+    starting.current = true;
     setCamError(null);
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      if (!alive.current) { s.getTracks().forEach((t) => t.stop()); return; } // left the tab while the prompt was open
       stream.current = s;
       if (video.current) {
         video.current.srcObject = s;
@@ -90,6 +103,8 @@ export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAd
     } catch {
       setCamError(tr(lang, "Немає доступу до камери. Дозвольте камеру для цього сайту або введіть код вручну.", "No camera access. Allow the camera for this site or enter the code by hand."));
       stop();
+    } finally {
+      starting.current = false;
     }
   }
 
