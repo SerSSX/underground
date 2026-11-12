@@ -83,9 +83,27 @@ fn age_on(dob: NaiveDate, today: NaiveDate) -> i32 {
     age
 }
 
+/// Name shown to organisers and door staff for an attendee who never chose a display name
+/// (TASK-302 CT8, decision by the orchestrator: a neutral placeholder rather than asking for a
+/// name before the first booking).
+pub const GUEST_FALLBACK_NAME: &str = "Гість";
+
+/// SQL expression (users aliased `u`) for the name organisers and staff may see: the user's
+/// name, or [`GUEST_FALLBACK_NAME`] when it is a placeholder (empty, the email local part, or
+/// the whole email; see migration 0040). It reads `u.name_is_placeholder`, never `u.email`.
+pub const DISPLAY_NAME_SQL: &str = "CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END";
+
 /// True if the user satisfies an event's minimum-age `age_rating`. No restriction
 /// (none/unparseable) → always true; a restricted event requires a known dob old enough.
-pub async fn meets_age(db: &PgPool, user_id: Uuid, age_rating: Option<&str>) -> Result<bool, sqlx::Error> {
+///
+/// Generic over the executor so a caller holding row locks inside a transaction can run it on
+/// that same connection (TASK-302: borrowing a second pool connection while holding the event
+/// lock lets a burst of bookings exhaust the pool).
+pub async fn meets_age<'e, E: sqlx::PgExecutor<'e>>(
+    db: E,
+    user_id: Uuid,
+    age_rating: Option<&str>,
+) -> Result<bool, sqlx::Error> {
     let Some(min) = age_rating.and_then(|s| s.parse::<i32>().ok()).filter(|&m| m > 0) else {
         return Ok(true);
     };
@@ -124,6 +142,12 @@ pub async fn find_credentials(db: &PgPool, email: &str) -> Result<Option<Credent
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_name_sql_uses_the_fallback_and_never_the_email() {
+        assert!(DISPLAY_NAME_SQL.contains(&format!("'{GUEST_FALLBACK_NAME}'")));
+        assert!(!DISPLAY_NAME_SQL.contains("email"));
+    }
 
     #[test]
     fn age_on_counts_whole_years() {

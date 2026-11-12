@@ -71,7 +71,7 @@ async fn create_event(app: &Router, token: &str, title: &str, category: &str, ci
 async fn social_counts_and_friends(pool: PgPool) {
     let app = make_app(pool);
     let (maker, _) = register(&app, "m@x.co").await;
-    let (viewer, _) = register(&app, "v@x.co").await;
+    let (viewer, viewer_id) = register(&app, "v@x.co").await;
     let (alice, alice_id) = register(&app, "alice@x.co").await;
     let (bob, _) = register(&app, "bob@x.co").await;
     let (carol, carol_id) = register(&app, "carol@x.co").await;
@@ -105,6 +105,14 @@ async fn social_counts_and_friends(pool: PgPool) {
         build("POST", &format!("/api/users/{carol_id}/follow"), Some(&viewer), None),
     )
     .await;
+    // TASK-302 P9: friends are MUTUAL follows; alice and carol follow the viewer back.
+    for friend in [&alice, &carol] {
+        send(
+            &app,
+            build("POST", &format!("/api/users/{viewer_id}/follow"), Some(friend), None),
+        )
+        .await;
+    }
 
     let (status, s) = send(
         &app,

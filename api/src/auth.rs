@@ -119,6 +119,10 @@ pub async fn register(
     if req.name.trim().is_empty() {
         return Err(AppError::Validation("name is required".into()));
     }
+    // Same cap as `PATCH /api/me` (TASK-302 P12): the name fills guest lists and scanner screens.
+    if req.name.trim().len() > 80 {
+        return Err(AppError::Validation("name is too long".into()));
+    }
     let hash = hash_password(&req.password)?;
     let user = match users::create_user(&st.db, &email, req.name.trim(), &hash).await {
         Ok(u) => u,

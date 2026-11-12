@@ -121,7 +121,11 @@ async fn organizer_stats_and_tickets(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(tickets[0]["owner_email"], "fan@x.co");
+    // TASK-302 Change E: the organiser no longer receives attendee emails (was == "fan@x.co").
+    assert!(
+        tickets[0].get("owner_email").is_none(),
+        "[PII] no email in the attendee list"
+    );
     assert_eq!(tickets[0]["status"], "active");
 
     let (status, _) = send(

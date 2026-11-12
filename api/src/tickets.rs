@@ -1,6 +1,7 @@
 //! E-tickets: reserve a free ticket + list own tickets. Shared minting helpers
 //! are reused by the paid checkout flow (`orders`).
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -86,17 +87,140 @@ pub async fn my_tickets(user: CurrentUser, State(st): State<AppState>) -> Result
     Ok(Json(tickets))
 }
 
-/// `POST /api/events/:id/reserve` — mints a free ticket for the caller.
+/// Most places one person may hold on one free event (owner decision, TASK-302 Change C).
+/// Counted over `active`, `pending_claim` and `used` tickets (D1): gifts still outstanding and
+/// tickets already scanned keep counting, so neither gifting out nor entering frees the cap.
+pub const MAX_PLACES_PER_PERSON: i64 = 5;
+
+/// Rate-limit defaults (D8), overridable by env.
+fn reserve_limit_per_event() -> i64 {
+    crate::ratelimit::env_limit("RESERVE_LIMIT_PER_EVENT", 10)
+}
+fn reserve_limit_per_user() -> i64 {
+    crate::ratelimit::env_limit("RESERVE_LIMIT_PER_USER", 30)
+}
+fn transfer_limit_per_user() -> i64 {
+    crate::ratelimit::env_limit("TRANSFER_LIMIT_PER_USER", 30)
+}
+
+/// Parse the optional reserve body into a place count (TASK-302 CT1).
+///
+/// An empty body, `{}` and `{"quantity": null}` mean 1 (the Android client sends no body; the
+/// web client may send `Content-Type: application/json` with no body). Anything else must be a
+/// JSON object whose `quantity` is an integer in 1..=5; otherwise the request fails. It never
+/// falls back to 1 on a bad body: that would book a place the caller did not ask for.
+///
+/// - not UTF-8, or JSON syntax / truncation errors → 400;
+/// - not an object (`5`, `"5"`, `[2]` — a derived struct would accept the array form), wrong
+///   type (`"2"`, `2.0`, `true`, `{..}`), duplicate `quantity`, or out of range → 422.
+///
+/// Unknown fields are ignored: the owner, event and price come from the token, path and event.
+pub fn parse_quantity(body: &[u8]) -> Result<i64, AppError> {
+    if body.is_empty() {
+        return Ok(1);
+    }
+    let text =
+        std::str::from_utf8(body).map_err(|_| AppError::BadRequest("тіло запиту не є коректним UTF-8".into()))?;
+    if !text.trim_start_matches([' ', '\t', '\n', '\r']).starts_with('{') {
+        return Err(AppError::Validation(
+            "очікується JSON-об'єкт {\"quantity\": 1..5}".into(),
+        ));
+    }
+    #[derive(Deserialize)]
+    struct ReserveBody {
+        quantity: Option<i64>,
+    }
+    let parsed: ReserveBody = serde_json::from_str(text).map_err(|e| match e.classify() {
+        serde_json::error::Category::Data => AppError::Validation("quantity має бути цілим числом від 1 до 5".into()),
+        _ => AppError::BadRequest("некоректний JSON".into()),
+    })?;
+    let quantity = parsed.quantity.unwrap_or(1);
+    if !(1..=MAX_PLACES_PER_PERSON).contains(&quantity) {
+        return Err(AppError::Validation("quantity має бути цілим числом від 1 до 5".into()));
+    }
+    Ok(quantity)
+}
+
+/// Live places `owner_id` holds on `event_id` (D1), optionally not counting one ticket (the
+/// ticket being handed to them). Call under the event row lock.
+async fn holdings(
+    conn: &mut sqlx::PgConnection,
+    event_id: Uuid,
+    owner_id: Uuid,
+    except_ticket: Option<Uuid>,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM tickets \
+         WHERE event_id = $1 AND owner_id = $2 AND status IN ('active', 'pending_claim', 'used') \
+           AND ($3::uuid IS NULL OR id <> $3)",
+    )
+    .bind(event_id)
+    .bind(owner_id)
+    .bind(except_ticket)
+    .fetch_one(conn)
+    .await
+}
+
+/// Lock the event row. Every path that adds places to a person on a free event (reserve,
+/// transfer, gift claim) takes this lock before counting, so the 5-place cap and the capacity
+/// hold under concurrency (CT2, CT4). Lock order everywhere: gift → ticket → event.
+async fn lock_event(conn: &mut sqlx::PgConnection, event_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT 1 FROM events WHERE id = $1 FOR UPDATE")
+        .bind(event_id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Recipient side of the cap (D3, CT4): 409 when `recipient` already holds the maximum on a
+/// free event. Takes the event lock; call inside the transaction that moves the ticket.
+async fn ensure_recipient_has_room(
+    conn: &mut sqlx::PgConnection,
+    event_id: Uuid,
+    cost_type: &str,
+    recipient: Uuid,
+    ticket_id: Uuid,
+) -> Result<(), AppError> {
+    if cost_type != "free" {
+        return Ok(());
+    }
+    lock_event(&mut *conn, event_id).await?;
+    if holdings(&mut *conn, event_id, recipient, Some(ticket_id)).await? >= MAX_PLACES_PER_PERSON {
+        return Err(AppError::Conflict(
+            "отримувач уже має максимум місць на цю подію (5)".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `POST /api/events/:id/reserve` — books 1..=5 free places for the caller (TASK-302 Change C).
+///
+/// Body: optional `{"quantity": 1..5}` (see [`parse_quantity`]). All-or-nothing: either every
+/// requested place is booked or none is. Responds 201 with the FIRST created ticket, the same
+/// shape as before, so clients that send no body keep working (CT16).
 pub async fn reserve(
     user: CurrentUser,
     State(st): State<AppState>,
     Path(event_id): Path<Uuid>,
+    body: Bytes,
 ) -> Result<(StatusCode, Json<Ticket>), AppError> {
-    let mut tx = st.db.begin().await?;
+    // CT6: every call counts, whatever its outcome (a malformed body included).
+    crate::ratelimit::hit(
+        &st.db,
+        &format!("reserve:{}:{}", user.id, event_id),
+        reserve_limit_per_event(),
+        3600,
+    )
+    .await?;
+    crate::ratelimit::hit(&st.db, &format!("reserve:{}", user.id), reserve_limit_per_user(), 3600).await?;
+    let quantity = parse_quantity(&body)?;
 
+    let mut tx = st.db.begin().await?;
+    // The row lock serialises every booking on this event: the cap count and the capacity
+    // update below cannot interleave with another reserve, transfer or claim (CT2, CT3).
     let row: Option<(String, bool, bool, Option<String>)> = sqlx::query_as(
         "SELECT cost_type, sales_closed, (starts_at IS NOT NULL AND starts_at < now()) AS past, age_rating \
-         FROM events WHERE id = $1 AND status = 'published'",
+         FROM events WHERE id = $1 AND status = 'published' FOR UPDATE",
     )
     .bind(event_id)
     .fetch_optional(&mut *tx)
@@ -111,36 +235,40 @@ pub async fn reserve(
     if cost_type != "free" {
         return Err(AppError::Conflict("платні квитки — через оплату (скоро)".into()));
     }
-    if !crate::users::meets_age(&st.db, user.id, age_rating.as_deref()).await? {
+    if !crate::users::meets_age(&mut *tx, user.id, age_rating.as_deref()).await? {
         return Err(AppError::Conflict("ця подія має вікове обмеження".into()));
     }
-    // One free ticket per user per event — prevents unlimited free minting. The partial
-    // unique index is the race backstop; this gives a clean 409 instead of a DB error.
-    let already: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM tickets WHERE event_id = $1 AND owner_id = $2 AND status = 'active' AND price = 0)",
+    let held = holdings(&mut tx, event_id, user.id, None).await?;
+    if held + quantity > MAX_PLACES_PER_PERSON {
+        return Err(AppError::Conflict(format!(
+            "на одну людину — не більше {MAX_PLACES_PER_PERSON} місць (у вас уже {held})"
+        )));
+    }
+    // CT3: one conditional decrement for all places; no partial fill.
+    let left: Option<i32> = sqlx::query_scalar(
+        "UPDATE events SET tickets_left = tickets_left - $2 WHERE id = $1 AND tickets_left >= $2 RETURNING tickets_left",
     )
     .bind(event_id)
-    .bind(user.id)
-    .fetch_one(&mut *tx)
+    .bind(quantity as i32)
+    .fetch_optional(&mut *tx)
     .await?;
-    if already {
-        return Err(AppError::Conflict(
-            "ви вже маєте безкоштовний квиток на цю подію".into(),
-        ));
+    if left.is_none() {
+        return Err(AppError::Conflict("недостатньо вільних місць".into()));
     }
-
-    if decrement_tickets(&mut tx, event_id).await?.is_none() {
-        return Err(AppError::Conflict("квитки закінчились".into()));
+    let mut first = None;
+    for _ in 0..quantity {
+        let id = mint_ticket(&mut tx, event_id, user.id, Decimal::ZERO).await?;
+        first.get_or_insert(id);
     }
-    let id = mint_ticket(&mut tx, event_id, user.id, Decimal::ZERO).await?;
+    let first = first.ok_or(AppError::Internal)?;
 
     tx.commit().await?;
-    let ticket = fetch_ticket(&st.db, id).await?;
+    let ticket = fetch_ticket(&st.db, first).await?;
     crate::telemetry::log(
         &st.db,
         Some(user.id),
         "ticket",
-        serde_json::json!({ "event_id": event_id, "free": true }),
+        serde_json::json!({ "event_id": event_id, "free": true, "quantity": quantity }),
     )
     .await;
     Ok((StatusCode::CREATED, Json(ticket)))
@@ -184,7 +312,7 @@ pub async fn ticket_qr(
     if status != "active" {
         return Err(AppError::Conflict("квиток неактивний".into()));
     }
-    let (token, expires_at) = crate::qr::sign_qr(ticket_id, event_id, &st.jwt_secret)?;
+    let (token, expires_at) = crate::qr::sign_qr(ticket_id, event_id, user.id, &st.jwt_secret)?;
     Ok(Json(QrResp { token, expires_at }))
 }
 
@@ -197,35 +325,40 @@ pub async fn validate(
     // Only a signed short-TTL QR is accepted at the door (BR-023). An invalid or expired token
     // resolves to nothing → NotFound, exactly like an unknown ticket. The raw qr_token is no
     // longer accepted (its plaintext value is never surfaced to a scanner).
-    let row: Option<(Uuid, String, Option<Uuid>, String)> =
+    let row: Option<(Uuid, String, Uuid, Option<Uuid>, String, String)> =
         match crate::qr::verify_qr(req.qr_token.trim(), &st.jwt_secret) {
-            Some(c) => {
-                sqlx::query_as(
-                    "SELECT t.id, t.status, e.organizer_id, e.title \
+            Some(c) => sqlx::query_as::<_, (Uuid, String, Uuid, Option<Uuid>, String, String)>(
+                "SELECT t.id, t.status, t.owner_id, e.organizer_id, e.title, e.status \
                      FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $1 FOR UPDATE OF t",
-                )
-                .bind(c.tid)
-                .fetch_optional(&mut *tx)
-                .await?
-            }
+            )
+            .bind(c.tid)
+            .fetch_optional(&mut *tx)
+            .await?
+            // CT10: a QR minted for a previous owner resolves to nothing.
+            .filter(|r| r.2 == c.oid),
             None => None,
         };
-    let (ticket_id, status, organizer_id, title) = row.ok_or(AppError::NotFound)?;
+    let (ticket_id, status, _owner, organizer_id, title, event_status) = row.ok_or(AppError::NotFound)?;
 
     if organizer_id != Some(user.id) {
         return Err(AppError::Forbidden);
     }
 
-    let (valid, reason) = match status.as_str() {
-        "active" => {
-            sqlx::query("UPDATE tickets SET status = 'used', validated_at = now() WHERE id = $1")
-                .bind(ticket_id)
-                .execute(&mut *tx)
-                .await?;
-            (true, "ok")
+    let (valid, reason) = if event_status == "cancelled" || event_status == "blocked" {
+        // CT11 / D7: nobody is admitted to a cancelled or blocked event; nothing changes.
+        (false, "event_cancelled")
+    } else {
+        match status.as_str() {
+            "active" => {
+                sqlx::query("UPDATE tickets SET status = 'used', validated_at = now() WHERE id = $1")
+                    .bind(ticket_id)
+                    .execute(&mut *tx)
+                    .await?;
+                (true, "ok")
+            }
+            "used" => (false, "already_used"),
+            _ => (false, "inactive"),
         }
-        "used" => (false, "already_used"),
-        _ => (false, "inactive"),
     };
     tx.commit().await?;
     Ok(Json(ValidateResp {
@@ -294,6 +427,14 @@ pub async fn transfer_ticket(
     Path(ticket_id): Path<Uuid>,
     Json(req): Json<TransferReq>,
 ) -> Result<Json<Ticket>, AppError> {
+    // P14: the "no user with this email" answer is an account-existence oracle; cap the probes.
+    crate::ratelimit::hit(
+        &st.db,
+        &format!("transfer:{}", user.id),
+        transfer_limit_per_user(),
+        3600,
+    )
+    .await?;
     let recipient: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND blocked = false")
         .bind(req.email.trim().to_lowercase())
         .fetch_optional(&st.db)
@@ -331,15 +472,25 @@ pub async fn transfer_ticket(
         return Err(AppError::Conflict("квиток під спором — передавання недоступне".into()));
     }
 
-    let updated: Option<Uuid> = sqlx::query_scalar(
-        "UPDATE tickets SET owner_id = $3 WHERE id = $1 AND owner_id = $2 AND status = 'active' RETURNING id",
+    let mut tx = st.db.begin().await?;
+    // Lock order ticket → event, the same as `return_ticket`.
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT t.event_id, e.cost_type FROM tickets t JOIN events e ON e.id = t.event_id \
+         WHERE t.id = $1 AND t.owner_id = $2 AND t.status = 'active' FOR UPDATE OF t",
     )
     .bind(ticket_id)
     .bind(user.id)
-    .bind(recipient)
-    .fetch_optional(&st.db)
+    .fetch_optional(&mut *tx)
     .await?;
-    updated.ok_or(AppError::NotFound)?;
+    let (event_id, cost_type) = row.ok_or(AppError::NotFound)?;
+    // CT4 / D3: receiving a place counts toward the recipient's 5-place cap.
+    ensure_recipient_has_room(&mut tx, event_id, &cost_type, recipient, ticket_id).await?;
+    sqlx::query("UPDATE tickets SET owner_id = $2 WHERE id = $1")
+        .bind(ticket_id)
+        .bind(recipient)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
 
     Ok(Json(fetch_ticket(&st.db, ticket_id).await?))
 }
@@ -416,6 +567,14 @@ pub async fn gift_ticket(
     Path(ticket_id): Path<Uuid>,
     Json(req): Json<GiftReq>,
 ) -> Result<(StatusCode, Json<GiftResp>), AppError> {
+    // P14: transfer and gift share one bucket per sender.
+    crate::ratelimit::hit(
+        &st.db,
+        &format!("transfer:{}", user.id),
+        transfer_limit_per_user(),
+        3600,
+    )
+    .await?;
     let email = req.email.trim().to_lowercase();
     if email.is_empty() {
         return Err(AppError::Validation("email отримувача обов'язковий".into()));
@@ -538,15 +697,19 @@ pub async fn claim_ticket(
         tx.commit().await?;
         return Err(AppError::Conflict("термін дії подарунка минув".into()));
     }
-    let age: Option<String> =
-        sqlx::query_scalar("SELECT e.age_rating FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $1")
-            .bind(ticket_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .flatten();
-    if !crate::users::meets_age(&st.db, user.id, age.as_deref()).await? {
+    // Lock order gift → ticket → event.
+    let (event_id, age, cost_type): (Uuid, Option<String>, String) = sqlx::query_as(
+        "SELECT t.event_id, e.age_rating, e.cost_type FROM tickets t JOIN events e ON e.id = t.event_id \
+         WHERE t.id = $1 FOR UPDATE OF t",
+    )
+    .bind(ticket_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !crate::users::meets_age(&mut *tx, user.id, age.as_deref()).await? {
         return Err(AppError::Conflict("ви не відповідаєте віковому обмеженню події".into()));
     }
+    // CT4 / D3: a claim at the cap is refused; the gift stays pending (the sender can revoke).
+    ensure_recipient_has_room(&mut tx, event_id, &cost_type, user.id, ticket_id).await?;
     sqlx::query("UPDATE tickets SET owner_id = $2, status = 'active' WHERE id = $1")
         .bind(ticket_id)
         .bind(user.id)

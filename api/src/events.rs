@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 pub const EVENT_COLS: &str = "id, organizer_id, title, description, poster_url, category, city, venue_address, \
      starts_at, ends_at, price, currency, tickets_left, status, cost_type, \
-     video_url, gallery_urls, links, sales_closed, country, lat, lng, age_rating, timezone";
+     video_url, gallery_urls, links, sales_closed, country, lat, lng, age_rating, timezone, tickets_total";
 
 /// Allowed minimum-age ratings (empty/NULL = no restriction).
 const AGE_RATINGS: [&str; 4] = ["13", "16", "18", "21"];
@@ -71,6 +71,10 @@ pub struct Event {
     pub age_rating: Option<String>,
     /// IANA timezone the event's local time is shown in (TASK-102 / BR-020). Times are stored UTC.
     pub timezone: String,
+    /// Capacity the event was created with (TASK-302: the dashboard shows "booked X of Y").
+    /// `#[sqlx(default)]` keeps any query that does not select it mapping (to 0).
+    #[sqlx(default)]
+    pub tickets_total: i32,
 }
 
 #[derive(Deserialize)]
@@ -311,7 +315,8 @@ pub struct UpdateEventReq {
     pub timezone: Option<String>,
 }
 
-async fn require_owner(db: &PgPool, event_id: Uuid, user_id: Uuid) -> Result<(), AppError> {
+/// 404 for an unknown event, 403 unless `user_id` is its organiser.
+pub async fn require_owner(db: &PgPool, event_id: Uuid, user_id: Uuid) -> Result<(), AppError> {
     let organizer: Option<Option<Uuid>> = sqlx::query_scalar("SELECT organizer_id FROM events WHERE id = $1")
         .bind(event_id)
         .fetch_optional(db)
@@ -386,6 +391,8 @@ pub async fn update_event(
             age_rating = COALESCE($20, age_rating), \
             timezone = COALESCE($21, timezone) \
          WHERE id = $1 \
+           AND ($14::text IS NULL OR status = $14 \
+                OR (status NOT IN ('cancelled', 'blocked') AND NOT admin_locked)) \
          RETURNING {EVENT_COLS}"
     );
     let event = sqlx::query_as::<_, Event>(&sql)
@@ -410,8 +417,12 @@ pub async fn update_event(
         .bind(req.currency.as_deref().filter(|c| !c.is_empty()))
         .bind(req.age_rating.as_deref().filter(|s| !s.is_empty()))
         .bind(req.timezone.as_deref().filter(|s| !s.is_empty()))
-        .fetch_one(&st.db)
-        .await?;
+        .fetch_optional(&st.db)
+        .await?
+        // P2 (TASK-302): the organiser may not change the status of a cancelled event, nor of
+        // one an admin hid or blocked — otherwise moderation is undone with one PUT. The guard
+        // sits in the UPDATE itself, so an admin action racing this request cannot slip past.
+        .ok_or_else(|| AppError::Conflict("статус цієї події змінити не можна".into()))?;
     if was_draft && event.status == "published" {
         announce(&st.db, user.id, &event).await;
     }

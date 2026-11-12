@@ -193,7 +193,8 @@ pub async fn patch_event(
     }
     let mut tx = st.db.begin().await?;
     let event: Option<AdminEvent> = sqlx::query_as(
-        "WITH updated AS (UPDATE events SET status = $2 WHERE id = $1 RETURNING *) \
+        "WITH updated AS (UPDATE events SET status = $2, admin_locked = ($2 <> 'published') \
+             WHERE id = $1 RETURNING *) \
          SELECT e.id, e.title, e.status, e.category, e.city, u.email AS organizer_email, \
             e.starts_at, e.tickets_left, e.sales_closed \
          FROM updated e LEFT JOIN users u ON u.id = e.organizer_id",

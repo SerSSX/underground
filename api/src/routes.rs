@@ -86,6 +86,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tickets/claim", post(tickets::claim_ticket))
         .route("/api/gifts/:token", get(tickets::gift_preview))
         .route("/api/events/:id/staff/invite", post(staff::invite_staff))
+        .route("/api/events/:id/staff", get(staff::list_staff))
+        .route(
+            "/api/events/:id/staff/invites/:invite_id",
+            axum::routing::delete(staff::revoke_invite),
+        )
+        .route(
+            "/api/events/:id/staff/:user_id",
+            axum::routing::delete(staff::remove_staff),
+        )
         .route("/api/staff/accept", post(staff::accept_invite))
         .route("/api/events/:id/scan", post(staff::scan))
         .route("/api/me/staff/events", get(staff::my_staff_events))
@@ -93,6 +102,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/organizer/analytics", get(organizer::analytics))
         .route("/api/organizer/payouts", get(organizer::my_payouts))
         .route("/api/events/:id/tickets", get(organizer::event_tickets))
+        .route("/api/events/:id/guests", get(organizer::event_guests))
         .route(
             "/api/events/:id/promos",
             get(promos::list_promos).post(promos::create_promo),

@@ -125,7 +125,8 @@ async fn delegated_staff_scans_then_double_scan_is_used(pool: PgPool) {
         ))
         .await
         .unwrap();
-    assert_eq!(accept.status(), StatusCode::NO_CONTENT);
+    // TASK-302 CT12: accept answers 200 {"event_id"} (was 204) so the client can open the scanner.
+    assert_eq!(accept.status(), StatusCode::OK);
 
     // The controller scans the attendee's ticket: valid, then already_used.
     let first = scan(&app, &controller, &event, &qr).await;

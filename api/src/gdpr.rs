@@ -17,8 +17,12 @@ use crate::state::AppState;
 
 #[derive(Deserialize)]
 pub struct DeleteMeReq {
-    /// Re-authentication: erasure is destructive, so the password is required.
-    pub password: String,
+    /// Re-authentication for password accounts: erasure is destructive, so the password is
+    /// required.
+    pub password: Option<String>,
+    /// Password-less accounts (email code, Google) have nothing to re-enter; they confirm with
+    /// the literal `"DELETE"` instead (TASK-302 P15).
+    pub confirm: Option<String>,
 }
 
 /// `DELETE /api/me` — GDPR Art. 17 erasure.
@@ -31,9 +35,22 @@ pub async fn delete_me(
         .bind(user.id)
         .fetch_one(&st.db)
         .await?;
-    let hash = hash.ok_or(AppError::Unauthorized)?;
-    if !verify_password(&req.password, &hash) {
-        return Err(AppError::Unauthorized);
+    match hash {
+        Some(hash) => {
+            let password = req
+                .password
+                .ok_or_else(|| AppError::Validation("password is required".into()))?;
+            if !verify_password(&password, &hash) {
+                return Err(AppError::Unauthorized);
+            }
+        }
+        None => {
+            if req.confirm.as_deref() != Some("DELETE") {
+                return Err(AppError::Validation(
+                    "підтвердіть видалення: {\"confirm\": \"DELETE\"}".into(),
+                ));
+            }
+        }
     }
 
     let mut tx = st.db.begin().await?;
@@ -53,6 +70,19 @@ pub async fn delete_me(
     ] {
         sqlx::query(sql).bind(user.id).execute(&mut *tx).await?;
     }
+    // P16: the account's unused free places go back to their events (the account can no longer
+    // fetch a QR). Paid tickets are left alone: returning them is a refund decision.
+    sqlx::query(
+        "WITH r AS ( \
+             UPDATE tickets SET status = 'returned' \
+             WHERE owner_id = $1 AND status = 'active' AND price = 0 RETURNING event_id) \
+         UPDATE events e SET tickets_left = e.tickets_left + c.n \
+         FROM (SELECT event_id, count(*)::int AS n FROM r GROUP BY event_id) c \
+         WHERE e.id = c.event_id",
+    )
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await?;
     // Anonymize the account row; block it so the credential can no longer authenticate.
     // Clears ALL identifying / financial PII: email, name, bio, avatar, dob, password,
     // Google identity (re-identification risk), and KYC bank details.

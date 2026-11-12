@@ -19,6 +19,9 @@ pub enum AppError {
     Conflict(String),
     #[error("{0}")]
     Validation(String),
+    /// A syntactically broken request body (400), e.g. malformed JSON.
+    #[error("{0}")]
+    BadRequest(String),
     #[error("забагато спроб, спробуйте пізніше")]
     RateLimited,
     #[error("internal error")]
@@ -38,6 +41,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         };
         // Body carries only a safe message — never internal details (SEC).
@@ -69,6 +73,7 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(status_of(AppError::RateLimited), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(status_of(AppError::BadRequest("z".into())), StatusCode::BAD_REQUEST);
     }
 
     #[test]

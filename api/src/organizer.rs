@@ -100,37 +100,62 @@ pub async fn my_payouts(user: CurrentUser, State(st): State<AppState>) -> Result
 #[derive(Serialize, sqlx::FromRow)]
 pub struct EventTicket {
     pub id: Uuid,
+    /// Display name with the CT8 fallback. The email is no longer returned (TASK-302 Change E).
     pub owner_name: String,
-    pub owner_email: String,
     pub status: String,
     pub price: Decimal,
     pub created_at: DateTime<Utc>,
     pub validated_at: Option<DateTime<Utc>>,
 }
 
-/// `GET /api/events/:id/tickets` — attendee list, organizer-only.
+/// `GET /api/events/:id/tickets` — per-ticket attendee list, organizer-only.
 pub async fn event_tickets(
     user: CurrentUser,
     State(st): State<AppState>,
     Path(event_id): Path<Uuid>,
 ) -> Result<Json<Vec<EventTicket>>, AppError> {
-    let organizer: Option<Option<Uuid>> = sqlx::query_scalar("SELECT organizer_id FROM events WHERE id = $1")
-        .bind(event_id)
-        .fetch_optional(&st.db)
-        .await?;
-    match organizer {
-        None => return Err(AppError::NotFound),
-        Some(o) if o == Some(user.id) => {}
-        Some(_) => return Err(AppError::Forbidden),
-    }
-    let tickets: Vec<EventTicket> = sqlx::query_as(
-        "SELECT t.id, u.name AS owner_name, u.email AS owner_email, t.status, t.price, \
-            t.created_at, t.validated_at \
+    crate::events::require_owner(&st.db, event_id, user.id).await?;
+    let sql = format!(
+        "SELECT t.id, {name} AS owner_name, t.status, t.price, t.created_at, t.validated_at \
          FROM tickets t JOIN users u ON u.id = t.owner_id \
          WHERE t.event_id = $1 ORDER BY t.created_at DESC",
-    )
-    .bind(event_id)
-    .fetch_all(&st.db)
-    .await?;
+        name = crate::users::DISPLAY_NAME_SQL,
+    );
+    let tickets: Vec<EventTicket> = sqlx::query_as(&sql).bind(event_id).fetch_all(&st.db).await?;
     Ok(Json(tickets))
+}
+
+/// One attendee on the guest list: a person, not a ticket (TASK-302 CT7).
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Guest {
+    /// Display name with the CT8 fallback ("Гість"); never the email.
+    pub name: String,
+    /// Live places: active + pending_claim + used.
+    pub places: i64,
+    /// Places already scanned at the door (used).
+    pub checked_in: i64,
+    /// When the earliest of these places was booked.
+    pub booked_at: DateTime<Utc>,
+}
+
+/// `GET /api/events/:id/guests` — the organiser's guest list, one row per attendee. Organiser
+/// only: staff (scan-only, D5) and everyone else get 403. The SQL never selects the email.
+pub async fn event_guests(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Path(event_id): Path<Uuid>,
+) -> Result<Json<Vec<Guest>>, AppError> {
+    crate::events::require_owner(&st.db, event_id, user.id).await?;
+    let sql = format!(
+        "SELECT {name} AS name, count(*) AS places, \
+            count(*) FILTER (WHERE t.status = 'used') AS checked_in, \
+            min(t.created_at) AS booked_at \
+         FROM tickets t JOIN users u ON u.id = t.owner_id \
+         WHERE t.event_id = $1 AND t.status IN ('active', 'pending_claim', 'used') \
+         GROUP BY u.id \
+         ORDER BY booked_at DESC",
+        name = crate::users::DISPLAY_NAME_SQL,
+    );
+    let guests: Vec<Guest> = sqlx::query_as(&sql).bind(event_id).fetch_all(&st.db).await?;
+    Ok(Json(guests))
 }

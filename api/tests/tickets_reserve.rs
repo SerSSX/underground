@@ -125,9 +125,14 @@ async fn free_ticket_deduped_per_user(pool: PgPool) {
         .unwrap()
         .to_string();
 
-    // Same user reserving again → 409 (one free ticket per user per event).
+    // Same user reserving again → 201: up to 5 places per person per event (TASK-302 Change C;
+    // was 409 "one free ticket per user" — assertion change recorded for owner approval).
     let resp = app.clone().oneshot(reserve_req(&event, Some(&a))).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "one free ticket per user");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "a second place is allowed (cap is 5)"
+    );
 
     // A different user can still reserve.
     let resp = app.clone().oneshot(reserve_req(&event, Some(&b))).await.unwrap();
