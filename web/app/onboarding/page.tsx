@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import CityInput from "../components/CityInput";
 import { EVENT_CATEGORIES, putPrefs, getPrefs, getToken, errorMessage, safeNext } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
+import { categoryLabel } from "../../lib/ui";
+import { Check } from "../components/Icon";
 
 function OnboardingInner() {
   const router = useRouter();
@@ -59,36 +61,33 @@ function OnboardingInner() {
 
   return (
     <main className="container narrow">
-      <h1 style={{ fontSize: 26 }}>{tr(lang, "Ласкаво просимо!", "Welcome!")}</h1>
-      <p className="muted">{tr(lang, "Оберіть інтереси й місто — підберемо події саме для вас.", "Pick interests and your city — we'll tailor events to you.")}</p>
+      <div className="card" style={{ marginTop: 16, padding: "32px 28px", borderRadius: "var(--r-xl)" }}>
+        <div className="muted xs strong" style={{ textTransform: "uppercase", letterSpacing: ".08em" }}>{tr(lang, "Крок 1 з 1", "Step 1 of 1")}</div>
+        <h1 style={{ fontSize: 30, marginTop: 8 }}>{tr(lang, "Що вам цікаво?", "What are you into?")}</h1>
+        <p className="muted" style={{ marginTop: 8 }}>{tr(lang, "Оберіть кілька тем і своє місто — афіша «Для тебе» підлаштується під вас. Змінити можна будь-коли в профілі.", "Pick a few topics and your city — the For You feed adapts. You can change this any time in your profile.")}</p>
 
-      <h2 style={{ fontSize: 16, marginTop: 16 }}>{tr(lang, "Інтереси", "Interests")}</h2>
-      <div className="row gap" style={{ flexWrap: "wrap", marginTop: 6 }}>
-        {EVENT_CATEGORIES.map((c) => (
-          <button
-            key={c}
-            type="button"
-            className={selected.includes(c) ? "pill ok" : "pill"}
-            style={{ cursor: "pointer" }}
-            onClick={() => toggle(c)}
-          >
-            {c}
-          </button>
-        ))}
+        <div className="chips" style={{ marginTop: 22 }} role="group" aria-label={tr(lang, "Інтереси", "Interests")}>
+          {EVENT_CATEGORIES.map((c) => {
+            const on = selected.includes(c);
+            return (
+              <button key={c} type="button" className={`chip ${on ? "active" : ""}`} aria-pressed={on} onClick={() => toggle(c)}>
+                {on && <Check className="ico" />}{categoryLabel(c, lang)}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="field" style={{ marginTop: 24, maxWidth: 360 }}>
+          <label htmlFor="city">{tr(lang, "Ваше місто", "Your city")}</label>
+          <CityInput id="city" value={city} onChange={setCity} />
+        </div>
+
+        {error && <div className="alert error" style={{ marginTop: 14 }}>{error}</div>}
+        <div className="row gap wrap" style={{ marginTop: 24 }}>
+          <button className="btn lg" onClick={finish} disabled={busy}>{busy ? "…" : selected.length ? tr(lang, `Готово · ${selected.length}`, `Done · ${selected.length}`) : tr(lang, "Готово", "Done")}</button>
+          <button className="btn quiet" onClick={skip} disabled={busy}>{tr(lang, "Пропустити", "Skip")}</button>
+        </div>
       </div>
-
-      <label className="lbl" style={{ marginTop: 16 }}>
-        {tr(lang, "Місто", "City")}
-        <CityInput value={city} onChange={setCity} />
-      </label>
-
-      {error && <div className="error">{error}</div>}
-      <button className="btn block" onClick={finish} disabled={busy} style={{ marginTop: 16 }}>
-        {busy ? "…" : tr(lang, "Готово", "Done")}
-      </button>
-      <button className="btn ghost sm" onClick={skip} disabled={busy} style={{ marginTop: 8 }}>
-        {tr(lang, "Пропустити", "Skip")}
-      </button>
     </main>
   );
 }

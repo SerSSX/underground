@@ -8,12 +8,12 @@ const API = serverApiBase();
 const SITE = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001";
 
 export const metadata: Metadata = {
-  title: "Underground — афіша, квитки, події",
-  description: "Афіша концертів, вечірок і подій. Купуй, даруй та обмінюй квитки онлайн в Underground.",
+  title: { absolute: "Underground — афіша подій і безкоштовні квитки" },
+  description: "Концерти, вечірки, лекції й зустрічі поруч. Бронюй місця безкоштовно — квиток з QR одразу в телефоні.",
   alternates: { canonical: SITE },
   openGraph: {
-    title: "Underground — афіша, квитки, події",
-    description: "Афіша концертів, вечірок і подій. Купуй, даруй та обмінюй квитки онлайн.",
+    title: "Underground — афіша подій і безкоштовні квитки",
+    description: "Бронюй місця на події поруч безкоштовно.",
     url: SITE,
     siteName: "Underground",
     type: "website",

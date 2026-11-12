@@ -18,6 +18,8 @@ import {
   fmtDate,
   type GiftPreviewDto,
 } from "../../../lib/api";
+import { EMAIL_CODE_LOGIN } from "../../../lib/flags";
+import { Gift } from "../../components/Icon";
 import { useLang, tr } from "../../../lib/i18n";
 
 export default function ClaimGiftPage() {
@@ -98,10 +100,10 @@ export default function ClaimGiftPage() {
   };
   const loggedIn = !!getToken();
   return (
-    <main className="container narrow" style={{ textAlign: "center" }}>
-      <div style={{ fontSize: 40, lineHeight: 1 }} aria-hidden>🎁</div>
-      <h1 style={{ fontSize: 22, marginTop: 8 }}>
-        {tr(lang, `${preview.from_name} дарує тобі квиток`, `${preview.from_name} sent you a ticket`)}
+    <main className="container tight" style={{ textAlign: "center" }}>
+      <div className="empty" style={{ border: 0, padding: "12px 0 0" }}><span className="ei"><Gift className="ico lg" /></span></div>
+      <h1 style={{ fontSize: 26, marginTop: 4 }}>
+        {tr(lang, `${preview.from_name} передає вам місце`, `${preview.from_name} is giving you a place`)}
       </h1>
       <div style={card}>
         <div style={{ fontWeight: 500 }}>{preview.event_title}</div>
@@ -115,6 +117,11 @@ export default function ClaimGiftPage() {
         <button className="btn block" style={{ marginTop: 12 }} disabled={busy} onClick={claim}>
           {busy ? "…" : tr(lang, "Забрати квиток", "Claim ticket")}
         </button>
+      ) : !EMAIL_CODE_LOGIN ? (
+        <div className="stack" style={{ marginTop: 16 }}>
+          <Link className="btn block lg" href={`/login?next=${encodeURIComponent(`/g/${token}`)}`}>{tr(lang, "Увійти й забрати місце", "Sign in to claim")}</Link>
+          <Link className="btn ghost block" href={`/register?next=${encodeURIComponent(`/g/${token}`)}`}>{tr(lang, "Створити акаунт", "Create an account")}</Link>
+        </div>
       ) : !codeSent ? (
         <form className="form" style={{ marginTop: 12 }} onSubmit={(e) => { e.preventDefault(); void sendCode(); }}>
           <input
@@ -148,9 +155,6 @@ export default function ClaimGiftPage() {
           </button>
         </form>
       )}
-      <p className="muted" style={{ fontSize: 12, marginTop: 14 }}>
-        {tr(lang, "Безпечна передача · escrow", "Secure transfer · escrow")}
-      </p>
     </main>
   );
 }

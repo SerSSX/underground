@@ -113,6 +113,8 @@ export interface EventDto {
   price: string;
   currency: string;
   tickets_left: number;
+  /** Capacity the organiser set (0 when an older API omits it). */
+  tickets_total?: number;
   status: string;
   cost_type: string;
   video_url: string | null;
@@ -159,7 +161,10 @@ export async function similarEvents(id: string): Promise<EventDto[]> {
 }
 export interface TicketDto {
   id: string;
+  event_id: string;
   event_title: string;
+  event_venue_address?: string | null;
+  event_poster_url?: string | null;
   event_city: string | null;
   event_starts_at: string | null;
   qr_token: string;
@@ -291,6 +296,10 @@ export async function myTickets(): Promise<TicketDto[]> {
 }
 export async function reserveTicket(eventId: string): Promise<TicketDto> {
   return apiSend<TicketDto>("POST", `/api/events/${eventId}/reserve`, undefined);
+}
+/** Book `quantity` places (1–5) at once; each place is its own ticket with its own QR. Returns the first. */
+export async function reserveTickets(eventId: string, quantity: number): Promise<TicketDto> {
+  return apiSend<TicketDto>("POST", `/api/events/${eventId}/reserve`, { quantity });
 }
 export async function checkout(eventId: string): Promise<CheckoutResp> {
   return apiSend<CheckoutResp>("POST", `/api/events/${eventId}/checkout`, undefined);
@@ -523,8 +532,9 @@ export async function patchMe(body: PatchMeBody): Promise<UserDto> {
 export async function exportMyData(): Promise<unknown> {
   return apiGet<unknown>("/api/me/export");
 }
-export async function deleteMyAccount(password: string): Promise<void> {
-  await apiSend("DELETE", "/api/me", { password });
+/** Password accounts confirm with the password; accounts without one (email code, Google) type DELETE. */
+export async function deleteMyAccount(proof: { password: string } | { confirm: "DELETE" }): Promise<void> {
+  await apiSend("DELETE", "/api/me", proof);
 }
 
 // ---- organizer KYC (P1 #78) ----
@@ -562,3 +572,92 @@ export const EVENT_CATEGORIES = [
   "Party", "Meetup", "Charity", "Family", "Food & Drink", "Tasting", "Board Games", "Quiz", "Market",
   "Gaming", "Spiritual", "Other",
 ];
+
+// ---- public profiles ----
+export interface PublicProfile {
+  id: string;
+  name: string;
+  avatar_url: string | null;
+  bio: string | null;
+  is_organizer: boolean;
+  verified: boolean;
+  events_count: number;
+  rating_avg: number | null;
+  rating_count: number;
+}
+export async function getProfile(id: string): Promise<PublicProfile> {
+  return apiGet<PublicProfile>(`/api/users/${id}`);
+}
+
+// ---- direct messages ----
+export interface ConversationDto {
+  peer_id: string;
+  peer_name: string;
+  peer_avatar: string | null;
+  last_text: string;
+  last_at: string;
+  last_from_me: boolean;
+  unread: number;
+}
+export interface MessageDto {
+  id: string;
+  sender_id: string;
+  recipient_id: string;
+  text: string;
+  read: boolean;
+  created_at: string;
+}
+export async function myConversations(): Promise<ConversationDto[]> {
+  return apiGet<ConversationDto[]>("/api/me/conversations");
+}
+export async function messageThread(peerId: string): Promise<MessageDto[]> {
+  return apiGet<MessageDto[]>(`/api/messages/${peerId}`);
+}
+export async function sendMessage(recipientId: string, text: string): Promise<MessageDto> {
+  return apiSend<MessageDto>("POST", "/api/messages", { recipient_id: recipientId, text });
+}
+
+// ---- organiser: guests, door scan, staff (TASK-302) ----
+/** One attendee of an event: the organiser sees only the name and the number of places (brief 2026-11-11). */
+export interface GuestDto {
+  name: string;
+  places: number;
+  checked_in: number;
+  booked_at: string;
+}
+export async function eventGuests(eventId: string): Promise<GuestDto[]> {
+  return apiGet<GuestDto[]>(`/api/events/${eventId}/guests`);
+}
+export interface ScanResult {
+  valid: boolean;
+  /** valid | already_used | wrong_event | returned | inactive | not_found */
+  reason: string;
+  event_title: string;
+  holder_name?: string | null;
+  places?: number | null;
+  checked_in?: number | null;
+}
+export async function scanTicket(eventId: string, qrToken: string): Promise<ScanResult> {
+  return apiSend<ScanResult>("POST", `/api/events/${eventId}/scan`, { qr_token: qrToken });
+}
+export async function inviteStaff(eventId: string): Promise<{ invite_token: string; expires_at: string }> {
+  return apiSend("POST", `/api/events/${eventId}/staff/invite`, {});
+}
+export async function acceptStaffInvite(token: string): Promise<{ event_id: string }> {
+  return apiSend("POST", "/api/staff/accept", { token });
+}
+export async function myStaffEvents(): Promise<EventDto[]> {
+  return apiGet<EventDto[]>("/api/me/staff/events");
+}
+export interface StaffMember { user_id: string; name: string; added_at?: string | null }
+export interface StaffInvite { id: string; status: string; expires_at: string; created_at?: string | null }
+export interface StaffList { staff: StaffMember[]; invites: StaffInvite[] }
+export async function listStaff(eventId: string): Promise<StaffList> {
+  return apiGet<StaffList>(`/api/events/${eventId}/staff`);
+}
+export async function revokeStaffInvite(eventId: string, inviteId: string): Promise<void> {
+  await apiSend("DELETE", `/api/events/${eventId}/staff/invites/${inviteId}`);
+}
+export async function removeStaff(eventId: string, userId: string): Promise<void> {
+  await apiSend("DELETE", `/api/events/${eventId}/staff/${userId}`);
+}

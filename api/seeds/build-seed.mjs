@@ -8,6 +8,9 @@
 import { readFileSync } from 'node:fs'
 
 const ds = JSON.parse(readFileSync(process.argv[2], 'utf8'))
+// MVP without payments (brief 2026-11-11): every demo event is free unless UG_SEED_PAID=1 asks for the
+// original prices (the payment branch). Free events get no orders and no escrow rows.
+if (process.env.UG_SEED_PAID !== '1') for (const e of ds.events) e.cost_type = 'free'
 
 const q = (s) => (s === null || s === undefined ? 'NULL' : `'${String(s).replace(/'/g, "''")}'`)
 const arr = (xs) => `ARRAY[${xs.map(q).join(',')}]::text[]`

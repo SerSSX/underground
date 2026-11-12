@@ -5,7 +5,7 @@ import { searchCities, type CityDto } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
 
 /** City input with gazetteer autocomplete via a native datalist (TASK-017 M2). */
-export default function CityInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export default function CityInput({ value, onChange, id }: { value: string; onChange: (v: string) => void; id?: string }) {
   const [suggestions, setSuggestions] = useState<CityDto[]>([]);
   const { lang } = useLang();
 
@@ -23,7 +23,7 @@ export default function CityInput({ value, onChange }: { value: string; onChange
 
   return (
     <>
-      <input className="input" list="city-gazetteer" value={value} onChange={(e) => onChange(e.target.value)} placeholder={tr(lang, "Почни вводити місто…", "Start typing a city…")} />
+      <input id={id} className="input" list="city-gazetteer" autoComplete="address-level2" value={value} onChange={(e) => onChange(e.target.value)} placeholder={tr(lang, "Почни вводити місто…", "Start typing a city…")} />
       <datalist id="city-gazetteer">
         {suggestions.map((c) => (
           <option key={c.name} value={c.name}>{c.country}</option>

@@ -1,325 +1,290 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import Link from "next/link";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
-import {
-  myTickets, returnTicket, transferTicket, giftTicket, revokeGift, ticketQr, disputeOrder, getToken, errorMessage, type TicketDto,
-} from "../../../lib/api";
-import { useLang, tr, fmtDateL } from "../../../lib/i18n";
-import EscrowTimeline from "../../components/EscrowTimeline";
+import { myTickets, returnTicket, giftTicket, revokeGift, ticketQr, getToken, errorMessage, mapsUrl, isPast, type TicketDto } from "../../../lib/api";
+import { useLang, tr } from "../../../lib/i18n";
+import { longDate, timeOf, placesLabel, shortWhen } from "../../../lib/ui";
 import Modal from "../../components/Modal";
+import Poster from "../../components/Poster";
+import { Toast, useToast } from "../../components/Toast";
+import { QrCode, Navigation, Gift, X, Ticket, Compass, CircleCheck, ChevronLeft, ChevronRight } from "../../components/Icon";
 
-const STATUS: Record<string, { uk: string; en: string; cls: string }> = {
-  active: { uk: "✓ Активний", en: "✓ Active", cls: "pill ok" },
-  used: { uk: "• Використаний", en: "• Used", cls: "pill" },
-  returned: { uk: "✕ Повернений", en: "✕ Returned", cls: "pill bad" },
-  pending_claim: { uk: "⏳ Очікує отримання", en: "⏳ Pending claim", cls: "pill warn" },
-};
+type Group = { eventId: string; title: string; startsAt: string | null; city: string | null; venue: string | null; poster: string | null; tickets: TicketDto[] };
 
-function MyTicketsInner() {
+/** Tickets grouped by event: one card per event with all its places. */
+function group(list: TicketDto[]): Group[] {
+  const map = new Map<string, Group>();
+  for (const t of list) {
+    const g = map.get(t.event_id) ?? { eventId: t.event_id, title: t.event_title, startsAt: t.event_starts_at, city: t.event_city, venue: t.event_venue_address ?? null, poster: t.event_poster_url ?? null, tickets: [] };
+    g.tickets.push(t);
+    map.set(t.event_id, g);
+  }
+  return [...map.values()];
+}
+
+function TicketsInner() {
   const router = useRouter();
+  const params = useSearchParams();
   const { lang } = useLang();
-  const newId = useSearchParams().get("new");
-  const [tickets, setTickets] = useState<TicketDto[]>([]);
-  const [qr, setQr] = useState<Record<string, string>>({});
+  const bookedEvent = params.get("booked");
+  const bookedN = Number(params.get("n") ?? "0");
+  const [tickets, setTickets] = useState<TicketDto[] | null>(null);
+  const [tab, setTab] = useState<"upcoming" | "past">("upcoming");
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [transferFor, setTransferFor] = useState<string | null>(null);
-  const [recipient, setRecipient] = useState("");
-  const [giftFor, setGiftFor] = useState<string | null>(null);
+  const [qrFor, setQrFor] = useState<Group | null>(null);
+  const [qrIdx, setQrIdx] = useState(0);
+  const [qrImg, setQrImg] = useState<string | null>(null);
+  const [cancelFor, setCancelFor] = useState<Group | null>(null);
+  const [cancelN, setCancelN] = useState(1);
+  const [giftFor, setGiftFor] = useState<TicketDto | null>(null);
   const [giftEmail, setGiftEmail] = useState("");
   const [giftLink, setGiftLink] = useState<string | null>(null);
-  const [confirmState, setConfirmState] = useState<
-    { title: string; body: string; cta: string; run: () => Promise<void> } | null
-  >(null);
-
-  // Render a signed, short-TTL QR per active ticket (BR-023) — never the raw qr_token.
-  async function refreshQrs(list: TicketDto[]) {
-    const map: Record<string, string> = {};
-    for (const t of list) {
-      if (t.status !== "active") continue;
-      try {
-        const { token } = await ticketQr(t.id);
-        map[t.id] = await QRCode.toDataURL(token, { margin: 1, width: 220 });
-      } catch { /* transient — a later refresh retries */ }
-    }
-    setQr(map);
-  }
+  const [busy, setBusy] = useState(false);
+  const [toast, showToast] = useToast();
 
   async function load() {
-    const list = await myTickets();
-    setTickets(list);
-    await refreshQrs(list);
+    setTickets(await myTickets());
   }
-
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login?next=/me/tickets");
+      router.replace("/login?next=/me/tickets");
       return;
     }
-    load().catch((e) => setError(errorMessage(e))).finally(() => setLoading(false));
+    load().catch((e) => { setError(errorMessage(e)); setTickets([]); });
   }, [router]);
 
-  // Rotate the QR before its TTL lapses so what's on screen is always scannable.
-  useEffect(() => {
-    if (tickets.length === 0) return;
-    const id = setInterval(() => { void refreshQrs(tickets); }, 100_000);
-    return () => clearInterval(id);
+  const groups = useMemo(() => {
+    const all = group((tickets ?? []).filter((t) => t.status !== "returned"));
+    const upcoming = all.filter((g) => !isPast(g.startsAt) && g.tickets.some((t) => t.status === "active" || t.status === "pending_claim"));
+    const past = all.filter((g) => !upcoming.includes(g));
+    upcoming.sort((a, b) => (a.startsAt ?? "").localeCompare(b.startsAt ?? ""));
+    past.sort((a, b) => (b.startsAt ?? "").localeCompare(a.startsAt ?? ""));
+    return { upcoming, past };
   }, [tickets]);
 
-  function doReturn(id: string) {
-    setConfirmState({
-      title: tr(lang, "Повернути квиток?", "Return ticket?"),
-      body: tr(lang, "Місце звільниться, кошти повернуться (поки не сплинув термін).", "The seat is freed and you're refunded (while still recallable)."),
-      cta: tr(lang, "Повернути", "Return"),
-      run: async () => {
-        setBusy(id);
-        try {
-          await returnTicket(id);
-          await load();
-          setNotice(tr(lang, "Квиток повернено, кошти повернуться.", "Ticket returned; you'll be refunded."));
-        } finally {
-          setBusy(null);
-        }
-      },
-    });
-  }
+  // The door QR is a signed token that lives about a minute: fetch it on open and rotate it while shown.
+  const active = qrFor?.tickets.filter((t) => t.status === "active") ?? [];
+  const current = active[qrIdx];
+  useEffect(() => {
+    if (!current) { setQrImg(null); return; }
+    let stop = false;
+    const draw = async () => {
+      try {
+        const { token } = await ticketQr(current.id);
+        const url = await QRCode.toDataURL(token, { margin: 0, width: 560, errorCorrectionLevel: "M" });
+        if (!stop) setQrImg(url);
+      } catch { /* a later tick retries */ }
+    };
+    setQrImg(null);
+    void draw();
+    const id = setInterval(draw, 45_000);
+    return () => { stop = true; clearInterval(id); };
+  }, [current?.id]);
 
-  function doRevoke(id: string) {
-    setConfirmState({
-      title: tr(lang, "Скасувати подарунок?", "Cancel the gift?"),
-      body: tr(lang, "Посилання перестане діяти, а квиток повернеться до тебе.", "The link stops working and the ticket returns to you."),
-      cta: tr(lang, "Скасувати подарунок", "Cancel gift"),
-      run: async () => {
-        setBusy(id);
-        try {
-          await revokeGift(id);
-          await load();
-          setNotice(tr(lang, "Подарунок скасовано, квиток повернувся.", "Gift cancelled; the ticket is back."));
-        } finally {
-          setBusy(null);
-        }
-      },
-    });
+  async function doCancel() {
+    if (!cancelFor) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const toCancel = cancelFor.tickets.filter((t) => t.status === "active").slice(0, cancelN);
+      for (const t of toCancel) await returnTicket(t.id);
+      await load();
+      showToast(tr(lang, `Скасовано: ${placesLabel(toCancel.length, lang)}`, `Cancelled ${toCancel.length}`));
+      setCancelFor(null);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function doGift() {
-    const id = giftFor;
-    if (!id || !giftEmail.trim()) return;
-    setBusy(id);
+    if (!giftFor || !giftEmail.trim()) return;
+    setBusy(true);
     setError(null);
-    setNotice(null);
     try {
-      const res = await giftTicket(id, giftEmail.trim());
+      const res = await giftTicket(giftFor.id, giftEmail.trim());
       setGiftLink(`${window.location.origin}/g/${res.claim_token}`);
       await load();
     } catch (e) {
       setError(errorMessage(e));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  async function doTransfer() {
-    const id = transferFor;
-    if (!id || !recipient.trim()) return;
-    setBusy(id);
-    setError(null);
-    setNotice(null);
+  async function doRevoke(t: TicketDto) {
+    setBusy(true);
     try {
-      await transferTicket(id, recipient.trim());
-      setTransferFor(null);
-      setRecipient("");
+      await revokeGift(t.id);
       await load();
-      setNotice(tr(lang, "Квиток подаровано.", "Ticket transferred."));
+      showToast(tr(lang, "Передачу скасовано", "Transfer cancelled"));
     } catch (e) {
       setError(errorMessage(e));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  function doDispute(ticketId: string, orderId: string) {
-    setConfirmState({
-      title: tr(lang, "Відкрити спір?", "Open a dispute?"),
-      body: tr(lang, "Кошти заморозяться до рішення модерації, виплата організатору призупиниться.", "Funds are frozen until moderation decides; the organizer payout is paused."),
-      cta: tr(lang, "Відкрити спір", "Open dispute"),
-      run: async () => {
-        setBusy(ticketId);
-        try {
-          await disputeOrder(orderId);
-          await load();
-          setNotice(tr(lang, "Спір відкрито. Модерація розгляне звернення.", "Dispute opened. Moderation will review it."));
-        } finally {
-          setBusy(null);
-        }
-      },
-    });
-  }
-
-  async function runConfirm() {
-    if (!confirmState) return;
-    setError(null);
-    setNotice(null);
-    const action = confirmState;
-    setConfirmState(null);
-    try {
-      await action.run();
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }
+  const list = tab === "upcoming" ? groups.upcoming : groups.past;
+  const bookedGroup = bookedEvent ? groups.upcoming.find((g) => g.eventId === bookedEvent) : null;
 
   return (
     <main className="container narrow">
-      <h1 style={{ fontSize: 24 }}>{tr(lang, "Мої квитки", "My tickets")}</h1>
-      {error && <div className="error">{error}</div>}
-      {notice && <div className="pill ok" style={{ display: "block", marginBottom: 8 }}>{notice}</div>}
-      {loading && <p className="muted">{tr(lang, "Завантаження…", "Loading…")}</p>}
-      {!loading && tickets.length === 0 && <p className="muted">{tr(lang, "Ще немає квитків. Оберіть подію в афіші.", "No tickets yet. Pick an event from the listings.")}</p>}
-      <div className="grid">
-        {tickets.map((t) => {
-          const st = STATUS[t.status] ?? { uk: t.status, en: t.status, cls: "pill" };
-          const isNew = t.id === newId;
-          return (
-            <div key={t.id} className="ticket" style={isNew ? { outline: "2px solid var(--accent)", borderRadius: 12 } : undefined}>
-              {isNew && <div className="pill ok" style={{ marginBottom: 8 }}>{tr(lang, "✓ Новий квиток", "✓ New ticket")}</div>}
-              <h3 style={{ margin: "0 0 4px" }}>{t.event_title}</h3>
-              <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
-                {[t.event_city, fmtDateL(t.event_starts_at, lang)].filter(Boolean).join(" · ")}
-              </div>
-              {t.status === "active" && qr[t.id]
-                ? <img src={qr[t.id]} alt={tr(lang, "QR квитка", "Ticket QR")} />
-                : <div className="muted" style={{ padding: 40 }}>{tr(lang, "QR недоступний", "QR unavailable")}</div>}
-              <div style={{ marginTop: 12 }}><span className={st.cls}>{tr(lang, st.uk, st.en)}</span></div>
-              {t.status === "active" && (
-                <div className="row gap" style={{ marginTop: 10 }}>
-                  <button className="btn ghost sm" onClick={() => doReturn(t.id)} disabled={busy === t.id}>
-                    {tr(lang, "Повернути", "Return")}
-                  </button>
-                  {t.escrow_status !== "frozen" && (
-                    <>
-                      <button className="btn ghost sm" onClick={() => { setGiftEmail(""); setGiftLink(null); setGiftFor(t.id); }} disabled={busy === t.id}>
-                        {tr(lang, "Подарувати лінком", "Gift by link")}
-                      </button>
-                      <button className="btn ghost sm" onClick={() => { setRecipient(""); setTransferFor(t.id); }} disabled={busy === t.id}>
-                        {tr(lang, "Передати", "Send")}
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-              {t.status === "pending_claim" && (
-                <div className="row gap" style={{ marginTop: 10 }}>
-                  <button className="btn ghost sm" onClick={() => doRevoke(t.id)} disabled={busy === t.id}>
-                    {tr(lang, "Скасувати подарунок", "Cancel gift")}
-                  </button>
-                </div>
-              )}
-              {/* Receipt + escrow lifecycle for paid tickets (WEB-2/3/4). */}
-              {t.order_id && (
-                <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-                  <div className="row spread" style={{ fontSize: 12 }}>
-                    <span className="muted">{tr(lang, "Замовлення", "Order")} #{t.order_id.slice(0, 8)}</span>
-                    <span className="muted">{fmtDateL(t.created_at, lang)}</span>
-                  </div>
-                  <div className="row spread" style={{ fontSize: 13, marginTop: 4 }}>
-                    <span>{tr(lang, "Сплачено", "Paid")}: <strong>{t.price} ₴</strong></span>
-                  </div>
-                  <EscrowTimeline status={t.escrow_status} />
-                  {(t.escrow_status === "held" || t.escrow_status === "clearing") && (
-                    <button className="btn ghost sm" style={{ marginTop: 10 }} onClick={() => doDispute(t.id, t.order_id!)} disabled={busy === t.id}>
-                      {tr(lang, "Поскаржитися на подію", "Dispute this order")}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <div className="page-head"><h1>{tr(lang, "Мої квитки", "My tickets")}</h1></div>
 
-      {confirmState && (
-        <Modal title={confirmState.title} onClose={() => setConfirmState(null)}>
-          <p className="muted">{confirmState.body}</p>
-          <div className="row gap" style={{ marginTop: 16, justifyContent: "flex-end" }}>
-            <button className="btn ghost" onClick={() => setConfirmState(null)}>{tr(lang, "Скасувати", "Cancel")}</button>
-            <button className="btn" onClick={runConfirm}>{confirmState.cta}</button>
+      {bookedGroup && (
+        <div className="card" style={{ marginBottom: 20, borderColor: "rgba(52,199,123,.35)", background: "linear-gradient(180deg, rgba(52,199,123,.10), transparent), var(--surface)" }}>
+          <div className="row gap" style={{ alignItems: "flex-start" }}>
+            <CircleCheck className="ico lg" style={{ color: "var(--ok-fg)", marginTop: 2 }} />
+            <div className="grow">
+              <h3>{tr(lang, "Готово! Місця заброньовано", "Done! Your places are booked")}</h3>
+              <p className="muted small" style={{ marginTop: 4 }}>
+                {bookedGroup.title} · {placesLabel(bookedN || bookedGroup.tickets.length, lang)}. {tr(lang, "На вході покажіть QR — для кожного місця свій.", "Show the QR at the door — one per place.")}
+              </p>
+              <div className="row gap wrap" style={{ marginTop: 12 }}>
+                <button className="btn sm" onClick={() => { setQrIdx(0); setQrFor(bookedGroup); }}><QrCode className="ico sm" />{tr(lang, "Показати QR", "Show QR")}</button>
+                <Link className="btn ghost sm" href={`/events/${bookedGroup.eventId}`}>{tr(lang, "До події", "To the event")}</Link>
+              </div>
+            </div>
           </div>
-        </Modal>
+        </div>
       )}
 
-      {giftFor && (
-        <Modal title={tr(lang, "Подарувати лінком", "Gift by link")} onClose={() => setGiftFor(null)}>
-          {!giftLink ? (
-            <form className="form" onSubmit={(e) => { e.preventDefault(); doGift(); }}>
-              <input
-                className="input"
-                type="email"
-                placeholder={tr(lang, "Email отримувача", "Recipient email")}
-                value={giftEmail}
-                onChange={(e) => setGiftEmail(e.target.value)}
-                required
-                autoComplete="email"
-              />
-              <p className="muted" style={{ fontSize: 12 }}>
-                {tr(lang, "Працює, навіть якщо в людини ще немає акаунта.", "Works even if they don't have an account yet.")}
-              </p>
-              <button className="btn block" disabled={!giftEmail.trim() || busy === giftFor}>
-                {tr(lang, "Створити лінк", "Create link")}
-              </button>
-            </form>
+      <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === "upcoming"} className={tab === "upcoming" ? "active" : ""} onClick={() => setTab("upcoming")}>{tr(lang, "Майбутні", "Upcoming")} <span className="count">{groups.upcoming.length}</span></button>
+        <button role="tab" aria-selected={tab === "past"} className={tab === "past" ? "active" : ""} onClick={() => setTab("past")}>{tr(lang, "Минулі", "Past")} <span className="count">{groups.past.length}</span></button>
+      </div>
+
+      {error && <div className="alert error" style={{ marginBottom: 16 }}>{error}</div>}
+
+      {tickets === null ? (
+        <div className="stack">{[0, 1, 2].map((i) => <div key={i} className="skeleton" style={{ height: 120 }} />)}</div>
+      ) : list.length === 0 ? (
+        <div className="empty">
+          <div className="ei"><Ticket className="ico lg" /></div>
+          <h3>{tab === "upcoming" ? tr(lang, "Поки немає квитків", "No tickets yet") : tr(lang, "Тут зʼявляться минулі події", "Past events will show up here")}</h3>
+          <p>{tr(lang, "Знайдіть подію в афіші й забронюйте місце — квиток з QR зʼявиться тут.", "Find an event and book a place — the QR ticket appears here.")}</p>
+          <Link href="/" className="btn"><Compass className="ico sm" />{tr(lang, "До афіші", "Browse events")}</Link>
+        </div>
+      ) : (
+        <div className="stack">
+          {list.map((g) => {
+            const act = g.tickets.filter((t) => t.status === "active");
+            const used = g.tickets.filter((t) => t.status === "used");
+            const pending = g.tickets.filter((t) => t.status === "pending_claim");
+            const maps = mapsUrl(g.venue, g.city);
+            return (
+              <article key={g.eventId} className="tcard">
+                <Link href={`/events/${g.eventId}`} className="thumb" aria-label={g.title}><Poster src={g.poster} title={g.title} category={null} /></Link>
+                <div style={{ minWidth: 0 }}>
+                  <Link href={`/events/${g.eventId}`}><h3>{g.title}</h3></Link>
+                  <div className="muted small" style={{ marginTop: 2 }}>{shortWhen(g.startsAt, lang)}</div>
+                  <div className="muted small">{[g.venue, g.city].filter(Boolean).join(", ")}</div>
+                  <div className="row gap wrap" style={{ marginTop: 8 }}>
+                    {act.length > 0 && <span className="badge ok">{placesLabel(act.length, lang)}</span>}
+                    {used.length > 0 && <span className="badge">{tr(lang, `пройшли: ${used.length}`, `checked in: ${used.length}`)}</span>}
+                    {pending.length > 0 && <span className="badge warn">{tr(lang, `передається: ${pending.length}`, `being transferred: ${pending.length}`)}</span>}
+                  </div>
+                </div>
+                <div className="actions row gap wrap" style={{ justifyContent: "flex-end" }}>
+                  {act.length > 0 && tab === "upcoming" && (
+                    <>
+                      <button className="btn sm" onClick={() => { setQrIdx(0); setQrFor(g); }}><QrCode className="ico sm" />QR</button>
+                      {maps && <a className="btn ghost sm icon" href={maps} target="_blank" rel="noreferrer" aria-label={tr(lang, "Маршрут", "Directions")}><Navigation className="ico sm" /></a>}
+                      <button className="btn ghost sm icon" aria-label={tr(lang, "Передати місце", "Transfer a place")} title={tr(lang, "Передати місце", "Transfer a place")} onClick={() => { setGiftFor(act[0]); setGiftEmail(""); setGiftLink(null); }}><Gift className="ico sm" /></button>
+                      <button className="btn danger-ghost sm" onClick={() => { setCancelN(act.length); setCancelFor(g); }}>{tr(lang, "Скасувати", "Cancel")}</button>
+                    </>
+                  )}
+                  {pending.map((t) => (
+                    <button key={t.id} className="btn ghost sm" disabled={busy} onClick={() => doRevoke(t)}><X className="ico sm" />{tr(lang, "Скасувати передачу", "Cancel transfer")}</button>
+                  ))}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      {qrFor && (
+        <Modal title={qrFor.title} onClose={() => setQrFor(null)}>
+          {active.length === 0 ? (
+            <p className="muted">{tr(lang, "Активних квитків немає.", "No active tickets.")}</p>
           ) : (
-            <div className="form">
-              <p className="muted" style={{ fontSize: 13 }}>
-                {tr(lang, "Надішли посилання — воно одноразове, діє 48 год.", "Share this one-time link (valid 48h).")}
-              </p>
-              <input className="input" readOnly value={giftLink} onFocus={(e) => e.currentTarget.select()} />
-              <div className="row gap">
-                <button
-                  type="button"
-                  className="btn ghost sm"
-                  onClick={() => { void navigator.clipboard?.writeText(giftLink); setNotice(tr(lang, "Посилання скопійовано.", "Link copied.")); }}
-                >
-                  {tr(lang, "Скопіювати", "Copy")}
-                </button>
-                <a className="btn ghost sm" target="_blank" rel="noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent(giftLink)}&text=${encodeURIComponent(tr(lang, "Дарую тобі квиток", "A ticket for you"))}`}>Telegram</a>
-                <a className="btn ghost sm" target="_blank" rel="noreferrer" href={`https://wa.me/?text=${encodeURIComponent(`${tr(lang, "Дарую тобі квиток", "A ticket for you")} ${giftLink}`)}`}>WhatsApp</a>
+            <div className="stack lg" style={{ alignItems: "center", textAlign: "center" }}>
+              <div className="muted small">{longDate(qrFor.startsAt, lang)} · {timeOf(qrFor.startsAt)}</div>
+              <div className="qr-box">
+                {qrImg ? <img src={qrImg} alt={tr(lang, "QR-код квитка", "Ticket QR code")} /> : <div className="skeleton" style={{ width: "100%", height: "100%" }} />}
               </div>
-              <button type="button" className="btn block" onClick={() => setGiftFor(null)}>{tr(lang, "Готово", "Done")}</button>
+              {active.length > 1 && (
+                <div className="row gap">
+                  <button className="btn ghost icon sm" disabled={qrIdx === 0} onClick={() => setQrIdx((i) => i - 1)} aria-label={tr(lang, "Попереднє місце", "Previous place")}><ChevronLeft className="ico sm" /></button>
+                  <span className="strong">{tr(lang, `Місце ${qrIdx + 1} з ${active.length}`, `Place ${qrIdx + 1} of ${active.length}`)}</span>
+                  <button className="btn ghost icon sm" disabled={qrIdx >= active.length - 1} onClick={() => setQrIdx((i) => i + 1)} aria-label={tr(lang, "Наступне місце", "Next place")}><ChevronRight className="ico sm" /></button>
+                </div>
+              )}
+              <p className="subtle xs">{tr(lang, "Код оновлюється сам кожну хвилину — скриншот не спрацює. Зробіть екран яскравішим.", "The code refreshes every minute — a screenshot won't work. Turn up the brightness.")}</p>
             </div>
           )}
         </Modal>
       )}
 
-      {transferFor && (
-        <Modal title={tr(lang, "Передати квиток", "Send ticket")} onClose={() => setTransferFor(null)}>
-          <form className="form" onSubmit={(e) => { e.preventDefault(); doTransfer(); }}>
-            <input
-              className="input"
-              type="email"
-              placeholder={tr(lang, "Email отримувача", "Recipient email")}
-              value={recipient}
-              onChange={(e) => setRecipient(e.target.value)}
-              required
-              autoComplete="email"
-            />
-            <p className="muted" style={{ fontSize: 12 }}>{tr(lang, "Отримувач має акаунт underground.", "The recipient needs an underground account.")}</p>
-            <button className="btn block" disabled={!recipient.trim() || busy === transferFor}>{tr(lang, "Подарувати", "Transfer")}</button>
-          </form>
+      {cancelFor && (
+        <Modal title={tr(lang, "Скасувати бронь?", "Cancel booking?")} onClose={() => !busy && setCancelFor(null)}>
+          <div className="stack lg">
+            <p className="muted">{tr(lang, "Місця знову стануть вільними для інших. Забронювати ще раз можна, поки є місця.", "The places go back to others. You can book again while places are left.")}</p>
+            {cancelFor.tickets.filter((t) => t.status === "active").length > 1 && (
+              <div className="row spread">
+                <span className="strong">{tr(lang, "Скільки місць скасувати", "How many to cancel")}</span>
+                <div className="seg">
+                  {cancelFor.tickets.filter((t) => t.status === "active").map((_, i) => (
+                    <button key={i} className={cancelN === i + 1 ? "active" : ""} onClick={() => setCancelN(i + 1)}>{i + 1}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {error && <div className="alert error">{error}</div>}
+            <div className="row gap">
+              <button className="btn ghost grow" disabled={busy} onClick={() => setCancelFor(null)}>{tr(lang, "Залишити", "Keep")}</button>
+              <button className="btn danger grow" disabled={busy} onClick={doCancel}>{busy ? "…" : tr(lang, `Скасувати ${placesLabel(cancelN, lang)}`, `Cancel ${cancelN}`)}</button>
+            </div>
+          </div>
         </Modal>
       )}
+
+      {giftFor && (
+        <Modal title={tr(lang, "Передати місце другу", "Give a place to a friend")} onClose={() => !busy && setGiftFor(null)}>
+          {giftLink ? (
+            <div className="stack lg">
+              <div className="alert ok"><CircleCheck className="ico" />{tr(lang, "Готово. Надішліть другові це посилання — він забере місце у свій акаунт.", "Done. Send this link to your friend to claim the place.")}</div>
+              <input className="input" readOnly value={giftLink} onFocus={(e) => e.currentTarget.select()} />
+              <button className="btn block" onClick={() => { void navigator.clipboard.writeText(giftLink); showToast(tr(lang, "Скопійовано", "Copied")); }}>{tr(lang, "Скопіювати посилання", "Copy link")}</button>
+            </div>
+          ) : (
+            <form className="form" onSubmit={(e) => { e.preventDefault(); void doGift(); }}>
+              <p className="muted small">{tr(lang, "Одне місце перейде другові: ваш QR для нього перестане діяти, у друга зʼявиться свій.", "One place moves to your friend: your QR for it stops working, they get their own.")}</p>
+              <div className="field">
+                <label htmlFor="gift-email">{tr(lang, "Email друга", "Friend's email")}</label>
+                <input id="gift-email" className="input" type="email" autoComplete="email" value={giftEmail} onChange={(e) => setGiftEmail(e.target.value)} required />
+              </div>
+              {error && <div className="alert error">{error}</div>}
+              <button className="btn block" disabled={busy || !giftEmail.trim()}>{busy ? "…" : tr(lang, "Створити посилання", "Create link")}</button>
+            </form>
+          )}
+        </Modal>
+      )}
+      <Toast msg={toast} />
     </main>
   );
 }
 
 export default function MyTicketsPage() {
   return (
-    <Suspense fallback={<main className="container narrow"><p className="muted">…</p></main>}>
-      <MyTicketsInner />
+    <Suspense fallback={<main className="container narrow"><div className="skeleton" style={{ height: 120 }} /></main>}>
+      <TicketsInner />
     </Suspense>
   );
 }

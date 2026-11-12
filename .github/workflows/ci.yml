@@ -144,6 +144,8 @@ jobs:
       - run: npm ci
       - name: Typecheck
         run: npx tsc --noEmit
+      - name: Unit tests (node:test, where the app has them)
+        run: if ls lib/*.test.mjs >/dev/null 2>&1; then node --test lib/; else echo "no unit tests in ${{ matrix.app }}"; fi
       - name: Build
         run: npm run build
         env:

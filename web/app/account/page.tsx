@@ -1,163 +1,184 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  getToken, clearToken, getMe, patchMe, exportMyData, deleteMyAccount,
-  getKyc, submitKyc, errorMessage, type UserDto, type KycView,
-} from "../../lib/api";
+import { getToken, getMe, patchMe, getPrefs, putPrefs, exportMyData, deleteMyAccount, uploadImage, errorMessage, EVENT_CATEGORIES, type UserDto } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
+import { useSession } from "../../lib/session";
+import { categoryLabel, initials } from "../../lib/ui";
+import CityInput from "../components/CityInput";
 import Modal from "../components/Modal";
+import { Toast, useToast } from "../components/Toast";
+import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight } from "../components/Icon";
 
 export default function AccountPage() {
   const router = useRouter();
-  const { lang } = useLang();
+  const { lang, setLang } = useLang();
+  const { logout, refresh } = useSession();
   const [me, setMe] = useState<UserDto | null>(null);
-  const [kyc, setKyc] = useState<KycView | null>(null);
+  const [name, setName] = useState("");
   const [dob, setDob] = useState("");
-  const [msg, setMsg] = useState<string | null>(null);
+  const [city, setCity] = useState("");
+  const [interests, setInterests] = useState<string[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // KYC form
-  const [kName, setKName] = useState("");
-  const [iban, setIban] = useState("");
-  const [swift, setSwift] = useState("");
-  // delete-account modal
-  const [showDelete, setShowDelete] = useState(false);
-  const [deletePw, setDeletePw] = useState("");
+  const [del, setDel] = useState(false);
+  const [noPw, setNoPw] = useState(false);
+  const [proof, setProof] = useState("");
+  const [toast, showToast] = useToast();
 
   useEffect(() => {
     if (!getToken()) {
-      router.push("/login?next=/account");
+      router.replace("/login?next=/account");
       return;
     }
-    getMe().then(setMe).catch((e) => setError(errorMessage(e)));
-    getKyc().then(setKyc).catch(() => {});
+    getMe().then((u) => { setMe(u); setName(u.name); setDob(u.dob ?? ""); }).catch((e) => setError(errorMessage(e)));
+    getPrefs().then((p) => { setCity(p.city ?? ""); setInterests(p.categories); }).catch(() => {});
   }, [router]);
 
-  async function saveDob() {
-    setError(null); setMsg(null);
-    try {
-      await patchMe({ dob });
-      setMsg(tr(lang, "Дату народження збережено", "Date of birth saved"));
-    } catch (e) { setError(errorMessage(e)); }
-  }
-
-  async function doExport() {
+  async function run(key: string, fn: () => Promise<void>, ok?: string) {
+    setBusy(key);
     setError(null);
     try {
-      const data = await exportMyData();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = "underground-my-data.json"; a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) { setError(errorMessage(e)); }
+      await fn();
+      if (ok) showToast(ok);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
   }
 
-  async function doDelete() {
-    if (!deletePw) return;
-    setError(null);
-    try {
-      await deleteMyAccount(deletePw);
-      clearToken();
-      router.push("/");
-    } catch (e) { setError(errorMessage(e)); }
-  }
+  const saveProfile = () => run("profile", async () => {
+    const u = await patchMe({ name: name.trim(), ...(dob ? { dob } : {}) });
+    setMe(u);
+    refresh();
+  }, tr(lang, "Профіль збережено", "Profile saved"));
 
-  async function doKyc() {
-    setError(null); setMsg(null);
-    try {
-      await submitKyc(kName.trim(), iban.trim(), swift.trim());
-      setMsg(tr(lang, "Реквізити надіслано на перевірку", "Details submitted for review"));
-      setKyc(await getKyc());
-    } catch (e) { setError(errorMessage(e)); }
-  }
+  const saveAvatar = (file: File) => run("avatar", async () => {
+    const url = await uploadImage(file);
+    setMe(await patchMe({ avatar_url: url }));
+    refresh();
+  }, tr(lang, "Фото оновлено", "Photo updated"));
 
-  if (error && !me) return <main className="container narrow"><div className="error">{error}</div></main>;
-  if (!me) return <main className="container narrow"><p className="muted">{tr(lang, "Завантаження…", "Loading…")}</p></main>;
+  const savePrefs = () => run("prefs", async () => { await putPrefs(interests, city.trim() || null); }, tr(lang, "Інтереси збережено", "Interests saved"));
+
+  const doExport = () => run("export", async () => {
+    const data = await exportMyData();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+    a.download = "underground-my-data.json";
+    a.click();
+  });
+
+  const doDelete = () => run("delete", async () => {
+    await deleteMyAccount(noPw ? { confirm: "DELETE" } : { password: proof });
+    logout();
+    router.push("/");
+  });
+
+  if (!me) return <main className="container narrow">{error ? <div className="alert error" style={{ marginTop: 24 }}>{error}</div> : <div className="skeleton" style={{ height: 240, marginTop: 24 }} />}</main>;
+
+  const toggle = (c: string) => setInterests((s) => (s.includes(c) ? s.filter((x) => x !== c) : [...s, c]));
 
   return (
     <main className="container narrow">
-      <h1 style={{ fontSize: 24 }}>{tr(lang, "Акаунт", "Account")}</h1>
-      <p className="muted">{me.name} · {me.email}</p>
-      {error && <div className="error">{error}</div>}
-      {msg && <div className="muted" style={{ color: "var(--accent)" }}>{msg}</div>}
+      <div className="card" style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 8, padding: 22 }}>
+        <label style={{ position: "relative", cursor: "pointer" }} aria-label={tr(lang, "Змінити фото", "Change photo")}>
+          <span className="avatar lg" style={{ width: 72, height: 72, fontSize: 26 }}>{me.avatar_url ? <img src={me.avatar_url} alt="" /> : initials(me.name)}</span>
+          <span className="round-btn" style={{ position: "absolute", right: -6, bottom: -6, width: 30, height: 30, background: "var(--surface-3)" }}><Camera className="ico sm" /></span>
+          <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(e) => { const f = e.target.files?.[0]; if (f) void saveAvatar(f); }} />
+        </label>
+        <div className="grow">
+          <h1 style={{ fontSize: 24 }}>{me.name}</h1>
+          <div className="muted small">{me.email}</div>
+        </div>
+      </div>
 
-      <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 18 }}>{tr(lang, "Дата народження", "Date of birth")}</h2>
-        <p className="muted">{tr(lang, "Потрібна для подій із віковим обмеженням.", "Required for age-restricted events.")}</p>
-        <div className="row gap" style={{ alignItems: "center" }}>
-          <input className="input" type="date" value={dob} onChange={(e) => setDob(e.target.value)} />
-          <button className="btn sm" onClick={saveDob} disabled={!dob}>{tr(lang, "Зберегти", "Save")}</button>
+      <div className="stack" style={{ marginTop: 16 }}>
+        <Link href="/me/tickets" className="card tight row gap"><Ticket className="ico" /><span className="grow strong">{tr(lang, "Мої квитки", "My tickets")}</span><ChevronRight className="ico sm subtle" /></Link>
+        <Link href="/organizer" className="card tight row gap"><LayoutGrid className="ico" /><span className="grow strong">{tr(lang, "Мої події", "My events")}</span><ChevronRight className="ico sm subtle" /></Link>
+      </div>
+
+      {error && <div className="alert error" style={{ marginTop: 16 }}>{error}</div>}
+
+      <section className="card section">
+        <h2 style={{ fontSize: 17, marginBottom: 14 }}>{tr(lang, "Особисті дані", "Personal details")}</h2>
+        <div className="form">
+          <div className="field">
+            <label htmlFor="acc-name">{tr(lang, "Імʼя", "Name")}</label>
+            <input id="acc-name" className="input" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+            <span className="hint">{tr(lang, "Організатор бачить лише ваше імʼя і кількість місць.", "Organisers see only your name and number of places.")}</span>
+          </div>
+          <div className="field">
+            <label htmlFor="acc-dob">{tr(lang, "Дата народження", "Date of birth")}</label>
+            <input id="acc-dob" className="input" type="date" value={dob} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setDob(e.target.value)} style={{ maxWidth: 240 }} />
+            <span className="hint">{tr(lang, "Потрібна лише для подій з віковим обмеженням. Нікому не показується.", "Only for age-restricted events. Never shown to anyone.")}</span>
+          </div>
+          <button className="btn" style={{ alignSelf: "flex-start" }} onClick={saveProfile} disabled={busy === "profile" || !name.trim()}>{tr(lang, "Зберегти", "Save")}</button>
         </div>
       </section>
 
-      <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 18 }}>{tr(lang, "Виплати організатора (KYC)", "Organizer payouts (KYC)")}</h2>
-        <p>
-          {tr(lang, "Статус:", "Status:")}{" "}
-          <span className={kyc?.kyc_status === "verified" ? "pill ok" : kyc?.kyc_status === "rejected" ? "pill bad" : kyc?.kyc_status === "pending" ? "pill warn" : "pill"}>
-            {kyc?.kyc_status ?? "—"}
-          </span>
-          {kyc?.has_bank_details ? <span className="muted">{tr(lang, " · реквізити на файлі", " · bank details on file")}</span> : ""}
-        </p>
-        <p className="muted">{tr(lang, "Потрібно перед першою виплатою.", "Required before your first payout.")}</p>
-        {(() => {
-          const ibanClean = iban.replace(/\s/g, "").toUpperCase();
-          const ibanOk = /^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/.test(ibanClean);
-          const swiftOk = /^[A-Z0-9]{8}([A-Z0-9]{3})?$/.test(swift.trim().toUpperCase());
-          const nameOk = kName.trim().length > 0;
-          const verified = kyc?.kyc_status === "verified";
-          return (
-            <div className="form">
-              <input className="input" placeholder={tr(lang, "Ім'я отримувача", "Recipient name")} value={kName} onChange={(e) => setKName(e.target.value)} disabled={verified} />
-              <input className="input" placeholder="IBAN (UA / DE…)" value={iban} onChange={(e) => setIban(e.target.value)} disabled={verified} aria-invalid={iban.length > 0 && !ibanOk} />
-              {iban.length > 0 && !ibanOk && <div className="muted" style={{ fontSize: 12 }}>{tr(lang, "IBAN: 2 літери + 2 цифри + 11–30 символів", "IBAN: 2 letters + 2 digits + 11–30 chars")}</div>}
-              <input className="input" placeholder="SWIFT / BIC" value={swift} onChange={(e) => setSwift(e.target.value)} disabled={verified} aria-invalid={swift.length > 0 && !swiftOk} />
-              {swift.length > 0 && !swiftOk && <div className="muted" style={{ fontSize: 12 }}>{tr(lang, "SWIFT: 8 або 11 символів", "SWIFT: 8 or 11 characters")}</div>}
-              {verified
-                ? <p className="muted">{tr(lang, "Реквізити підтверджені. Зміна — через підтримку.", "Details verified. Change via support.")}</p>
-                : <button className="btn sm" onClick={doKyc} disabled={!nameOk || !ibanOk || !swiftOk}>{tr(lang, "Надіслати на перевірку", "Submit for review")}</button>}
-            </div>
-          );
-        })()}
-      </section>
-
-      <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 18 }}>{tr(lang, "Ваші дані (GDPR)", "Your data (GDPR)")}</h2>
-        <div className="row gap" style={{ flexWrap: "wrap" }}>
-          <button className="btn sm ghost" onClick={doExport}>{tr(lang, "Експортувати мої дані", "Export my data")}</button>
-          <button className="btn sm danger" onClick={() => { setDeletePw(""); setShowDelete(true); }}>{tr(lang, "Видалити акаунт", "Delete account")}</button>
+      <section className="card section">
+        <h2 style={{ fontSize: 17 }}>{tr(lang, "Інтереси й місто", "Interests and city")}</h2>
+        <p className="muted small" style={{ marginTop: 4, marginBottom: 14 }}>{tr(lang, "За ними складається добірка «Для тебе».", "These shape your For You picks.")}</p>
+        <div className="field" style={{ maxWidth: 320, marginBottom: 14 }}>
+          <label htmlFor="acc-city">{tr(lang, "Місто", "City")}</label>
+          <CityInput id="acc-city" value={city} onChange={setCity} />
         </div>
-        <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
-          {tr(lang, "Видалення анонімізує вашу особу; фінансові записи зберігаються знеособленими для податкових вимог.", "Deletion anonymizes your identity; financial records are kept de-identified for tax requirements.")}
-        </p>
+        <div className="chips">
+          {EVENT_CATEGORIES.map((c) => {
+            const on = interests.includes(c);
+            return <button key={c} type="button" className={`chip ${on ? "active" : ""}`} aria-pressed={on} onClick={() => toggle(c)}>{on && <Check className="ico" />}{categoryLabel(c, lang)}</button>;
+          })}
+        </div>
+        <button className="btn secondary" style={{ marginTop: 16 }} onClick={savePrefs} disabled={busy === "prefs"}>{tr(lang, "Зберегти інтереси", "Save interests")}</button>
       </section>
 
-      <p className="muted" style={{ marginTop: 24, fontSize: 13 }}>
-        <a href="/privacy">{tr(lang, "Конфіденційність", "Privacy")}</a> ·{" "}
-        <a href="/terms">{tr(lang, "Умови", "Terms")}</a>
-      </p>
+      <section className="card section">
+        <div className="row spread wrap" style={{ gap: 12 }}>
+          <div className="row gap"><Globe className="ico" /><span className="strong">{tr(lang, "Мова інтерфейсу", "Language")}</span></div>
+          <div className="seg">
+            <button className={lang === "uk" ? "active" : ""} onClick={() => setLang("uk")}>Українська</button>
+            <button className={lang === "en" ? "active" : ""} onClick={() => setLang("en")}>English</button>
+          </div>
+        </div>
+      </section>
 
-      {showDelete && (
-        <Modal title={tr(lang, "Видалити акаунт", "Delete account")} onClose={() => setShowDelete(false)}>
-          <form className="form" onSubmit={(e) => { e.preventDefault(); doDelete(); }}>
-            <p className="muted" style={{ fontSize: 13 }}>
-              {tr(lang, "Дію не можна скасувати. Підтвердіть пароль.", "This cannot be undone. Confirm your password.")}
-            </p>
-            <input
-              className="input"
-              type="password"
-              placeholder={tr(lang, "Пароль", "Password")}
-              value={deletePw}
-              onChange={(e) => setDeletePw(e.target.value)}
-              required
-              autoComplete="current-password"
-            />
-            <button className="btn block danger" disabled={!deletePw}>{tr(lang, "Видалити назавжди", "Delete permanently")}</button>
+      <section className="card section">
+        <h2 style={{ fontSize: 17, marginBottom: 12 }}>{tr(lang, "Дані й акаунт", "Data and account")}</h2>
+        <div className="row gap wrap">
+          <button className="btn ghost sm" onClick={doExport} disabled={busy === "export"}><Download className="ico sm" />{tr(lang, "Завантажити мої дані", "Download my data")}</button>
+          <button className="btn ghost sm" onClick={() => { logout(); router.push("/"); }}><LogOut className="ico sm" />{tr(lang, "Вийти", "Log out")}</button>
+          <button className="btn danger-ghost sm" onClick={() => { setProof(""); setDel(true); }}><Trash2 className="ico sm" />{tr(lang, "Видалити акаунт", "Delete account")}</button>
+        </div>
+      </section>
+
+      {del && (
+        <Modal title={tr(lang, "Видалити акаунт?", "Delete account?")} onClose={() => busy !== "delete" && setDel(false)}>
+          <form className="form" onSubmit={(e) => { e.preventDefault(); void doDelete(); }}>
+            <p className="muted">{tr(lang, "Ваші дані буде знеособлено, активні бронювання скасовано. Відновити акаунт не вийде.", "Your data is anonymised and active bookings cancelled. This cannot be undone.")}</p>
+            {noPw ? (
+              <div className="field">
+                <label htmlFor="del-confirm">{tr(lang, "Введіть DELETE, щоб підтвердити", "Type DELETE to confirm")}</label>
+                <input id="del-confirm" className="input" value={proof} onChange={(e) => setProof(e.target.value)} autoComplete="off" />
+              </div>
+            ) : (
+              <div className="field">
+                <label htmlFor="del-pw">{tr(lang, "Ваш пароль", "Your password")}</label>
+                <input id="del-pw" className="input" type="password" value={proof} onChange={(e) => setProof(e.target.value)} autoComplete="current-password" />
+              </div>
+            )}
+            <button type="button" className="btn quiet sm" style={{ alignSelf: "flex-start", marginLeft: -12 }} onClick={() => { setNoPw((v) => !v); setProof(""); }}>
+              {noPw ? tr(lang, "У мене є пароль", "I have a password") : tr(lang, "Я входжу без пароля", "I sign in without a password")}
+            </button>
+            {error && <div className="alert error">{error}</div>}
+            <button className="btn danger block" disabled={busy === "delete" || (noPw ? proof !== "DELETE" : !proof)}>{tr(lang, "Видалити назавжди", "Delete forever")}</button>
           </form>
         </Modal>
       )}
+      <Toast msg={toast} />
     </main>
   );
 }

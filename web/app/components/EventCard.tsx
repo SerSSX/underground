@@ -1,95 +1,88 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { fmtPrice, type EventDto } from "../../lib/api";
-import { useLang, tr, fmtDateL } from "../../lib/i18n";
+import { FREE_ONLY } from "../../lib/flags";
+import { useLang, tr } from "../../lib/i18n";
+import { categoryLabel, dateBadge, timeOf, plural } from "../../lib/ui";
+import Poster from "./Poster";
+import { Heart, MapPin } from "./Icon";
 
-const COLORS: Record<string, string> = {
-  Rock: "#c0392b", Metal: "#7f1d1d", Jazz: "#b8860b", Electronic: "#6d28d9", "Hip-Hop": "#9333ea",
-  Poetry: "#0e7490", Yoga: "#15803d", "Board Games": "#0f766e", Party: "#be185d", Exhibition: "#b45309",
-};
-function color(cat: string): string {
-  return COLORS[cat] ?? "#3a3a44";
-}
 export default function EventCard({
   event,
   saved = false,
   onToggleSave,
+  eager = false,
 }: {
   event: EventDto;
   saved?: boolean;
+  /** Absent → no heart (e.g. similar events). Signed-out callers pass a function that sends to login. */
   onToggleSave?: (id: string) => void;
+  eager?: boolean;
 }) {
-  const router = useRouter();
   const { lang } = useLang();
-  const free = event.cost_type.toLowerCase() === "free";
-  const REASON: Record<string, string> = {
-    followed: tr(lang, "★ ВИ ПІДПИСАНІ", "★ FOLLOWING"),
-    interest: tr(lang, "ЗА ІНТЕРЕСОМ", "YOUR INTEREST"),
-    city: tr(lang, "ПОРЯД З ВАМИ", "NEAR YOU"),
-    trending: tr(lang, "🔥 ПОПУЛЯРНЕ", "🔥 TRENDING"),
-  };
-  const open = () => router.push(`/events/${event.id}`);
+  const free = FREE_ONLY || event.cost_type.toLowerCase() === "free";
+  const badge = dateBadge(event.starts_at, lang);
+  const left = event.tickets_left;
+  const place = [timeOf(event.starts_at), event.venue_address ? event.venue_address.split(",")[0] : null, event.city]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <div
-      className="ecard"
-      role="link"
-      tabIndex={0}
-      aria-label={event.title}
-      onClick={open}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
-      }}
-    >
-      <div
-        className="poster"
-        style={{
-          backgroundImage: event.poster_url
-            ? `url(${event.poster_url})`
-            : `linear-gradient(160deg, ${color(event.category)}, #0b0b0d)`,
-        }}
-      >
-        <span className="row" style={{ gap: 6 }}>
-          <span className="tag">{event.category}</span>
-          {event.age_rating && <span className="tag" style={{ background: "var(--danger, #e2553a)", fontWeight: 700 }}>{event.age_rating}+</span>}
-        </span>
-        {onToggleSave ? (
-          <button
-            className="savebtn"
-            aria-label={saved ? tr(lang, "Збережено", "Saved") : tr(lang, "Зберегти", "Save")}
-            aria-pressed={saved}
-            title={saved ? tr(lang, "Збережено", "Saved") : tr(lang, "Зберегти", "Save")}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleSave(event.id);
-            }}
-          >
-            {saved ? "🔖" : "📑"}
-          </button>
-        ) : (
-          <span className="tag">{tr(lang, `лишилось ${event.tickets_left}`, `${event.tickets_left} left`)}</span>
+    <article className="ecard">
+      <Link href={`/events/${event.id}`} className="poster" aria-label={event.title}>
+        <Poster src={event.poster_url} title={event.title} category={event.category} eager={eager} />
+        {badge && (
+          <span className="date-badge" aria-hidden>
+            <div className="d">{badge.day}</div>
+            <div className="m">{badge.mon}</div>
+          </span>
         )}
-      </div>
-      <div className="body">
-        {event.reason && <div className="reason">{REASON[event.reason] ?? ""}</div>}
+        <span className="poster-tags">
+          <span className="tag">{categoryLabel(event.category, lang)}</span>
+          {event.age_rating && <span className="tag age">{event.age_rating}+</span>}
+        </span>
+      </Link>
+      {onToggleSave && (
+        <button
+          className={`round-btn save ${saved ? "on" : ""}`}
+          aria-pressed={saved}
+          aria-label={saved ? tr(lang, "Прибрати зі збережених", "Remove from saved") : tr(lang, "Зберегти", "Save")}
+          onClick={() => onToggleSave(event.id)}
+        >
+          <Heart className="ico sm" />
+        </button>
+      )}
+      <Link href={`/events/${event.id}`} className="body">
         <h3>{event.title}</h3>
-        <div className="muted" style={{ fontSize: 13, marginBottom: 6 }}>
-          {[
-            event.city,
-            event.distance_km != null ? (event.distance_km < 1 ? tr(lang, "поряд", "nearby") : tr(lang, `~${Math.round(event.distance_km)} км`, `~${Math.round(event.distance_km)} km`)) : null,
-            fmtDateL(event.starts_at, lang),
-          ].filter(Boolean).join(" · ")}
-        </div>
-        <div className="row spread">
-          <div className="price">
-            {free ? tr(lang, "Безкоштовно", "Free") : fmtPrice(event.price, event.currency)}
-            {!free && <span className="pill ok" style={{ fontSize: 11, marginLeft: 6 }}>🛡 escrow</span>}
-          </div>
-          {!!event.saves_count && event.saves_count > 0 && (
-            <span className="muted" style={{ fontSize: 12 }}>{tr(lang, `${event.saves_count} цікавляться`, `${event.saves_count} interested`)}</span>
+        {place && <div className="meta"><MapPin className="ico sm" aria-hidden />{place}</div>}
+        <div className="foot">
+          {left <= 0 ? (
+            <span className="badge danger">{tr(lang, "Місць немає", "Full")}</span>
+          ) : free ? (
+            <span className="badge ok">{tr(lang, "Безкоштовно", "Free")}</span>
+          ) : (
+            <span className="badge accent">{fmtPrice(event.price, event.currency)}</span>
           )}
+          {left > 0 && left <= 10 ? (
+            <span className="xs" style={{ color: "var(--warn-fg)" }}>
+              {tr(lang, `лишилось ${left} ${plural(left, ["місце", "місця", "місць"])}`, `${left} left`)}
+            </span>
+          ) : !!event.saves_count && event.saves_count > 0 ? (
+            <span className="xs subtle">{tr(lang, `${event.saves_count} цікавляться`, `${event.saves_count} interested`)}</span>
+          ) : null}
         </div>
-      </div>
+      </Link>
+    </article>
+  );
+}
+
+export function EventCardSkeleton() {
+  return (
+    <div className="ecard" aria-hidden>
+      <div className="skeleton" style={{ aspectRatio: "4 / 3" }} />
+      <div className="skeleton" style={{ height: 18, width: "80%", borderRadius: 6 }} />
+      <div className="skeleton" style={{ height: 14, width: "55%", borderRadius: 6 }} />
     </div>
   );
 }

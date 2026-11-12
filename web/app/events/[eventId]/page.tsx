@@ -22,8 +22,8 @@ async function fetchEvent(id: string): Promise<EventDto | null> {
 export async function generateMetadata({ params }: { params: Promise<{ eventId: string }> }): Promise<Metadata> {
   const { eventId } = await params;
   const event = await fetchEvent(eventId);
-  if (!event) return { title: "Underground — events" };
-  const title = `${event.title} — Underground`;
+  if (!event) return { title: "Подія" };
+  const title = event.title;
   const description = (event.description ?? [event.category, event.city].filter(Boolean).join(" · ")).slice(0, 180);
   const url = `${SITE}/events/${eventId}`;
   const images = event.poster_url ? [{ url: event.poster_url }] : [];

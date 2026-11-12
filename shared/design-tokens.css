@@ -2,56 +2,74 @@
  * Underground — SHARED DESIGN TOKENS (single source of truth).
  * Edit ONLY this file, then run `scripts/sync-tokens.sh` to propagate the
  * generated copies into web/app/tokens.css and admin/app/tokens.css.
- * Android mirrors these values in app/.../ui/theme/Tokens.kt — keep in sync.
- * Reconciles the colours web/ and admin/ had drifted apart on (muted, surface2,
- * error/danger). App-specific extras stay in each app's globals.css.
+ * Android mirrors these values in app/.../ui/theme/Tokens.kt — keep in sync
+ * (the 2026-11 web redesign changed the values; Android follows in its own step).
  * ========================================================================== */
 :root {
-  /* base surfaces */
-  --bg: #0b0b0d;
-  --surface: #15151a;
-  --surface-2: #1b1b21;
-  --surface2: #1b1b21;        /* web alias of --surface-2 */
-  --surface-3: #16161c;
-  --border: #26262e;
-  --border-soft: #1f1f25;
+  color-scheme: dark;
+
+  /* base surfaces: near-black with a cold blue tint, three layers */
+  --bg: #08090d;
+  --surface: #11131a;
+  --surface-2: #181b24;
+  --surface2: #181b24;        /* web alias of --surface-2 */
+  --surface-3: #1f2330;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-soft: rgba(255, 255, 255, 0.05);
+  --border-strong: rgba(255, 255, 255, 0.16);
 
   /* text */
-  --text: #f3f3f5;
-  --muted: #a8a8b3;
-  --muted-2: #6f6f7a;
+  --text: #f4f5f8;
+  --muted: #a3a8b8;
+  --muted-2: #6c7183;
 
-  /* brand */
-  --accent: #2f6bff;
-  --accent-fg: #7da2ff;
-  --accent-soft: rgba(47, 107, 255, 0.13);
+  /* brand: one electric blue for the main action on a screen */
+  --accent: #4c6fff;
+  --accent-hover: #6382ff;
+  --accent-press: #3b5bea;
+  --accent-fg: #93a9ff;
+  --accent-soft: rgba(76, 111, 255, 0.14);
+  --accent-glow: rgba(76, 111, 255, 0.35);
 
-  /* semantic status palette (authoritative — mirrored in StatusBadge.tsx / Android) */
-  --ok: #2fae5a;
-  --ok-bg: #12281c;
-  --ok-fg: #5fd08a;
-  --warn: #d9a441;
-  --warn-bg: #2a2113;
-  --warn-fg: #e6b860;
-  --danger: #e2553a;
-  --danger-bg: #2e1714;
-  --danger-fg: #f0816a;
-  --error: #e2553a;           /* web alias of --danger */
-  --neutral-bg: #23232b;
-  --neutral-fg: #b8b8c2;
+  /* semantic status palette */
+  --ok: #34c77b;
+  --ok-bg: rgba(52, 199, 123, 0.13);
+  --ok-fg: #6fe0a3;
+  --warn: #f0b443;
+  --warn-bg: rgba(240, 180, 67, 0.13);
+  --warn-fg: #f6cb75;
+  --danger: #f05a4a;
+  --danger-bg: rgba(240, 90, 74, 0.13);
+  --danger-fg: #ff8f82;
+  --error: #f05a4a;           /* web alias of --danger */
+  --neutral-bg: rgba(255, 255, 255, 0.07);
+  --neutral-fg: #c3c7d4;
 
   /* spacing scale */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
   --sp-4: 16px;
+  --sp-5: 20px;
   --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
 
   /* radii */
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 16px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  /* elevation */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 24px 60px rgba(0, 0, 0, 0.55);
 
   /* layout */
   --sidebar-w: 248px;
+  --content-w: 1160px;
+  --nav-h: 64px;
+  --tabbar-h: 64px;
 }
