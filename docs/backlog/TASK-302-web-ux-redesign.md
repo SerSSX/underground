@@ -1,6 +1,6 @@
 # TASK-302 — Web UX/UI audit, redesign and mobile web (before the Android app)
 
-Status: IN PROGRESS (2026-11-12)
+Status: DONE on DEV (2026-11-12) — awaiting the owner's look; prod only on his command
 Lane: PROJECT (rules.md §0: >1 day, new direction for the UI) · brief mode: pro (direction given in full; the
 look-and-feel is built and shown, not asked — rules §9) · parent: TASK-300
 
