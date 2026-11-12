@@ -378,7 +378,8 @@ async fn item3_register_is_rate_limited_per_ip_and_per_email(pool: PgPool) {
         StatusCode::TOO_MANY_REQUESTS,
         "[SEC] spoofed left entries are ignored"
     );
-    // The email-code request shares the per-IP bucket.
+    // The email-code request (also the password-less LOGIN) has its own bucket (fix batch 2, N4;
+    // was: shared with register, 429 here).
     let (s, _) = send(
         &app,
         req(
@@ -392,8 +393,8 @@ async fn item3_register_is_rate_limited_per_ip_and_per_email(pool: PgPool) {
     .await;
     assert_eq!(
         s,
-        StatusCode::TOO_MANY_REQUESTS,
-        "[SEC] code requests share the sign-up bucket"
+        StatusCode::NO_CONTENT,
+        "sign-up throttling does not lock out code logins"
     );
     // Another IP is unaffected.
     assert_eq!(
@@ -650,7 +651,16 @@ fn item11b_url_rule() {
     ] {
         assert!(!is_safe_url(bad, false), "[SEC] {bad:?}");
     }
-    for bad in ["/uploads/../etc/passwd", "/uploads//x", "/uploadsx", "/other/x.jpg"] {
+    for bad in [
+        "/uploads/../etc/passwd",
+        "/uploads//x",
+        "/uploadsx",
+        "/other/x.jpg",
+        "/uploads/%2e%2e/etc/passwd",
+        "/uploads/.%2e/x",
+        "/uploads/%2E%2E/x",
+        "/uploads/a%2fb",
+    ] {
         assert!(!is_safe_url(bad, true), "[SEC] {bad:?}");
     }
 }
@@ -746,4 +756,204 @@ async fn item11c_free_only_mode_coerces_paid_events(pool: PgPool) {
         assert_eq!(s, StatusCode::OK);
         assert!(is_zero(&upd["price"]), "an edit cannot set a price either: {upd}");
     }
+}
+
+// ══ Fix batch 2 ══════════════════════════════════════════════════════════════════════
+
+/// N1: the organiser moves the start a week later and empties the end field. A null `ends_at`
+/// keeps the old end, so the web sends `clear_ends_at: true`; without it the edit is refused
+/// instead of leaving an end before the start.
+#[sqlx::test(migrations = "./migrations")]
+async fn n1_end_must_follow_start_and_can_be_cleared(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "o@x.co", "Org").await;
+    let event = free_event(
+        &app,
+        &org,
+        json!({"starts_at":"2031-11-20T19:00:00Z","ends_at":"2031-11-20T23:00:00Z"}),
+    )
+    .await;
+    let path = format!("/api/events/{event}");
+
+    // Moving the start past the kept end: refused, nothing changes.
+    let (s, body) = call(
+        &app,
+        "PUT",
+        &path,
+        Some(&org),
+        Some(json!({"starts_at":"2031-11-27T19:00:00Z","ends_at":null})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "[N1] start moved past the kept end: {body}"
+    );
+    let (starts, ends): (chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>) =
+        sqlx::query_as("SELECT starts_at, ends_at FROM events WHERE id = $1")
+            .bind(event)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(starts.to_rfc3339(), "2031-11-20T19:00:00+00:00");
+    assert!(ends.is_some());
+
+    // The same edit with the explicit clear: the end is gone.
+    let (s, ev) = call(
+        &app,
+        "PUT",
+        &path,
+        Some(&org),
+        Some(json!({"starts_at":"2031-11-27T19:00:00Z","ends_at":null,"clear_ends_at":true})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{ev}");
+    assert_eq!(ev["starts_at"], "2031-11-27T19:00:00Z");
+    assert!(ev["ends_at"].is_null(), "{ev}");
+
+    // An end before the start, or both a value and the clear flag: 422.
+    let (s, _) = call(
+        &app,
+        "PUT",
+        &path,
+        Some(&org),
+        Some(json!({"ends_at":"2031-11-27T18:00:00Z"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "[N1] end before the kept start");
+    let (s, _) = call(
+        &app,
+        "PUT",
+        &path,
+        Some(&org),
+        Some(json!({"ends_at":"2031-11-28T01:00:00Z","clear_ends_at":true})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "value and clear together");
+    let (s, ev) = call(
+        &app,
+        "PUT",
+        &path,
+        Some(&org),
+        Some(json!({"ends_at":"2031-11-28T01:00:00Z"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(ev["ends_at"], "2031-11-28T01:00:00Z");
+
+    // Create: end not after start → 422 (equal counts as not after).
+    for end in ["2031-05-01T17:00:00Z", "2031-05-01T18:00:00Z"] {
+        let (s, _) = call(
+            &app,
+            "POST",
+            "/api/events",
+            Some(&org),
+            Some(
+                json!({"title":"Gig","category":"Poetry","price":"0","tickets_total":5,"cost_type":"free",
+                        "starts_at":"2031-05-01T18:00:00Z","ends_at":end}),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "[N1] create with end {end}");
+    }
+}
+
+/// N3: the gift preview carries the event's time zone.
+#[sqlx::test(migrations = "./migrations")]
+async fn n3_gift_preview_has_event_timezone(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "o@x.co", "Org").await;
+    let (u, ut) = user(&pool, "u@x.co", "Uma").await;
+    let event = free_event(&app, &org, json!({"timezone":"Europe/Warsaw"})).await;
+    assert_eq!(reserve(&app, &ut, event, 1).await.0, StatusCode::CREATED);
+    let token = gift(&app, &ut, active_ids(&pool, u, event).await[0], "f@x.co").await;
+    let (s, v) = call(&app, "GET", &format!("/api/gifts/{token}"), None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["event_timezone"], "Europe/Warsaw");
+}
+
+/// N4: code requests have their own per-IP bucket (60/h), and existing emails are not exempt.
+#[sqlx::test(migrations = "./migrations")]
+async fn n4_code_requests_have_their_own_ip_bucket(pool: PgPool) {
+    let app = make_app(pool.clone());
+    user(&pool, "known@x.co", "Kim").await;
+    for i in 0..60 {
+        let email = if i % 2 == 0 {
+            "known@x.co".to_string()
+        } else {
+            format!("new{i}@x.co")
+        };
+        let (s, _) = send(
+            &app,
+            req(
+                "POST",
+                "/api/auth/email/request-code",
+                None,
+                Some("203.0.113.9"),
+                Some(json!({ "email": email })),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "request {i}");
+    }
+    for email in ["known@x.co", "brand-new@x.co"] {
+        let (s, _) = send(
+            &app,
+            req(
+                "POST",
+                "/api/auth/email/request-code",
+                None,
+                Some("203.0.113.9"),
+                Some(json!({ "email": email })),
+            ),
+        )
+        .await;
+        assert_eq!(
+            s,
+            StatusCode::TOO_MANY_REQUESTS,
+            "[SEC] 61st from one IP, {email}: same answer"
+        );
+    }
+    // Register from that IP is unaffected by the code bucket.
+    assert_eq!(
+        send(&app, register_req("fresh@x.co", "203.0.113.9")).await.0,
+        StatusCode::CREATED
+    );
+}
+
+/// N6: a gift to someone already holding 5 places is created like any other gift (the sender
+/// learns nothing); the cap bites at claim time, for the claimer only.
+#[sqlx::test(migrations = "./migrations")]
+async fn n6_gift_reveals_nothing_and_the_cap_holds_at_claim(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "o@x.co", "Org").await;
+    let (u, ut) = user(&pool, "u@x.co", "Uma").await;
+    let (v, vt) = user(&pool, "v@x.co", "Vik").await;
+    let event = free_event(&app, &org, json!({})).await;
+    assert_eq!(reserve(&app, &vt, event, 5).await.0, StatusCode::CREATED);
+    assert_eq!(reserve(&app, &ut, event, 1).await.0, StatusCode::CREATED);
+    let ticket = active_ids(&pool, u, event).await[0];
+    let (s, g) = call(
+        &app,
+        "POST",
+        &format!("/api/tickets/{ticket}/gift"),
+        Some(&ut),
+        Some(json!({"email":"v@x.co"})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::CREATED,
+        "[PII] the gift does not reveal the recipient's holdings: {g}"
+    );
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/tickets/claim",
+        Some(&vt),
+        Some(json!({"token": g["claim_token"]})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "[SEC] the cap holds at claim");
+    assert_eq!(holdings(&pool, v, event).await, 5);
 }

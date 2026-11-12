@@ -49,8 +49,16 @@ pub async fn request_code(
     ip: crate::ratelimit::ClientIp,
     Json(req): Json<RequestCodeReq>,
 ) -> Result<StatusCode, AppError> {
-    // Same per-IP sign-up bucket as register (TASK-302 fix batch 1, item 3).
-    crate::ratelimit::hit_signup_ip(&st.db, &ip).await?;
+    // Own per-IP bucket (N4): this is also the LOGIN path for password-less accounts, so it must
+    // not share register's tight sign-up budget. Existing emails are not exempt — a 429 that
+    // only unknown emails could get would tell whether an account exists.
+    crate::ratelimit::hit(
+        &st.db,
+        &format!("code-ip:{}", ip.0),
+        crate::ratelimit::env_limit("CODE_LIMIT_PER_IP", 60),
+        3600,
+    )
+    .await?;
     let email = normalize_email(&req.email);
     if !valid_email(&email) {
         return Err(AppError::Validation("invalid email".into()));

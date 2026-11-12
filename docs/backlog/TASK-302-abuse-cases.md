@@ -519,3 +519,38 @@ stat was identical before and after. Each red below is an assertion failure.
 | 3 → uniqueness check before argon2 disabled | `item3_taken_email_is_refused_before_hashing` (300 ms per 409 vs 322 ms per sign-up) | yes |
 | 7 → event row lock removed from invite creation | `item7_pending_invites_are_capped_at_twenty` (21 of 25 created) | yes |
 | 11b → URL check always passes | `item11b_event_urls_must_be_http` (`javascript:` link stored: 201) | yes |
+
+## Fix batch 2
+
+From the closure check of fix batch 1. Tests in `api/tests/task302_fix1.rs` unless noted.
+
+| # | Item | Done | Test(s) | Mutation-proven |
+|---|---|---|---|---|
+| N1 | End after start, on create and on the RESULT of an update (new or kept start vs new, kept or cleared end); `UpdateEventReq.clear_ends_at` | yes | `n1_end_must_follow_start_and_can_be_cleared` | yes (update check removed → the start moved past the kept end: 200) |
+| N3 | `GiftPreview.event_timezone` (`#[sqlx(default)]`) | yes | `n3_gift_preview_has_event_timezone` | — |
+| N4 | Email-code request: own per-IP bucket `code-ip:{ip}`, `CODE_LIMIT_PER_IP` (default 60/h), no exemption for existing emails; per-email soft cap unchanged; register keeps `signup-ip` (10/h) | yes | `n4_code_requests_have_their_own_ip_bucket`, `item3_register_is_rate_limited_per_ip_and_per_email` | no |
+| N5 | `/uploads/…` paths reject any `%` | yes | `item11b_url_rule` (`%2e%2e`, `.%2e`, `%2E%2E`, `%2f`) | yes (`%2e%2e` accepted) |
+| N6 | Gift creation never looks at the recipient (as before); the cap is enforced at claim, with a 409 to the claimer. A direct transfer refused for the recipient cap gives the same 422 and text as an unknown email (`tickets::TRANSFER_REFUSED`); the cap guarantee is unchanged | yes | `task302_controls::ct4_receiving_places_respects_the_recipient_cap`, `n6_gift_reveals_nothing_and_the_cap_holds_at_claim` | yes (cap refusal back to its own 409) |
+| N7 | none (dev never ran 26cf5b5) | — | — | — |
+
+Contract:
+- `PUT /api/events/:id` accepts `"clear_ends_at": true`, which sets `ends_at` to null. A null or absent `ends_at` still
+  keeps the current value. `clear_ends_at` together with an `ends_at` value → 422. Any create or update whose
+  resulting `ends_at` is not later than its resulting `starts_at` → 422 "час завершення має бути пізніше за час
+  початку". If either value is null, there is no check.
+- `POST /api/tickets/:id/transfer`: an unknown email and a recipient already holding 5 places both answer
+  422 `{"error":"не вдалося передати квиток на цей email — надішліть його подарунком"}`. The
+  recipient-age refusal stays 409 (pre-existing behaviour and an existing test, `age_gating.rs`). It still reveals that
+  the recipient is under the age rating or has no birth date. Folding it into the same 422 would change an existing
+  assertion, so that needs the owner's word.
+- `POST /api/tickets/:id/gift` → 201 whatever the recipient holds. `POST /api/tickets/claim` at the cap → 409 to the
+  claimer; the gift stays pending.
+
+The N1 update check reads the current times before the UPDATE without a lock. Two concurrent edits by the same
+organiser could still combine into an end before the start. That outcome is visible to the organiser at once.
+
+Changed assertions in tests written in this task:
+- `task302_controls::ct4_receiving_places_respects_the_recipient_cap`. Was: transfer to a full recipient → 409.
+  Now: 422 with the same body as an unknown email. Why: N6.
+- `task302_fix1::item3_register_is_rate_limited_per_ip_and_per_email`. Was: after 10 sign-ups from an IP, a code
+  request from it → 429. Now: 204. Why: N4.

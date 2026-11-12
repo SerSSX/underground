@@ -427,6 +427,15 @@ pub struct TransferReq {
     pub email: String,
 }
 
+/// The one answer for "no such user" and "recipient already holds the maximum" on a direct
+/// transfer (TASK-302 fix batch 2, N6), so neither reveals anything about the email's owner.
+/// A gift (`POST /api/tickets/:id/gift`) never checks the recipient; their cap applies at claim.
+pub const TRANSFER_REFUSED: &str = "не вдалося передати квиток на цей email — надішліть його подарунком";
+
+fn transfer_refused() -> AppError {
+    AppError::Validation(TRANSFER_REFUSED.into())
+}
+
 /// `POST /api/tickets/:id/transfer` — owner gifts an active ticket to another user by email.
 pub async fn transfer_ticket(
     user: CurrentUser,
@@ -446,7 +455,7 @@ pub async fn transfer_ticket(
         .bind(req.email.trim().to_lowercase())
         .fetch_optional(&st.db)
         .await?;
-    let recipient = recipient.ok_or(AppError::Validation("отримувача з таким email не знайдено".into()))?;
+    let recipient = recipient.ok_or_else(transfer_refused)?;
     if recipient == user.id {
         return Err(AppError::Validation("не можна подарувати квиток собі".into()));
     }
@@ -491,7 +500,12 @@ pub async fn transfer_ticket(
     .await?;
     let (event_id, cost_type) = row.ok_or(AppError::NotFound)?;
     // CT4 / D3: receiving a place counts toward the recipient's 5-place cap.
-    ensure_recipient_has_room(&mut tx, event_id, &cost_type, recipient, ticket_id).await?;
+    // The cap still holds, but the answer is the same as for an unknown email (N6): the sender
+    // must not learn whether a third party holds places at this event.
+    match ensure_recipient_has_room(&mut tx, event_id, &cost_type, recipient, ticket_id).await {
+        Err(AppError::Conflict(_)) => return Err(transfer_refused()),
+        other => other?,
+    }
     sqlx::query("UPDATE tickets SET owner_id = $2 WHERE id = $1")
         .bind(ticket_id)
         .bind(recipient)
@@ -745,6 +759,9 @@ pub struct GiftPreview {
     pub from_name: String,
     pub event_title: String,
     pub event_starts_at: Option<DateTime<Utc>>,
+    /// IANA zone the gift's event time is shown in (N3).
+    #[sqlx(default)]
+    pub event_timezone: Option<String>,
     pub event_city: Option<String>,
     pub event_poster_url: Option<String>,
     pub expires_at: DateTime<Utc>,
@@ -758,7 +775,8 @@ pub async fn gift_preview(
 ) -> Result<Json<GiftPreview>, AppError> {
     sqlx::query_as::<_, GiftPreview>(
         "SELECT u.name AS from_name, e.title AS event_title, e.starts_at AS event_starts_at, \
-            e.city AS event_city, e.poster_url AS event_poster_url, g.expires_at \
+            e.city AS event_city, e.poster_url AS event_poster_url, \
+            e.timezone AS event_timezone, g.expires_at \
          FROM ticket_gifts g JOIN tickets t ON t.id = g.ticket_id JOIN events e ON e.id = t.event_id \
          JOIN users u ON u.id = g.from_user_id \
          WHERE g.token_hash = $1 AND g.status = 'pending' AND g.expires_at > now()",

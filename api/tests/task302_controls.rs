@@ -716,7 +716,26 @@ async fn ct4_receiving_places_respects_the_recipient_cap(pool: PgPool) {
         Some(json!({"email":"v@x.co"})),
     )
     .await;
-    assert_eq!(s, StatusCode::CONFLICT, "[SEC] transfer to a full recipient: {body}");
+    // Fix batch 2, N6: refused with the same answer as an unknown email (was 409 naming the
+    // recipient's holdings), so the sender learns nothing about a third party.
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "[SEC] transfer to a full recipient: {body}"
+    );
+    let (s2, unknown) = call(
+        &app,
+        "POST",
+        &format!("/api/tickets/{}/transfer", mine[0]),
+        Some(&ut),
+        Some(json!({"email":"nobody-here@x.co"})),
+    )
+    .await;
+    assert_eq!(
+        (s2, &unknown),
+        (s, &body),
+        "[PII] indistinguishable from an unknown email"
+    );
     assert_eq!(status_of(&pool, mine[0]).await, ("active".to_string(), u));
     assert_eq!(holdings(&pool, v, event).await, 5);
 

@@ -42,7 +42,8 @@ pub fn is_safe_url(raw: &str, allow_uploads: bool) -> bool {
         return false;
     }
     if allow_uploads && s.starts_with("/uploads/") {
-        return !s.contains("..") && !s.contains("//");
+        // No `%` at all: an encoded `..` (`%2e%2e`, `.%2e`) would pass a literal check (N5).
+        return !s.contains("..") && !s.contains("//") && !s.contains('%');
     }
     let lower = s.to_ascii_lowercase();
     let rest = if let Some(r) = lower.strip_prefix("https://") {
@@ -74,6 +75,16 @@ fn validate_urls(
         Err(AppError::Validation(
             "посилання мають починатися з https:// (або http://)".into(),
         ))
+    }
+}
+
+/// An event must end after it starts (TASK-302 fix batch 2, N1). Either side unknown → fine.
+fn validate_time_order(starts_at: Option<DateTime<Utc>>, ends_at: Option<DateTime<Utc>>) -> Result<(), AppError> {
+    match (starts_at, ends_at) {
+        (Some(start), Some(end)) if end <= start => Err(AppError::Validation(
+            "час завершення має бути пізніше за час початку".into(),
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -318,6 +329,7 @@ pub async fn create_event(
     if req.title.trim().is_empty() {
         return Err(AppError::Validation("title is required".into()));
     }
+    validate_time_order(req.starts_at, req.ends_at)?;
     if req.category.trim().is_empty() {
         return Err(AppError::Validation("category is required".into()));
     }
@@ -391,6 +403,10 @@ pub struct UpdateEventReq {
     pub age_rating: Option<String>,
     /// IANA timezone for the event's local time (TASK-102). Null leaves the current value.
     pub timezone: Option<String>,
+    /// `true` removes the end time (`ends_at` = NULL). A null/absent `ends_at` keeps the current
+    /// value, so clearing needs this explicit flag (TASK-302 fix batch 2, N1). Sending it together
+    /// with an `ends_at` value is a 422.
+    pub clear_ends_at: Option<bool>,
 }
 
 /// 404 for an unknown event, 403 unless `user_id` is its organiser.
@@ -441,11 +457,20 @@ pub async fn update_event(
     }
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
-    // Track a draft→published transition so publishing a draft announces it (once).
-    let was_draft: bool = sqlx::query_scalar("SELECT status = 'draft' FROM events WHERE id = $1")
-        .bind(id)
-        .fetch_one(&st.db)
-        .await?;
+    let clear_ends_at = req.clear_ends_at.unwrap_or(false);
+    if clear_ends_at && req.ends_at.is_some() {
+        return Err(AppError::Validation("ends_at and clear_ends_at are exclusive".into()));
+    }
+    // Track a draft→published transition so publishing a draft announces it (once); read the
+    // current times so the end-after-start rule applies to the RESULT of this edit (N1), e.g.
+    // moving the start past an end that is kept.
+    let (was_draft, cur_starts, cur_ends): (bool, Option<DateTime<Utc>>, Option<DateTime<Utc>>) =
+        sqlx::query_as("SELECT status = 'draft', starts_at, ends_at FROM events WHERE id = $1")
+            .bind(id)
+            .fetch_one(&st.db)
+            .await?;
+    let new_ends = if clear_ends_at { None } else { req.ends_at.or(cur_ends) };
+    validate_time_order(req.starts_at.or(cur_starts), new_ends)?;
     // Re-resolve geo when the city changes; null fields leave the old geo untouched (COALESCE).
     let geo = match req.city.as_deref() {
         Some(_) => crate::cities::resolve(&st.db, req.city.as_deref()).await?,
@@ -463,7 +488,7 @@ pub async fn update_event(
             city = COALESCE($5, city), \
             venue_address = COALESCE($6, venue_address), \
             starts_at = COALESCE($7, starts_at), \
-            ends_at = COALESCE($8, ends_at), \
+            ends_at = CASE WHEN $22 THEN NULL ELSE COALESCE($8, ends_at) END, \
             price = COALESCE($9, price), \
             poster_url = COALESCE($10, poster_url), \
             video_url = COALESCE($11, video_url), \
@@ -504,6 +529,7 @@ pub async fn update_event(
         .bind(req.currency.as_deref().filter(|c| !c.is_empty()))
         .bind(req.age_rating.as_deref().filter(|s| !s.is_empty()))
         .bind(req.timezone.as_deref().filter(|s| !s.is_empty()))
+        .bind(clear_ends_at)
         .fetch_optional(&st.db)
         .await?
         // P2 (TASK-302): the organiser may not change the status of a cancelled event, nor of

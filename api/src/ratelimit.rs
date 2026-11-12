@@ -61,8 +61,8 @@ impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
     }
 }
 
-/// Per-IP sign-up bucket shared by `POST /api/auth/register` and the email-code request
-/// (both create or start creating accounts). Default 10 per hour.
+/// Per-IP sign-up bucket for `POST /api/auth/register`. Default 10 per hour. (The email-code
+/// request has its own, larger bucket: it is also the password-less login.)
 pub async fn hit_signup_ip(db: &PgPool, ip: &ClientIp) -> Result<(), AppError> {
     hit(
         db,
