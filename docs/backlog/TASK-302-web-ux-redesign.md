@@ -85,3 +85,16 @@ look-and-feel is built and shown, not asked — rules §9) · parent: TASK-300
 | 18 | MINOR | mobile chat compose under the tab bar | fixed: height allowance |
 | 19 | MINOR | no end time in the form | fixed: optional "Кінець", validated after start |
 | T | TRIVIAL | decodeURIComponent throw, loading treated as signed out, missing labels, deploy APK messages/atomic manifest | fixed |
+
+## API fix batch 1 (32621df) — implementer assumptions, triage
+
+| Assumption | Verdict |
+|---|---|
+| Free-only is a process-wide switch from `FREE_EVENTS_ONLY` (default on); in-process tests run with it off except the 11c test | accept — the deployed binary runs `main`; closure check confirms the default |
+| Update only zeroes a sent price; existing paid events are not converted | accept — DEV demo data is re-seeded free; no prod |
+| Requests without X-Forwarded-For or peer share one "unknown" bucket (tests only) | accept |
+| 10 sign-ups + code requests per IP per hour may be tight behind venue NAT | accept for MVP; env-tunable; revisit with traffic |
+| 0048 renames only password-less accounts named exactly their email local part | accept — password accounts typed a name; CT8 fallback still hides it from organisers/staff |
+| Item 4 leaves paid tickets and gifts alone | accept — free-only |
+| Item-3 timing test relies on argon2 ≥ 3× a DB lookup (≈100× locally) | accept; watch CI for flakiness |
+| `task302_controls::p9_…` assertion changed (hidden event: 200 empty → 404) | test written inside this task, not a pre-existing test; no owner approval needed |
