@@ -134,6 +134,32 @@ export function inWindow(iso: string | null | undefined, w: When, now = new Date
   return dayIdx === toSat || dayIdx === toSat + 1;
 }
 
+const COUNTRY_TZ: Record<string, string> = {
+  "україна": "Europe/Kyiv", ukraine: "Europe/Kyiv", poland: "Europe/Warsaw", "польща": "Europe/Warsaw",
+  germany: "Europe/Berlin", "німеччина": "Europe/Berlin", france: "Europe/Paris", "франція": "Europe/Paris",
+  spain: "Europe/Madrid", "іспанія": "Europe/Madrid", italy: "Europe/Rome", "італія": "Europe/Rome",
+  portugal: "Europe/Lisbon", "португалія": "Europe/Lisbon", turkey: "Europe/Istanbul", "türkiye": "Europe/Istanbul",
+  "туреччина": "Europe/Istanbul", japan: "Asia/Tokyo", "японія": "Asia/Tokyo", "united kingdom": "Europe/London",
+  "велика британія": "Europe/London", georgia: "Asia/Tbilisi", "грузія": "Asia/Tbilisi", czechia: "Europe/Prague",
+  "czech republic": "Europe/Prague", "чехія": "Europe/Prague", netherlands: "Europe/Amsterdam", austria: "Europe/Vienna",
+  moldova: "Europe/Chisinau", "молдова": "Europe/Chisinau", romania: "Europe/Bucharest", lithuania: "Europe/Vilnius",
+  latvia: "Europe/Riga", estonia: "Europe/Tallinn", slovakia: "Europe/Bratislava", hungary: "Europe/Budapest",
+  belgium: "Europe/Brussels", ireland: "Europe/Dublin", denmark: "Europe/Copenhagen", sweden: "Europe/Stockholm",
+  norway: "Europe/Oslo", finland: "Europe/Helsinki", greece: "Europe/Athens", croatia: "Europe/Zagreb",
+  bulgaria: "Europe/Sofia", switzerland: "Europe/Zurich",
+};
+
+/** The time zone an event in this country runs on (single-zone countries only; null means: fall back). */
+export function countryTz(country: string | null | undefined): string | null {
+  return (country && COUNTRY_TZ[country.trim().toLowerCase()]) || null;
+}
+
+/** A short label for a zone in the form: "київський час", else the IANA city part. */
+export function tzLabel(tz: string): string {
+  const LABELS: Record<string, string> = { "Europe/Kyiv": "київський час", "Europe/Warsaw": "варшавський час", "Asia/Tbilisi": "тбіліський час" };
+  return LABELS[tz] ?? (tz.split("/").pop() ?? tz).replace("_", " ");
+}
+
 export function initials(name: string | null | undefined): string {
   const parts = (name ?? "").trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "U";

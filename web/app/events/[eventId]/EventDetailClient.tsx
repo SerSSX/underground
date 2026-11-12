@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getEvent, getEventReviews, postReview, reserveTickets, saveEvent, unsaveEvent, mySaves, eventSocial,
   similarEvents, createReport, getProfile, myTickets, patchMe, logTelemetry, getToken, isPast, isOver, hasStarted, mapsUrl,
@@ -66,6 +66,16 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
     }
   }
   useEffect(load, [eventId]);
+  // Back from sign-in with ?book=1: open the booking dialog the visitor asked for, once.
+  const autoBook = useRef(false);
+  useEffect(() => {
+    if (autoBook.current || !me || !event) return;
+    if (new URLSearchParams(window.location.search).get("book") !== "1") return;
+    autoBook.current = true;
+    window.history.replaceState(null, "", `/events/${eventId}`);
+    setQty(1);
+    setBooking(true);
+  }, [me, event, eventId]);
   useEffect(() => {
     if (event?.organizer_id) getProfile(event.organizer_id).then(setOrganizer).catch(() => {});
   }, [event?.organizer_id]);
@@ -89,7 +99,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
   const canMore = Math.max(0, Math.min(MAX_PLACES - mine, left));
   const needDob = ageMin > 0 && !!me && !me.dob;
   const tooYoung = ageMin > 0 && !!me?.dob && ageFrom(me.dob) < ageMin;
-  const login = () => router.push(`/login?next=${encodeURIComponent(`/events/${eventId}`)}`);
+  const login = () => router.push(`/login?next=${encodeURIComponent(`/events/${eventId}?book=1`)}`);
 
   let blocked: string | null = null;
   if (over) blocked = tr(lang, "Подія завершилась", "This event has ended");
@@ -291,7 +301,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
                   </div>
                 </div>
                 {!isOwner && (
-                  <Link className="btn secondary sm" href={me ? `/inbox?to=${organizer.id}` : `/login?next=${encodeURIComponent(`/inbox?to=${organizer.id}`)}`}>
+                  <Link className="btn secondary sm" href={me ? `/inbox?to=${organizer.id}&about=${eventId}` : `/login?next=${encodeURIComponent(`/inbox?to=${organizer.id}&about=${eventId}`)}`}>
                     <MessageCircle className="ico sm" />{tr(lang, "Написати", "Message")}
                   </Link>
                 )}

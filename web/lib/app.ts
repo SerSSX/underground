@@ -17,7 +17,7 @@ export function getAndroidRelease(): Promise<AndroidRelease | null> {
   if (!cached) {
     cached = fetch("/uploads/app/latest.json", { cache: "no-store" })
       .then((r) => (r.ok ? (r.json() as Promise<AndroidRelease>) : null))
-      .then((j) => (j && typeof j.url === "string" && typeof j.version === "string" ? j : null))
+      .then((j) => (j && typeof j.url === "string" && j.url && typeof j.version === "string" && j.version ? j : null))
       .catch(() => null);
   }
   return cached;

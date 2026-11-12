@@ -31,7 +31,8 @@ export default function TopNav() {
   const is = (p: string) => (p === "/" ? pathname === "/" || pathname.startsWith("/c/") || pathname.startsWith("/city/") : pathname.startsWith(p));
   // While the session check runs (me === undefined) links go straight to the page; it redirects if needed.
   const gated = (href: string) => (me !== null ? href : `/login?next=${encodeURIComponent(href)}`);
-  const createHref = gated("/organizer/new");
+  // A signed-out person who wants to create an event is most likely new: send them to sign-up (it links to login).
+  const createHref = me === null ? `/register?next=${encodeURIComponent("/organizer/new")}` : "/organizer/new";
 
   function signOut() {
     logout();
@@ -66,7 +67,7 @@ export default function TopNav() {
                     </div>
                     <Link href="/account" role="menuitem"><User className="ico sm" />{tr(lang, "Профіль", "Profile")}</Link>
                     <Link href="/organizer" role="menuitem"><LayoutGrid className="ico sm" />{tr(lang, "Мої події", "My events")}</Link>
-                    <button role="menuitem" onClick={() => setLang(lang === "uk" ? "en" : "uk")}><Globe className="ico sm" />{lang === "uk" ? "English" : "Українська"}</button>
+                    <button role="menuitem" onClick={() => { setLang(lang === "uk" ? "en" : "uk"); setOpen(false); }}><Globe className="ico sm" />{lang === "uk" ? "English" : "Українська"}</button>
                     <button role="menuitem" className="danger" onClick={signOut}><LogOut className="ico sm" />{tr(lang, "Вийти", "Log out")}</button>
                   </div>
                 )}

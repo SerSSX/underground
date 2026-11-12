@@ -130,7 +130,7 @@ export default function AccountPage() {
         <div className="chips">
           {EVENT_CATEGORIES.map((c) => {
             const on = interests.includes(c);
-            return <button key={c} type="button" className={`chip ${on ? "active" : ""}`} aria-pressed={on} onClick={() => toggle(c)}>{on && <Check className="ico" />}{categoryLabel(c, lang)}</button>;
+            return <button key={c} type="button" className={`chip ${on ? "active" : ""}`} aria-pressed={on} onClick={() => toggle(c)}><Check className="ico" style={{ opacity: on ? 1 : 0 }} aria-hidden />{categoryLabel(c, lang)}</button>;
           })}
         </div>
         <button className="btn secondary" style={{ marginTop: 16 }} onClick={savePrefs} disabled={busy === "prefs"}>{tr(lang, "Зберегти інтереси", "Save interests")}</button>

@@ -145,7 +145,7 @@ function TicketsInner() {
             <div className="grow">
               <h3>{tr(lang, "Готово! Місця заброньовано", "Done! Your places are booked")}</h3>
               <p className="muted small" style={{ marginTop: 4 }}>
-                {bookedGroup.title} · {placesLabel(bookedGroup.tickets.filter((t) => t.status === "active").length, lang)}. {tr(lang, "На вході покажіть QR — для кожного місця свій.", "Show the QR at the door — one per place.")}
+                {bookedGroup.title} · {placesLabel(bookedGroup.tickets.filter((t) => t.status === "active").length, lang)}. {bookedGroup.tickets.filter((t) => t.status === "active").length > 1 ? tr(lang, "На вході покажіть QR — для кожного місця свій.", "Show the QR at the door — one per place.") : tr(lang, "На вході покажіть QR.", "Show the QR at the door.")}
               </p>
               <div className="row gap wrap" style={{ marginTop: 12 }}>
                 <button className="btn sm" onClick={() => { setQrIdx(0); setQrFor(bookedGroup); }}><QrCode className="ico sm" />{tr(lang, "Показати QR", "Show QR")}</button>
@@ -157,8 +157,8 @@ function TicketsInner() {
       )}
 
       <div className="tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "upcoming"} className={tab === "upcoming" ? "active" : ""} onClick={() => setTab("upcoming")}>{tr(lang, "Майбутні", "Upcoming")} <span className="count">{groups.upcoming.length}</span></button>
-        <button role="tab" aria-selected={tab === "past"} className={tab === "past" ? "active" : ""} onClick={() => setTab("past")}>{tr(lang, "Минулі", "Past")} <span className="count">{groups.past.length}</span></button>
+        <button role="tab" aria-selected={tab === "upcoming"} className={tab === "upcoming" ? "active" : ""} onClick={() => setTab("upcoming")}>{tr(lang, "Майбутні", "Upcoming")} {tickets && <span className="count">{groups.upcoming.length}</span>}</button>
+        <button role="tab" aria-selected={tab === "past"} className={tab === "past" ? "active" : ""} onClick={() => setTab("past")}>{tr(lang, "Минулі", "Past")} {tickets && <span className="count">{groups.past.length}</span>}</button>
       </div>
 
       {error && <div className="alert error" style={{ marginBottom: 16 }}>{error}</div>}
@@ -196,9 +196,9 @@ function TicketsInner() {
                   {act.length > 0 && tab === "upcoming" && (
                     <>
                       <button className="btn sm" onClick={() => { setQrIdx(0); setQrFor(g); }}><QrCode className="ico sm" />QR</button>
-                      {maps && <a className="btn ghost sm icon" href={maps} target="_blank" rel="noreferrer" aria-label={tr(lang, "Маршрут", "Directions")}><Navigation className="ico sm" /></a>}
-                      <button className="btn ghost sm icon" aria-label={tr(lang, "Передати місце", "Transfer a place")} title={tr(lang, "Передати місце", "Transfer a place")} onClick={() => { setGiftFor(act[0]); setGiftEmail(""); setGiftLink(null); }}><Gift className="ico sm" /></button>
-                      <button className="btn danger-ghost sm" onClick={() => { setCancelN(act.length); setCancelFor(g); }}>{tr(lang, "Скасувати", "Cancel")}</button>
+                      {maps && <a className="btn ghost sm" href={maps} target="_blank" rel="noreferrer"><Navigation className="ico sm" />{tr(lang, "Маршрут", "Directions")}</a>}
+                      <button className="btn ghost sm" onClick={() => { setGiftFor(act[0]); setGiftEmail(""); setGiftLink(null); }}><Gift className="ico sm" />{tr(lang, "Передати", "Give")}</button>
+                      <button className="btn danger-ghost sm" onClick={() => { setCancelN(1); setCancelFor(g); }}>{tr(lang, "Скасувати", "Cancel")}</button>
                     </>
                   )}
                   {pending.map((t) => (

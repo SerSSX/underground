@@ -127,6 +127,8 @@ REMOTE
 # step fixes the app and turns this on.
 APK_DIR="$TMP/apk"
 if [ "${UG_PUBLISH_APK:-0}" != 1 ]; then
+  # An empty manifest answers 200 (no 404 in every visitor's console) and the site shows no banner.
+  ssh_box "mkdir -p $ROOT/data/uploads/app && [ -s $ROOT/data/uploads/app/latest.json ] || { echo '{\"version\":\"\",\"url\":\"\"}' > $ROOT/data/uploads/app/latest.json && chown -R 10001:10001 $ROOT/data/uploads/app; }"
   echo "→ Android APK publish is held (UG_PUBLISH_APK=1 to publish)"
 elif ! gh run download "$RUN_ID" -R "$REPO" -n android-apk -D "$APK_DIR" >/dev/null 2>&1; then
   echo "→ this CI run has no android-apk artifact (android/ unchanged, or download failed); the previous APK stays"

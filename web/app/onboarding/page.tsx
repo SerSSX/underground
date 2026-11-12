@@ -71,7 +71,7 @@ function OnboardingInner() {
             const on = selected.includes(c);
             return (
               <button key={c} type="button" className={`chip ${on ? "active" : ""}`} aria-pressed={on} onClick={() => toggle(c)}>
-                {on && <Check className="ico" />}{categoryLabel(c, lang)}
+                <Check className="ico" style={{ opacity: on ? 1 : 0 }} aria-hidden />{categoryLabel(c, lang)}
               </button>
             );
           })}

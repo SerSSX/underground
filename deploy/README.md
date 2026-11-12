@@ -6,7 +6,7 @@ DEV-стенд живе на спільному боксі `65.108.87.247` (Hetz
 
 | Що | Де |
 |---|---|
-| Веб + API (одне джерело) | https://underground-dev.65-108-87-247.sslip.io |
+| Веб + API (одне джерело) | https://underground-dev.65-108-87-247.sslip.io (застосунок: /download) |
 | Адмінка | https://underground-admin-dev.65-108-87-247.sslip.io |
 | Конфіг із секретами | `/opt/underground-dev/.env.dev` (600; створюється на боксі, ніколи не друкується) |
 | Поточний реліз | `/opt/underground-dev/release.env` (`UG_TAG=<коміт>`) |

@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import CityInput from "./CityInput";
 import EventCard from "./EventCard";
-import { AGE_RATINGS, EVENT_CATEGORIES, uploadImage, errorMessage, toIso, tzOffsetMs, type EventInput, type EventDto } from "../../lib/api";
+import { AGE_RATINGS, EVENT_CATEGORIES, uploadImage, errorMessage, toIso, tzOffsetMs, searchCities, type EventInput, type EventDto } from "../../lib/api";
 import { FREE_ONLY } from "../../lib/flags";
 import { useLang, tr } from "../../lib/i18n";
-import { categoryLabel } from "../../lib/ui";
+import { categoryLabel, countryTz, tzLabel } from "../../lib/ui";
 import { ImageIcon, X, ChevronDown } from "./Icon";
 
 export interface EventFormInitial {
@@ -25,6 +25,8 @@ export interface EventFormInitial {
   links: string;
   is_draft: boolean;
   age_rating: string;
+  /** IANA zone of the event's city (from the city's country); null until known. */
+  timezone?: string | null;
 }
 
 export const EMPTY_EVENT: EventFormInitial = {
@@ -80,6 +82,23 @@ export default function EventForm({
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
   const [more, setMore] = useState(!!(initial.video_url || initial.links));
+  // A new event runs on its city clock: look up the city's country and its zone (the browser zone, passed in
+  // as tz, is only the fallback). Editing keeps the event's stored zone.
+  useEffect(() => {
+    if (editing) return;
+    const city = f.city.trim();
+    if (city.length < 2) return;
+    let live = true;
+    const t = setTimeout(() => {
+      searchCities(city).then((list) => {
+        const hit = list.find((c) => c.name.toLowerCase() === city.toLowerCase()) ?? null;
+        const z = hit ? countryTz(hit.country) : null;
+        if (live) setF((prev) => ({ ...prev, timezone: z }));
+      }).catch(() => {});
+    }, 350);
+    return () => { live = false; clearTimeout(t); };
+  }, [f.city, editing]);
+  const zone = (editing ? tz : f.timezone ?? tz) ?? null;
 
   function set<K extends keyof EventFormInitial>(key: K, value: EventFormInitial[K]) {
     setF((prev) => ({ ...prev, [key]: value }));
@@ -102,8 +121,8 @@ export default function EventForm({
   }
 
   const seats = Number(f.tickets_total);
-  const startIso = toIso(f.starts_at_local, tz);
-  const endIso = toIso(f.ends_at_local, tz);
+  const startIso = toIso(f.starts_at_local, zone);
+  const endIso = toIso(f.ends_at_local, zone);
   const problems = {
     title: !f.title.trim() ? tr(lang, "Вкажіть назву", "Enter a title") : null,
     date: !startIso ? tr(lang, "Вкажіть дату й час", "Pick a date and time") : new Date(startIso).getTime() < Date.now() ? tr(lang, "Дата вже минула", "That date has passed") : null,
@@ -123,7 +142,7 @@ export default function EventForm({
     if (invalid && !asDraft) return setError(tr(lang, "Заповніть позначені поля", "Fill in the highlighted fields"));
     setBusy(true);
     try {
-      await onSubmit({ ...f, is_draft: asDraft });
+      await onSubmit({ ...f, is_draft: asDraft, timezone: zone });
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
@@ -136,7 +155,7 @@ export default function EventForm({
     poster_url: f.poster_url, category: f.category, city: f.city || null, venue_address: f.venue_address || null,
     starts_at: startIso, price: f.price || "0", currency: "UAH", tickets_left: seats > 0 ? seats : 0, tickets_total: seats,
     status: "published", cost_type: f.is_free ? "free" : "paid", video_url: null, gallery_urls: [], links: [], sales_closed: false,
-    age_rating: f.age_rating || null, timezone: tz ?? undefined,
+    age_rating: f.age_rating || null, timezone: zone ?? undefined,
   };
 
   return (
@@ -167,7 +186,7 @@ export default function EventForm({
           <Section title={tr(lang, "Коли й де", "When and where")}>
             <div className="grid-2">
             <div className="field">
-              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{tz ? <span className="subtle" style={{ fontWeight: 500 }}> · {tz.replace("_", " ")}</span> : null}</label>
+              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{zone ? <span className="subtle" style={{ fontWeight: 500 }}> · {tzLabel(zone)}</span> : null}</label>
               <input id="ev-date" className="input" type="datetime-local" value={f.starts_at_local} onChange={(e) => set("starts_at_local", e.target.value)} aria-invalid={!!show("date")} />
               {show("date") && <span className="err">{show("date")}</span>}
             </div>

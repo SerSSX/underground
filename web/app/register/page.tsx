@@ -28,8 +28,9 @@ function RegisterForm() {
     try {
       setToken(await register(email.trim(), password, name.trim()));
       refresh();
-      // New accounts pick interests and a city first, then go on to where they were headed.
-      router.push(`/onboarding?next=${encodeURIComponent(next)}`);
+      // Someone who signed up on the way to something (booking, creating an event) goes straight there;
+      // interests are asked only of people who came to browse.
+      router.push(next === "/" ? `/onboarding?next=${encodeURIComponent(next)}` : next);
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);

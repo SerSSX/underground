@@ -238,7 +238,7 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 .round-btn.on svg { fill: currentColor; }
 
 /* poster placeholder when there is no image: category gradient + title */
-.poster-fallback { position: absolute; inset: 0; display: flex; align-items: flex-end; padding: 18px; font-weight: 800; font-size: 20px; line-height: 1.15; color: rgba(255,255,255,.92); letter-spacing: -0.01em; }
+.poster-fallback { position: absolute; inset: 0; display: flex; align-items: center; padding: 48px 18px; font-weight: 800; font-size: 20px; line-height: 1.15; color: rgba(255,255,255,.92); letter-spacing: -0.01em; }
 .poster-fallback span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; max-width: 85%; }
 
 /* ---------- home ---------- */

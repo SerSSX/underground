@@ -70,7 +70,8 @@ export default function NewEventPage() {
         submitLabel={tr(lang, "Опублікувати", "Publish")}
         allowDraft
         onSubmit={async (f) => {
-          const ev = await createEvent({ ...toEventInput(f, toIso(f.starts_at_local, tz), tz), timezone: tz, status: f.is_draft ? "draft" : "published" });
+          const zone = f.timezone ?? tz;
+          const ev = await createEvent({ ...toEventInput(f, toIso(f.starts_at_local, zone), zone), timezone: zone, status: f.is_draft ? "draft" : "published" });
           setCreated(ev);
           window.scrollTo({ top: 0 });
         }}

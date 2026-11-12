@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getToken, errorMessage,
+  myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getEvent, getToken, errorMessage,
   type NotificationDto, type ConversationDto, type MessageDto,
 } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
@@ -48,6 +48,11 @@ function InboxInner() {
     applied.current = true;
     router.replace("/inbox");
     if (!/^[0-9a-f-]{36}$/i.test(to)) return; // only a user id, never a path into the API
+    const about = params.get("about");
+    if (about && /^[0-9a-f-]{36}$/i.test(about)) {
+      // Start the message with the event it is about, so the organiser knows the context.
+      getEvent(about).then((ev) => setText((t) => t || tr(lang, `Щодо «${ev.title}»: `, `About “${ev.title}”: `))).catch(() => {});
+    }
     const c = convs.find((x) => x.peer_id === to);
     if (c) setPeer({ id: c.peer_id, name: c.peer_name, avatar: c.peer_avatar });
     else getProfile(to).then((p) => setPeer({ id: p.id, name: p.name, avatar: p.avatar_url })).catch(() => {});

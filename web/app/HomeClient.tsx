@@ -79,12 +79,23 @@ export default function HomeClient() {
     });
   }, [events, q, city, cat, when]);
 
+  // When a date window is empty, offer the next events that match everything else.
+  const nearest = useMemo(() => {
+    if (when === "all") return [];
+    const needle = q.trim().toLowerCase();
+    return (events ?? [])
+      .filter((e) => (!city || e.city === city) && (!cat || e.category.trim().toLowerCase() === cat))
+      .filter((e) => !needle || `${e.title} ${e.description ?? ""}`.toLowerCase().includes(needle))
+      .filter((e) => e.starts_at && Date.parse(e.starts_at) > Date.now())
+      .slice(0, 4);
+  }, [events, when, city, cat, q]);
+
   const card = (e: EventDto, i: number) => (
     <EventCard key={e.id} event={e} saved={saved.has(e.id)} onToggleSave={toggleSave} eager={i < 4} />
   );
   const WHEN: [When, string, string][] = [
     ["all", "Усі дати", "Any date"], ["today", "Сьогодні", "Today"], ["tomorrow", "Завтра", "Tomorrow"],
-    ["weekend", "Вихідні", "Weekend"], ["week", "Цей тиждень", "This week"],
+    ["weekend", "Вихідні", "Weekend"], ["week", "Найближчі 7 днів", "Next 7 days"],
   ];
   const sectionsForCity = sections
     .map((s) => ({ ...s, events: city ? s.events.filter((e) => e.city === city) : s.events }))
@@ -143,6 +154,11 @@ export default function HomeClient() {
         </div>
         {events === null ? (
           <div className="grid">{Array.from({ length: 8 }, (_, i) => <EventCardSkeleton key={i} />)}</div>
+        ) : shown.length === 0 && when !== "all" && nearest.length > 0 ? (
+          <>
+            <div className="alert" style={{ marginBottom: 16 }}>{tr(lang, "На ці дати подій немає. Ось найближчі:", "Nothing on those dates. The nearest ones:")}</div>
+            <div className="grid">{nearest.map(card)}</div>
+          </>
         ) : shown.length === 0 ? (
           <div className="empty">
             <div className="ei"><Compass className="ico lg" /></div>
