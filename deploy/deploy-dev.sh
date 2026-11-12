@@ -120,4 +120,21 @@ else
 fi
 exit 1
 REMOTE
+# The Android APK CI built for this commit (only when android/ changed): publish it for the /app page.
+# Served by the API's /uploads route from the stand's data fs; the manifest makes the site show the banner.
+APK_DIR="$TMP/apk"
+if gh run download "$RUN_ID" -R "$REPO" -n android-apk -D "$APK_DIR" >/dev/null 2>&1 && [ -s "$APK_DIR/app-debug.apk" ]; then
+  SHORT=${SHA:0:7}
+  SUM=$(shasum -a 256 "$APK_DIR/app-debug.apk" | cut -d' ' -f1)
+  SIZE=$(wc -c < "$APK_DIR/app-debug.apk" | tr -d ' ')
+  printf '{"version":"0.1.0-dev.%s","url":"/uploads/app/underground-%s.apk","size_bytes":%s,"sha256":"%s","min_android":"7.0","released_at":"%s"}\n' \
+    "$SHORT" "$SHORT" "$SIZE" "$SUM" "$(date -u +%FT%TZ)" > "$APK_DIR/latest.json"
+  ssh_box "mkdir -p $ROOT/data/uploads/app && chown 10001:10001 $ROOT/data/uploads/app"
+  scp -q -i "$KEY" -o BatchMode=yes "$APK_DIR/app-debug.apk" "$HOST:$ROOT/data/uploads/app/underground-$SHORT.apk"
+  scp -q -i "$KEY" -o BatchMode=yes "$APK_DIR/latest.json" "$HOST:$ROOT/data/uploads/app/latest.json"
+  ssh_box "cd $ROOT/data/uploads/app && chown 10001:10001 * && ls -t underground-*.apk | tail -n +4 | xargs -r rm -f"
+  echo "→ Android APK published: /uploads/app/underground-$SHORT.apk"
+else
+  echo "→ no Android APK in this CI run (android/ unchanged); the previous one stays"
+fi
 echo "→ https://underground-dev.65-108-87-247.sslip.io"

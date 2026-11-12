@@ -8,7 +8,7 @@ import { getAndroidRelease, type AndroidRelease } from "../../lib/app";
 import { Smartphone, Download } from "./Icon";
 
 /** "Underground for Android" with a QR to the download page. Renders nothing until the server
- *  actually serves an APK (downloads/android/latest.json): the site never offers an app it lacks. */
+ *  actually serves an APK (/uploads/app/latest.json, published by deploy/deploy-dev.sh): the site never offers an app it lacks. */
 export default function AppBanner() {
   const { lang } = useLang();
   const [rel, setRel] = useState<AndroidRelease | null>(null);

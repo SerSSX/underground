@@ -169,7 +169,16 @@ jobs:
           java-version: 17
           cache: gradle
       - name: Build debug APK and run unit tests
-        run: ./gradlew --no-daemon assembleDebug testDebugUnitTest
+        # Pointed at DEV, so the APK this job uploads is the one the DEV site offers for download.
+        run: ./gradlew --no-daemon assembleDebug testDebugUnitTest -PapiBaseUrl=${{ env.DEV_WEB_URL }}/ -PwebBaseUrl=${{ env.DEV_WEB_URL }}
+      - name: Keep the APK for the DEV download page
+        if: github.event_name == 'push' && github.ref_name == 'claude/underground-mvp'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 3
+          compression-level: 0
 
   # arm64 images for the DEV stand, built natively on an arm64 runner (the box is arm64), only for pushes
   # to the DEV branch and only after the API and web gates passed. deploy/deploy-dev.sh downloads this
