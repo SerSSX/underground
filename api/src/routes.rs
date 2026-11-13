@@ -5,9 +5,9 @@ use tower_http::services::ServeDir;
 
 use crate::state::AppState;
 use crate::{
-    admin, audit, auth, cities, devices, discover, emailcode, events, eventsocial, gdpr, kyc, messages, notifications,
-    orders, organizer, passwords, payments, payouts, posts, prefs, promos, reports, reviews, social, staff, telemetry,
-    tickets, uploads, webhooks,
+    admin, audit, auth, cities, devices, discover, emailcode, events, eventsocial, gdpr, geo, kyc, messages,
+    notifications, orders, organizer, passwords, payments, payouts, posts, prefs, promos, reports, reviews, social,
+    staff, telemetry, tickets, uploads, webhooks,
 };
 
 pub fn router(state: AppState) -> Router {
@@ -25,6 +25,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/discover", get(discover::discover))
         .route("/api/discover/sections", get(discover::discover_sections))
         .route("/api/cities", get(cities::search))
+        .route("/api/geo/search", get(geo::search))
+        .route("/api/geo/reverse", get(geo::reverse))
         .route("/api/me/saves", get(discover::my_saves))
         .route(
             "/api/events/:id/save",

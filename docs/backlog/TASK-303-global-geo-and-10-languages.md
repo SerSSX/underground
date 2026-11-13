@@ -116,3 +116,45 @@ One JSON object; keys are the exact Ukrainian source strings from `locales/_sour
 - Numbers are plain (`1000`, not `1 000`/`1,000`); times are always 24-hour.
 - The home hero is two fragments ("Куди піти " + "сьогодні?") — translators must keep the split.
 - Not checked in a real browser in this unit (no server run): hydration switch, picker on a phone, catalog chunks.
+
+## G1 notes (api/, 2026-11-13)
+
+Built: `GET /api/geo/search`, `GET /api/geo/reverse` (Photon proxy, cache, rate limit); cities learned on demand;
+events accept a chosen point and country; the event zone follows its coordinates. Migration `0049_geo.sql`.
+
+Contracts (for G2):
+- `GET /api/geo/search?q=&kind=city|address&lang=xx&lat=&lng=` → `200 [GeoPlace]` (≤ 8). `q` 2..120 characters after
+  trimming and collapsing spaces; `kind` default `address` (= everything), `city` = place:city/town/village/hamlet;
+  `lang` = two lowercase letters, sent upstream as `en`/`de`/`fr` or else `default` (local names: Photon rejects
+  every other language, `it` included); `lat`+`lng` optional bias, both or neither, rounded to 0.1° before use.
+- `GET /api/geo/reverse?lat=&lng=&lang=xx` → `200 [GeoPlace]` (0..1); the point is rounded to 0.001° (~110 m).
+- `GeoPlace = {label, name, street, housenumber, city, state, country, country_code, lat, lng, kind}`; strings may be
+  null; `kind` = `city|address|place`; `city` is the locality (a city result's own name); `country_code` upper case.
+- Errors: 422 `{"error"}` bad input; 429 more than `GEO_LIMIT_PER_MIN` (60) a minute per client IP (rightmost
+  X-Forwarded-For); 503 `{"error":"пошук адрес тимчасово недоступний"}` on upstream timeout (5 s), non-2xx, redirect,
+  body over 256 KB, bad JSON, or the global cap `GEO_UPSTREAM_LIMIT_PER_MIN` (300 upstream calls/min).
+- Events: `POST /api/events` and `PUT /api/events/:id` accept optional `lat`, `lng` (both or neither, ±90/±180, not
+  0,0), `country` (≤ 80 chars), `country_code` (2 letters). Event JSON gains `country_code`. A point wins over the
+  city-name lookup. Without an explicit `timezone` the zone comes from the place; send no `timezone` (or "") to get it.
+  On PUT, sending any of `city`/`lat`/`lng`/`country`/`country_code` re-settles country, code and coordinates
+  (NULL when nothing is known: the old city's coordinates no longer linger); the zone changes only when a new one is
+  known or `timezone` is sent.
+- `GET /api/cities` rows gain `country_code` and `timezone`.
+
+Decisions taken here (orchestrator to confirm):
+- Time zone crate: `tzf-rs` 2.3.0 is MIT, but its bundled data crate `tzf-dist` is `MIT AND ODbL-1.0` (OSM-derived
+  boundaries), outside the licence allowlist, and so is every polygon-accurate alternative. Fallback built: `tz.rs`,
+  ISO country → zone, nearest reference city for the 22 multi-zone countries; with no country, the nearest gazetteer
+  city with a zone within 300 km; else `Europe/Kyiv` as before. Seeded cities carry exact zones (migration).
+  Near a zone border inside a multi-zone country (US, CA, MX, BR, RU, AU, ID, KZ…) the guess can be off; the
+  organiser's explicit zone always wins. If the owner accepts ODbL (Photon's data is ODbL already), `tzf-rs` replaces it.
+- New dependency `reqwest` 0.12 (MIT OR Apache-2.0), `default-features = false`, `rustls-tls`: its tree adds no
+  licence outside the allowlist except `webpki-roots` (CDLA-Permissive-2.0), already in the tree through sqlx.
+- Gazetteer learning: a city is added only when a `city` result with the same name is in a cached geocoder answer
+  (≤ 7 days), within 50 km of the event's point if one is sent, otherwise unambiguous (one country, or narrowed by
+  `country_code`). The client's text and point alone never create a row. Names stay unique case-insensitively
+  across countries (0015's index): discovery joins `cities` by name, so a second "Springfield" is not added; its
+  events still keep their own point and zone.
+- Currency default prefers `country_code` (`currency::for_country_code`): geocoder country names come in many languages.
+- Production needs egress from the API container to `photon.komoot.io:443`; attribution "© OpenStreetMap
+  contributors" belongs in the web UI (G2).

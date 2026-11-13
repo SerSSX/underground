@@ -29,6 +29,9 @@ pub enum AppError {
     RateLimited,
     #[error("internal error")]
     Internal,
+    /// 503: an upstream service (the geocoder) failed. Carries a short safe message only.
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 impl IntoResponse for AppError {
@@ -46,6 +49,7 @@ impl IntoResponse for AppError {
             AppError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            AppError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         };
         // Body carries only a safe message — never internal details (SEC).
         (status, Json(json!({ "error": self.to_string() }))).into_response()
@@ -76,6 +80,10 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(status_of(AppError::RateLimited), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            status_of(AppError::Unavailable("u".into())),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert_eq!(status_of(AppError::BadRequest("z".into())), StatusCode::BAD_REQUEST);
         assert_eq!(
             status_of(AppError::ReauthRequired("r".into())),

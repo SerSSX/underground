@@ -49,6 +49,47 @@ pub fn for_country(country: Option<&str>) -> &'static str {
     }
 }
 
+/// ISO 4217 code for an ISO 3166-1 country code (TASK-303 G1), for the currencies the platform
+/// supports. Geocoder country names come in many languages; the code does not.
+pub fn for_country_code(code: &str) -> Option<&'static str> {
+    let c = match code.trim().to_ascii_uppercase().as_str() {
+        "UA" => "UAH",
+        "PL" => "PLN",
+        "DE" | "FR" | "NL" | "BE" | "ES" | "PT" | "IT" | "AT" | "FI" | "IE" | "GR" | "LT" | "LV" | "EE" | "LU"
+        | "SK" | "SI" | "HR" | "MT" | "CY" => "EUR",
+        "GB" => "GBP",
+        "CZ" => "CZK",
+        "HU" => "HUF",
+        "CH" => "CHF",
+        "SE" => "SEK",
+        "DK" => "DKK",
+        "NO" => "NOK",
+        "TR" => "TRY",
+        "RO" => "RON",
+        "BG" => "BGN",
+        "US" => "USD",
+        "CA" => "CAD",
+        "MX" => "MXN",
+        "BR" => "BRL",
+        "AR" => "ARS",
+        "JP" => "JPY",
+        "KR" => "KRW",
+        "CN" => "CNY",
+        "SG" => "SGD",
+        "TH" => "THB",
+        "IN" => "INR",
+        "AE" => "AED",
+        "IL" => "ILS",
+        "EG" => "EGP",
+        "ZA" => "ZAR",
+        "NG" => "NGN",
+        "AU" => "AUD",
+        "NZ" => "NZD",
+        _ => return None,
+    };
+    Some(c)
+}
+
 /// Display symbol for a currency code, if the platform supports it.
 pub fn symbol(code: &str) -> Option<&'static str> {
     let s = match code {
@@ -91,6 +132,20 @@ pub fn is_supported(code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn country_codes_map_to_supported_currencies() {
+        assert_eq!(for_country_code("ua"), Some("UAH"));
+        assert_eq!(for_country_code("PT"), Some("EUR"));
+        assert_eq!(for_country_code("JP"), Some("JPY"));
+        assert_eq!(for_country_code("AQ"), None);
+        for cc in [
+            "UA", "PL", "DE", "GB", "CZ", "HU", "CH", "SE", "DK", "NO", "TR", "RO", "BG", "US", "CA", "MX", "BR", "AR",
+            "JP", "KR", "CN", "SG", "TH", "IN", "AE", "IL", "EG", "ZA", "NG", "AU", "NZ",
+        ] {
+            assert!(is_supported(for_country_code(cc).unwrap()), "{cc}");
+        }
+    }
 
     #[test]
     fn every_gazetteer_country_maps_to_its_currency() {

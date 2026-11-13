@@ -15,7 +15,7 @@ use crate::state::AppState;
 
 pub const EVENT_COLS: &str = "id, organizer_id, title, description, poster_url, category, city, venue_address, \
      starts_at, ends_at, price, currency, tickets_left, status, cost_type, \
-     video_url, gallery_urls, links, sales_closed, country, lat, lng, age_rating, timezone, tickets_total";
+     video_url, gallery_urls, links, sales_closed, country, lat, lng, age_rating, timezone, tickets_total, country_code";
 
 /// Allowed minimum-age ratings (empty/NULL = no restriction).
 const AGE_RATINGS: [&str; 4] = ["13", "16", "18", "21"];
@@ -121,6 +121,43 @@ fn validate_timezone(timezone: Option<&str>) -> Result<(), AppError> {
     Ok(())
 }
 
+/// A point and a country from the client (TASK-303 G1): both coordinates or neither, within
+/// range, and not the (0, 0) "null island" a broken client sends; a country name of at most
+/// 80 characters and a two-letter code. Empty strings mean "not given".
+fn validate_place(
+    lat: Option<f64>,
+    lng: Option<f64>,
+    country: Option<&str>,
+    country_code: Option<&str>,
+) -> Result<Option<(f64, f64)>, AppError> {
+    let point = match (lat, lng) {
+        (None, None) => None,
+        (Some(a), Some(b))
+            if a.is_finite() && b.is_finite() && a.abs() <= 90.0 && b.abs() <= 180.0 && (a, b) != (0.0, 0.0) =>
+        {
+            Some((a, b))
+        }
+        _ => {
+            return Err(AppError::Validation(
+                "lat and lng must come together, within ±90 and ±180".into(),
+            ))
+        }
+    };
+    let country = country.map(str::trim).unwrap_or("");
+    if country.chars().count() > 80 || country.chars().any(char::is_control) {
+        return Err(AppError::Validation("country must be at most 80 characters".into()));
+    }
+    let cc = country_code.map(str::trim).unwrap_or("");
+    if !cc.is_empty() && !(cc.len() == 2 && cc.bytes().all(|b| b.is_ascii_alphabetic())) {
+        return Err(AppError::Validation("country_code must be two letters".into()));
+    }
+    Ok(point)
+}
+
+fn non_empty(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|v| !v.is_empty())
+}
+
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Event {
     pub id: Uuid,
@@ -154,6 +191,9 @@ pub struct Event {
     /// `#[sqlx(default)]` keeps any query that does not select it mapping (to 0).
     #[sqlx(default)]
     pub tickets_total: i32,
+    /// ISO 3166-1 alpha-2 of the event's place (TASK-303 G1), when known.
+    #[sqlx(default)]
+    pub country_code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -179,8 +219,14 @@ pub struct CreateEventReq {
     pub status: Option<String>,
     /// Minimum-age rating: 13|16|18|21 (empty/absent = unrestricted).
     pub age_rating: Option<String>,
-    /// IANA timezone for the event's local time (default `Europe/Kyiv` when absent). TASK-102.
+    /// IANA timezone for the event's local time. TASK-102. When absent it follows the event's
+    /// coordinates (TASK-303 G1), and is `Europe/Kyiv` only when there are none.
     pub timezone: Option<String>,
+    /// The chosen geocoder suggestion's point (TASK-303 G1): wins over the city-name lookup.
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub country: Option<String>,
+    pub country_code: Option<String>,
 }
 
 /// Published events, soonest first. Parameterized query (no SQL string-building from input).
@@ -195,14 +241,30 @@ pub async fn fetch_by_organizer(db: &PgPool, organizer_id: Uuid) -> Result<Vec<E
 }
 
 pub async fn insert_event(db: &PgPool, organizer_id: Uuid, req: &CreateEventReq) -> Result<Event, sqlx::Error> {
-    // Resolve country + coordinates from the city gazetteer (no external geocoding).
-    let geo = crate::cities::resolve(db, req.city.as_deref()).await?;
+    // Country, coordinates and zone: the client's chosen point, else the city gazetteer.
+    let geo = crate::cities::locate(
+        db,
+        &crate::cities::PlaceInput {
+            city: req.city.as_deref(),
+            point: req.lat.zip(req.lng),
+            country: non_empty(req.country.as_deref()),
+            country_code: non_empty(req.country_code.as_deref()),
+        },
+    )
+    .await?;
+    let currency = non_empty(req.currency.as_deref())
+        .or_else(|| geo.country_code.as_deref().and_then(crate::currency::for_country_code))
+        .unwrap_or_else(|| crate::currency::for_country(geo.country.as_deref()));
+    let timezone = non_empty(req.timezone.as_deref())
+        .map(String::from)
+        .or(geo.timezone)
+        .unwrap_or_else(|| DEFAULT_TIMEZONE.to_string());
     let sql = format!(
         "INSERT INTO events (organizer_id, title, description, category, city, venue_address, \
             starts_at, ends_at, price, currency, tickets_total, tickets_left, cost_type, status, \
-            poster_url, video_url, gallery_urls, links, country, lat, lng, age_rating, timezone) \
+            poster_url, video_url, gallery_urls, links, country, lat, lng, age_rating, timezone, country_code) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12, $20, \
-            $13, $14, $15, $16, $17, $18, $19, $21, $22) \
+            $13, $14, $15, $16, $17, $18, $19, $21, $22, $23) \
          RETURNING {EVENT_COLS}"
     );
     sqlx::query_as::<_, Event>(&sql)
@@ -215,12 +277,7 @@ pub async fn insert_event(db: &PgPool, organizer_id: Uuid, req: &CreateEventReq)
         .bind(req.starts_at)
         .bind(req.ends_at)
         .bind(req.price)
-        .bind(
-            req.currency
-                .as_deref()
-                .filter(|c| !c.is_empty())
-                .unwrap_or_else(|| crate::currency::for_country(geo.country.as_deref())),
-        )
+        .bind(currency)
         .bind(req.tickets_total)
         .bind(req.cost_type.as_deref().unwrap_or("paid"))
         .bind(req.poster_url.as_deref())
@@ -232,12 +289,8 @@ pub async fn insert_event(db: &PgPool, organizer_id: Uuid, req: &CreateEventReq)
         .bind(geo.lng)
         .bind(req.status.as_deref().unwrap_or("published"))
         .bind(req.age_rating.as_deref().filter(|s| !s.is_empty()))
-        .bind(
-            req.timezone
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(DEFAULT_TIMEZONE),
-        )
+        .bind(timezone)
+        .bind(geo.country_code)
         .fetch_one(db)
         .await
 }
@@ -349,6 +402,7 @@ pub async fn create_event(
     }
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
+    validate_place(req.lat, req.lng, req.country.as_deref(), req.country_code.as_deref())?;
     let event = insert_event(&st.db, user.id, &req).await?;
     // Drafts stay private; only a published event announces itself.
     if event.status == "published" {
@@ -403,6 +457,12 @@ pub struct UpdateEventReq {
     pub age_rating: Option<String>,
     /// IANA timezone for the event's local time (TASK-102). Null leaves the current value.
     pub timezone: Option<String>,
+    /// A new place (TASK-303 G1), as on create. Sending any of `city`, `lat`/`lng`, `country`,
+    /// `country_code` re-settles country, coordinates and (unless `timezone` is sent) the zone.
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub country: Option<String>,
+    pub country_code: Option<String>,
     /// `true` removes the end time (`ends_at` = NULL). A null/absent `ends_at` keeps the current
     /// value, so clearing needs this explicit flag (TASK-302 fix batch 2, N1). Sending it together
     /// with an `ends_at` value is a 422.
@@ -457,6 +517,7 @@ pub async fn update_event(
     }
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
+    let point = validate_place(req.lat, req.lng, req.country.as_deref(), req.country_code.as_deref())?;
     let clear_ends_at = req.clear_ends_at.unwrap_or(false);
     if clear_ends_at && req.ends_at.is_some() {
         return Err(AppError::Validation("ends_at and clear_ends_at are exclusive".into()));
@@ -464,26 +525,36 @@ pub async fn update_event(
     // Track a draft→published transition so publishing a draft announces it (once); read the
     // current times so the end-after-start rule applies to the RESULT of this edit (N1), e.g.
     // moving the start past an end that is kept.
-    let (was_draft, cur_starts, cur_ends): (bool, Option<DateTime<Utc>>, Option<DateTime<Utc>>) =
-        sqlx::query_as("SELECT status = 'draft', starts_at, ends_at FROM events WHERE id = $1")
-            .bind(id)
-            .fetch_one(&st.db)
-            .await?;
+    let (was_draft, cur_starts, cur_ends, cur_city): (
+        bool,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+        Option<String>,
+    ) = sqlx::query_as("SELECT status = 'draft', starts_at, ends_at, city FROM events WHERE id = $1")
+        .bind(id)
+        .fetch_one(&st.db)
+        .await?;
     // Only an edit that touches the times is checked (NF3): a legacy row with a bad pair must not block an
     // unrelated edit such as closing booking. Moving the start past a kept end is still caught.
     if req.starts_at.is_some() || req.ends_at.is_some() || clear_ends_at {
         let new_ends = if clear_ends_at { None } else { req.ends_at.or(cur_ends) };
         validate_time_order(req.starts_at.or(cur_starts), new_ends)?;
     }
-    // Re-resolve geo when the city changes; null fields leave the old geo untouched (COALESCE).
-    let geo = match req.city.as_deref() {
-        Some(_) => crate::cities::resolve(&st.db, req.city.as_deref()).await?,
-        None => crate::cities::Resolved {
-            country: None,
-            lat: None,
-            lng: None,
-        },
+    // A new place re-settles the whole geo, NULLs included: coordinates, country and code always
+    // describe the current city, never the previous one. No place in the request: untouched.
+    let moved = req.city.is_some() || point.is_some() || req.country.is_some() || req.country_code.is_some();
+    let geo = if moved {
+        let place = crate::cities::PlaceInput {
+            city: req.city.as_deref().or(cur_city.as_deref()),
+            point,
+            country: non_empty(req.country.as_deref()),
+            country_code: non_empty(req.country_code.as_deref()),
+        };
+        crate::cities::locate(&st.db, &place).await?
+    } else {
+        crate::cities::Located::default()
     };
+    let timezone = non_empty(req.timezone.as_deref()).map(String::from).or(geo.timezone);
     let sql = format!(
         "UPDATE events SET \
             title = COALESCE($2, title), \
@@ -500,9 +571,10 @@ pub async fn update_event(
             links = COALESCE($13, links), \
             status = COALESCE($14, status), \
             sales_closed = COALESCE($15, sales_closed), \
-            country = COALESCE($16, country), \
-            lat = COALESCE($17, lat), \
-            lng = COALESCE($18, lng), \
+            country = CASE WHEN $23 THEN $16 ELSE country END, \
+            lat = CASE WHEN $23 THEN $17 ELSE lat END, \
+            lng = CASE WHEN $23 THEN $18 ELSE lng END, \
+            country_code = CASE WHEN $23 THEN $24 ELSE country_code END, \
             currency = COALESCE($19, currency), \
             age_rating = COALESCE($20, age_rating), \
             timezone = COALESCE($21, timezone) \
@@ -532,8 +604,10 @@ pub async fn update_event(
         .bind(geo.lng)
         .bind(req.currency.as_deref().filter(|c| !c.is_empty()))
         .bind(req.age_rating.as_deref().filter(|s| !s.is_empty()))
-        .bind(req.timezone.as_deref().filter(|s| !s.is_empty()))
+        .bind(timezone)
         .bind(clear_ends_at)
+        .bind(moved)
+        .bind(geo.country_code)
         .fetch_optional(&st.db)
         .await?
         // P2 (TASK-302): the organiser may not change the status of a cancelled event, nor of
