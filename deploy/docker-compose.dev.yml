@@ -64,6 +64,11 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_WEB_URL}
       WEB_APP_URL: ${PUBLIC_WEB_URL}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+      # Account mail through Resend (TASK-304). Empty = mail off: no reset or code emails, and the web hides those
+      # features (GET /api/features). The owner sets both with deploy/set-mail-key.sh; `:-` keeps an older
+      # .env.dev without the keys working.
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
     volumes:
       - type: bind
         source: ${DATA_DIR}/uploads
