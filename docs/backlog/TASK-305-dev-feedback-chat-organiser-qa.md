@@ -33,3 +33,16 @@ tickets/QR, localization, address search, password change.)
 3. Mobile zoom still possible (iOS Safari ignores `user-scalable=no`) → block pinch/double-tap by script.
 4. Multi-account QA on DEV: typical flows, atypical flows, abuse/security probes, UX "everything a user expects to
    tap leads somewhere"; fix what is found.
+
+## Round 2 API (4d742af): assumptions triaged by the orchestrator, 2026-11-14
+
+- R2 every transfer creates an offer, also for an unknown email or self: **accepted**. Doing nothing for an unknown email would show the sender `pending_claim` vs `active`, the same account oracle the owner's «Як подарунок» closes. A mistyped email holds the ticket until the sender cancels or the 48 h TTL ends, as for a gift.
+- Claim token = HMAC-SHA256(jwt_secret, gift_id), only the hash stored: **accepted**. Rotating `jwt_secret` changes alert links of offers still pending; written into the runbook note in STATE.
+- Backfill renames pre-2026-11-12 password accounts whose typed name equalled the email local part: **accepted** (DEV data only; prod has no such accounts yet).
+- Avatar must match `PUBLIC_BASE_URL` exactly; stored external avatars untouched: **accepted**.
+- Report reason allows newlines; malformed body with a NUL now 422 instead of 400: **accepted**.
+- `discover.rs` MOMENTUM still counts every review: **accepted as tracked MINOR** (ranking only, nothing shown as a rating), due 2026-11-21.
+- Push worker logged the device push token and the title: **rejected, fixed** in this round — it now logs `notification_id` and `kind` only.
+- Telemetry limit is DB-backed (one `rate_events` row per call): **turned into a review question** for the round-2 reviewer (pruning of `rate_events`).
+- Android: `POST /api/tickets/:id/transfer` now answers 202 `{"status":"sent"}`; `EventApi.kt:200` expects `TicketDto`. **Blocks the next APK** (the APK is held anyway); recorded in STATE.
+- Web gap found in triage: alerts opened only `/events/<id>`, so a place offer could not be accepted from the web. **Fixed**: `web/lib/alert-href.mjs` follows the alert's own `link` when it is a plain path on this site.

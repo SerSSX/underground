@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getEvent, getToken, errorMessage,
-  isUuid, type NotificationDto, type ConversationDto, type MessageDto, type EventDto,
+  isUuid, alertHref, type NotificationDto, type ConversationDto, type MessageDto, type EventDto,
 } from "../../lib/api";
 import { createSendQueue } from "../../lib/send-queue.mjs";
 import { unreadChanged } from "../../lib/unread";
@@ -310,8 +310,9 @@ function InboxInner() {
                 </span>
               </>
             );
-            return n.event_id ? (
-              <Link key={n.id} href={`/events/${n.event_id}`} className="chat-item" style={{ borderRadius: 12 }}>{inner}</Link>
+            const href = alertHref(n);
+            return href ? (
+              <Link key={n.id} href={href} className="chat-item" style={{ borderRadius: 12 }}>{inner}</Link>
             ) : (
               <div key={n.id} className="chat-item" style={{ cursor: "default", borderRadius: 12 }}>{inner}</div>
             );

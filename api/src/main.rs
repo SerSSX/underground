@@ -182,7 +182,7 @@ async fn push_worker(pool: sqlx::PgPool, cfg: FcmConfig) {
             // TODO(fcm): POST https://fcm.googleapis.com/v1/projects/{project}/messages:send
             // with an OAuth2 access token minted from the service-account key (FCM_SA_KEY).
             tracing::info!(
-                project = %cfg.project_id, token = %p.token, kind = %p.kind, title = %p.title,
+                project = %cfg.project_id, notification_id = %p.notification_id, kind = %p.kind,
                 "push.deliver"
             );
         }

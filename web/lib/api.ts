@@ -338,9 +338,12 @@ export interface NotificationDto {
   title: string;
   body: string | null;
   event_id: string | null;
+  /** Where the alert leads (a place offer's `/g/<token>`, an organiser's `/organizer/<id>`); null when none. */
+  link?: string | null;
   read: boolean;
   created_at: string;
 }
+export { alertHref } from "./alert-href.mjs";
 export async function myNotifications(): Promise<NotificationDto[]> {
   return apiGet<NotificationDto[]>("/api/me/notifications");
 }
