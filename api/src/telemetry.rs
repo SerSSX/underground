@@ -36,16 +36,35 @@ pub struct LogEventReq {
     pub props: Value,
 }
 
+/// Largest request body `POST /api/telemetry` reads (TASK-305 R3; set on the route).
+pub const BODY_LIMIT: usize = 16 * 1024;
+
+/// Largest `props`, serialized, that is stored (TASK-305 R3).
+pub const PROPS_MAX: usize = 2 * 1024;
+
+/// Client events per IP per minute (TASK-305 R3), overridable by env.
+fn limit_per_ip() -> i64 {
+    crate::ratelimit::env_limit("TELEMETRY_LIMIT_PER_IP", 120)
+}
+
 /// `POST /api/telemetry` — client-side events (discover impressions, shares,
 /// onboarding completion). Auth is optional; anonymous events carry a null user.
+///
+/// Anyone can call it, so (TASK-305 R3) the body is capped at [`BODY_LIMIT`] (413), `props` at
+/// [`PROPS_MAX`] serialized (422), and each client IP at 120 calls a minute (429).
 pub async fn log_event(
     user: Option<CurrentUser>,
     State(st): State<AppState>,
+    ip: crate::ratelimit::ClientIp,
     Json(req): Json<LogEventReq>,
 ) -> Result<StatusCode, AppError> {
+    crate::ratelimit::hit(&st.db, &format!("telemetry-ip:{}", ip.0), limit_per_ip(), 60).await?;
     let name = req.name.trim();
     if name.is_empty() || name.len() > 64 {
         return Err(AppError::Validation("name is required (max 64 chars)".into()));
+    }
+    if req.props.to_string().len() > PROPS_MAX {
+        return Err(AppError::Validation(format!("props: не більше {PROPS_MAX} байтів")));
     }
     log(&st.db, user.map(|u| u.id), name, req.props).await;
     Ok(StatusCode::NO_CONTENT)

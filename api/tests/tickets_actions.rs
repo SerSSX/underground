@@ -126,6 +126,31 @@ async fn transfer_moves_ticket_to_recipient(pool: PgPool) {
         ))
         .await
         .unwrap();
+    // TASK-305 R2 (owner decision 2026-11-14): a transfer is an offer (was 200 with the moved
+    // ticket); the ticket moves when the recipient accepts it from their alert.
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let resp = app
+        .clone()
+        .oneshot(build("GET", "/api/me/notifications", Some(&recipient), None))
+        .await
+        .unwrap();
+    let alerts = json_body(resp).await;
+    let claim = alerts[0]["link"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("/g/")
+        .unwrap()
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(build(
+            "POST",
+            "/api/tickets/claim",
+            Some(&recipient),
+            Some(json!({ "token": claim })),
+        ))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let resp = app
@@ -167,9 +192,18 @@ async fn transfer_validation(pool: PgPool) {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "unknown recipient");
+    // TASK-305 R2 (owner decision 2026-11-14): the sender's answer never depends on the email
+    // (was 422 for an unknown recipient and for self). Nobody receives the ticket.
+    assert_eq!(resp.status(), StatusCode::ACCEPTED, "unknown recipient");
+    let resp = app
+        .clone()
+        .oneshot(build("DELETE", &format!("/api/tickets/{tid}/gift"), Some(&owner), None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "the offer can be cancelled");
 
     let resp = app
+        .clone()
         .oneshot(build(
             "POST",
             &format!("/api/tickets/{tid}/transfer"),
@@ -178,5 +212,11 @@ async fn transfer_validation(pool: PgPool) {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "cannot gift to self");
+    assert_eq!(resp.status(), StatusCode::ACCEPTED, "to self: the same answer");
+    let resp = app
+        .oneshot(build("GET", "/api/me/tickets", Some(&owner), None))
+        .await
+        .unwrap();
+    let mine = json_body(resp).await;
+    assert_eq!(mine.as_array().unwrap().len(), 1, "still the sender's");
 }

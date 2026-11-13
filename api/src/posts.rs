@@ -41,10 +41,13 @@ pub struct PostView {
     pub reason: Option<String>,
 }
 
-/// `u.name_is_placeholder` spelled out (the display-name rule, users::DISPLAY_NAME_SQL): a const
-/// cannot `format!`, and the wall must not show a name that repeats the email (TASK-305 P).
-const POST_VIEW_COLS: &str = "p.id, p.author_id, \
-        CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
+/// The author's display name comes from `display_name_sql!` (the one copy of the rule, TASK-305
+/// R1): a const cannot `format!`, but it can `concat!` a macro literal.
+const POST_VIEW_COLS: &str = concat!(
+    "p.id, p.author_id, \
+        ",
+    crate::display_name_sql!(),
+    " AS author_name, \
         u.avatar_url AS author_avatar, \
         p.kind, p.text, p.rating, p.event_id, \
         e.title AS event_title, e.poster_url AS event_poster, e.category AS event_category, \
@@ -52,7 +55,8 @@ const POST_VIEW_COLS: &str = "p.id, p.author_id, \
         (SELECT count(*) FROM post_likes pl WHERE pl.post_id = p.id) AS likes_count, \
         (SELECT count(*) FROM post_comments pc WHERE pc.post_id = p.id) AS comments_count, \
         EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $2) AS liked_by_me, \
-        p.created_at";
+        p.created_at"
+);
 
 const POST_VIEW_FROM: &str = "FROM posts p \
      JOIN users u ON u.id = p.author_id \
@@ -99,7 +103,9 @@ pub async fn create_post(
     State(st): State<AppState>,
     Json(req): Json<CreatePostReq>,
 ) -> Result<(StatusCode, Json<PostView>), AppError> {
-    let text = req.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    // Controls and bidi controls out, newlines kept; nothing visible means no text (TASK-305 R5).
+    let text = req.text.as_deref().map(crate::text::clean_multiline);
+    let text = text.as_deref().filter(|t| !crate::text::is_blank(t));
     if text.is_none() && req.event_id.is_none() {
         return Err(AppError::Validation("text or event_id is required".into()));
     }
@@ -270,8 +276,10 @@ pub async fn create_comment(
     Path(id): Path<Uuid>,
     Json(req): Json<CreateCommentReq>,
 ) -> Result<(StatusCode, Json<CommentView>), AppError> {
-    let text = req.text.trim();
-    if text.is_empty() {
+    // TASK-305 R5: cleaned like a post; whitespace or zero-width only is no comment.
+    let text = crate::text::clean_multiline(&req.text);
+    let text = text.as_str();
+    if crate::text::is_blank(text) {
         return Err(AppError::Validation("text is required".into()));
     }
     if text.chars().count() > MAX_TEXT_LEN {
@@ -286,16 +294,18 @@ pub async fn create_comment(
         .fetch_optional(&st.db)
         .await?
         .ok_or(AppError::NotFound)?;
-    let comment: CommentView = sqlx::query_as(
+    let comment: CommentView = sqlx::query_as(concat!(
         "WITH c AS ( \
             INSERT INTO post_comments (post_id, author_id, text) VALUES ($1, $2, $3) \
             RETURNING id, post_id, author_id, text, created_at \
          ) \
          SELECT c.id, c.post_id, c.author_id, \
-            CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
+            ",
+        crate::display_name_sql!(),
+        " AS author_name, \
             c.text, c.created_at \
-         FROM c JOIN users u ON u.id = c.author_id",
-    )
+         FROM c JOIN users u ON u.id = c.author_id"
+    ))
     .bind(id)
     .bind(user.id)
     .bind(text)
@@ -315,13 +325,15 @@ pub async fn create_comment(
 
 /// `GET /api/posts/:id/comments` — oldest first (public).
 pub async fn comments(State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Vec<CommentView>>, AppError> {
-    let items: Vec<CommentView> = sqlx::query_as(
+    let items: Vec<CommentView> = sqlx::query_as(concat!(
         "SELECT c.id, c.post_id, c.author_id, \
-            CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
+            ",
+        crate::display_name_sql!(),
+        " AS author_name, \
             c.text, c.created_at \
          FROM post_comments c JOIN users u ON u.id = c.author_id \
-         WHERE c.post_id = $1 ORDER BY c.created_at ASC LIMIT 200",
-    )
+         WHERE c.post_id = $1 ORDER BY c.created_at ASC LIMIT 200"
+    ))
     .bind(id)
     .fetch_all(&st.db)
     .await?;

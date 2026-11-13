@@ -107,27 +107,25 @@ async fn patch_updates_fields_and_toggles_organizer(pool: PgPool) {
     assert_eq!(me3["is_organizer"], false);
     assert_eq!(me3["name"], "Олег", "name unchanged by partial patch");
 
-    // Avatar can be set; a blank avatar string is ignored (keeps the current one).
+    // Avatar can be set; a blank avatar string is ignored (keeps the current one). TASK-305 R4b:
+    // only our own upload URL is accepted, so it is built from PUBLIC_BASE_URL (was the literal
+    // "http://localhost:8080/uploads/a.png", which only matches when that is the base).
+    let avatar = format!(
+        "{}/uploads/a.png",
+        underground_api::uploads::public_base_url().trim_end_matches('/')
+    );
     let (_, me4) = send(
         &app,
-        build(
-            "PATCH",
-            "/api/me",
-            Some(&token),
-            Some(json!({"avatar_url": "http://localhost:8080/uploads/a.png"})),
-        ),
+        build("PATCH", "/api/me", Some(&token), Some(json!({ "avatar_url": avatar }))),
     )
     .await;
-    assert_eq!(me4["avatar_url"], "http://localhost:8080/uploads/a.png");
+    assert_eq!(me4["avatar_url"], avatar.as_str());
     let (_, me5) = send(
         &app,
         build("PATCH", "/api/me", Some(&token), Some(json!({"avatar_url": "  "}))),
     )
     .await;
-    assert_eq!(
-        me5["avatar_url"], "http://localhost:8080/uploads/a.png",
-        "blank avatar ignored"
-    );
+    assert_eq!(me5["avatar_url"], avatar.as_str(), "blank avatar ignored");
 }
 
 #[sqlx::test(migrations = "./migrations")]

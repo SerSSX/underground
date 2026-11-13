@@ -165,6 +165,8 @@ pub async fn fulfill(conn: &mut sqlx::PgConnection, order_id: Uuid) -> Result<Op
         return Err(AppError::Conflict("квитки закінчились".into()));
     }
     let ticket_id = tickets::mint_ticket(conn, event_id, buyer_id, amount).await?;
+    // UX7: the organiser gets an alert for the paid booking, in the same transaction.
+    crate::notifications::notify_booking(&mut *conn, event_id, buyer_id, 1).await?;
     sqlx::query("UPDATE orders SET status = 'paid', escrow_status = 'held', ticket_id = $2 WHERE id = $1")
         .bind(order_id)
         .bind(ticket_id)

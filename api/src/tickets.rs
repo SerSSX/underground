@@ -268,6 +268,8 @@ pub async fn reserve(
         first.get_or_insert(id);
     }
     let first = first.ok_or(AppError::Internal)?;
+    // UX7: the organiser gets an alert for the booking, in the same transaction.
+    crate::notifications::notify_booking(&mut *tx, event_id, user.id, quantity).await?;
 
     tx.commit().await?;
     let ticket = fetch_ticket(&st.db, first).await?;
@@ -332,24 +334,36 @@ pub async fn validate(
     // Only a signed short-TTL QR is accepted at the door (BR-023). An invalid or expired token
     // resolves to nothing → NotFound, exactly like an unknown ticket. The raw qr_token is no
     // longer accepted (its plaintext value is never surfaced to a scanner).
-    let row: Option<(Uuid, String, Uuid, Option<Uuid>, String, String)> =
-        match crate::qr::verify_qr(req.qr_token.trim(), &st.jwt_secret) {
-            Some(c) => sqlx::query_as::<_, (Uuid, String, Uuid, Option<Uuid>, String, String)>(
-                "SELECT t.id, t.status, t.owner_id, e.organizer_id, e.title, e.status \
+    type Row = (
+        Uuid,
+        String,
+        Uuid,
+        Option<Uuid>,
+        String,
+        String,
+        Option<DateTime<Utc>>,
+        String,
+    );
+    let row: Option<Row> = match crate::qr::verify_qr(req.qr_token.trim(), &st.jwt_secret) {
+        Some(c) => sqlx::query_as::<_, Row>(
+            "SELECT t.id, t.status, t.owner_id, e.organizer_id, e.title, e.status, e.starts_at, e.timezone \
                      FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $1 FOR UPDATE OF t",
-            )
-            .bind(c.tid)
-            .fetch_optional(&mut *tx)
-            .await?
-            // CT10: a QR minted for a previous owner resolves to nothing.
-            .filter(|r| r.2 == c.oid),
-            None => None,
-        };
-    let (ticket_id, status, _owner, organizer_id, title, event_status) = row.ok_or(AppError::NotFound)?;
+        )
+        .bind(c.tid)
+        .fetch_optional(&mut *tx)
+        .await?
+        // CT10: a QR minted for a previous owner resolves to nothing.
+        .filter(|r| r.2 == c.oid),
+        None => None,
+    };
+    let (ticket_id, status, _owner, organizer_id, title, event_status, starts_at, timezone) =
+        row.ok_or(AppError::NotFound)?;
 
     if organizer_id != Some(user.id) {
         return Err(AppError::Forbidden);
     }
+    // UX2: the door opens 6 hours before the start; nothing changes before that.
+    ensure_checkin_open(starts_at, &timezone, Utc::now())?;
 
     let (valid, reason) = if event_status == "cancelled" || event_status == "blocked" {
         // CT11 / D7: nobody is admitted to a cancelled or blocked event; nothing changes.
@@ -427,48 +441,54 @@ pub struct TransferReq {
     pub email: String,
 }
 
-/// The one answer for "no such user" and "recipient already holds the maximum" on a direct
-/// transfer (TASK-302 fix batch 2, N6), so neither reveals anything about the email's owner.
-/// A gift (`POST /api/tickets/:id/gift`) never checks the recipient; their cap applies at claim.
-pub const TRANSFER_REFUSED: &str = "не вдалося передати квиток на цей email — надішліть його подарунком";
-
-fn transfer_refused() -> AppError {
-    AppError::Validation(TRANSFER_REFUSED.into())
+/// The one answer to a transfer by its owner, whatever the email (TASK-305 R2).
+#[derive(Serialize)]
+pub struct TransferSent {
+    /// Always `"sent"`.
+    pub status: &'static str,
 }
 
 /// SQL (events aliased `e`): the event is over — its end, or 12 hours after its start when it has
 /// no end, has passed (the web's rule for when a ticket stops being useful).
 pub const EVENT_OVER_SQL: &str = "COALESCE(e.ends_at, e.starts_at + interval '12 hours') < now()";
 
-/// The answer for a ticket of a cancelled, blocked or finished event (transfer, claim).
-const EVENT_GONE: &str = "подію скасовано або вона вже минула";
+/// SQL (events aliased `e`): nobody can be given a place any more — the event is cancelled,
+/// blocked or over (transfer, gift, claim). Never NULL.
+fn event_gone_sql() -> String {
+    format!("(e.status IN ('cancelled', 'blocked') OR {EVENT_OVER_SQL}) IS TRUE")
+}
 
-/// The caller's own active ticket for a transfer, locked: its event, cost type and age rating.
-/// 404 unless the caller owns it and it is active (TASK-305 F2: checked before anything about
-/// the recipient is looked at); 409 when its event is cancelled or over, or it is under dispute.
-async fn own_transferable_ticket(
-    tx: &mut sqlx::PgConnection,
-    ticket_id: Uuid,
-    owner: Uuid,
-) -> Result<(Uuid, String, Option<String>), AppError> {
-    let sql = format!(
-        "SELECT t.event_id, e.cost_type, e.age_rating, e.status IN ('cancelled', 'blocked') OR {EVENT_OVER_SQL} \
-         FROM tickets t JOIN events e ON e.id = t.event_id \
-         WHERE t.id = $1 AND t.owner_id = $2 AND t.status = 'active' FOR UPDATE OF t"
-    );
-    let row: Option<(Uuid, String, Option<String>, Option<bool>)> = sqlx::query_as(&sql)
-        .bind(ticket_id)
-        .bind(owner)
-        .fetch_optional(&mut *tx)
-        .await?;
-    let (event_id, cost_type, age_rating, gone) = row.ok_or(AppError::NotFound)?;
-    if gone.unwrap_or(false) {
-        return Err(AppError::Conflict(EVENT_GONE.into()));
+/// Door check-in opens this many hours before an event starts (TASK-305 UX2).
+pub const CHECKIN_OPENS_HOURS: i64 = 6;
+
+/// 409 «Ще рано: подія починається …» when `now` is earlier than [`CHECKIN_OPENS_HOURS`] before
+/// the start, with the start in the event's own time zone. An event without a start is open.
+/// Every scan and validate endpoint calls this before it changes anything (TASK-305 UX2).
+pub fn ensure_checkin_open(
+    starts_at: Option<DateTime<Utc>>,
+    timezone: &str,
+    now: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let Some(start) = starts_at else {
+        return Ok(());
+    };
+    if now >= start - Duration::hours(CHECKIN_OPENS_HOURS) {
+        return Ok(());
     }
-    // Money policy (BACK-1): a transfer gifts ENTRY only — the purchaser keeps the order/escrow
-    // relationship and the right to dispute (the ticket DTO only surfaces the order to the buyer,
-    // see TICKET_SELECT's `o.buyer_id = t.owner_id`). But a ticket whose order is under active
-    // dispute (escrow frozen) must NOT be gifted away — a pending refund could void the QR.
+    let zone: chrono_tz::Tz = timezone.parse().unwrap_or(chrono_tz::Europe::Kyiv);
+    let local = start.with_timezone(&zone);
+    Err(AppError::Conflict(format!(
+        "Ще рано: подія починається {}",
+        local.format("%d.%m.%Y о %H:%M")
+    )))
+}
+
+/// The answer for a ticket of a cancelled, blocked or finished event (transfer, gift, claim).
+pub const EVENT_GONE: &str = "подію скасовано або вона вже минула";
+
+/// 409 when the ticket's order is under dispute (escrow frozen): a pending refund could void the
+/// QR, so the ticket cannot be handed on (BACK-1).
+async fn ensure_not_disputed(tx: &mut sqlx::PgConnection, ticket_id: Uuid) -> Result<(), AppError> {
     let frozen: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE ticket_id = $1 AND escrow_status = 'frozen')")
             .bind(ticket_id)
@@ -477,22 +497,60 @@ async fn own_transferable_ticket(
     if frozen {
         return Err(AppError::Conflict("квиток під спором — передавання недоступне".into()));
     }
-    Ok((event_id, cost_type, age_rating))
+    Ok(())
 }
 
-/// `POST /api/tickets/:id/transfer` — owner gifts an active ticket to another user by email.
+/// The caller's own active ticket for a transfer, locked. 404 unless the caller owns it and it
+/// is active (TASK-305 F2: checked before anything about the recipient is looked at); 409 when
+/// its event is cancelled or over, or it is under dispute. Money policy (BACK-1): a transfer
+/// gifts ENTRY only — the purchaser keeps the order/escrow relationship and the right to dispute.
+async fn own_transferable_ticket(tx: &mut sqlx::PgConnection, ticket_id: Uuid, owner: Uuid) -> Result<(), AppError> {
+    let sql = format!(
+        "SELECT {gone} FROM tickets t JOIN events e ON e.id = t.event_id \
+         WHERE t.id = $1 AND t.owner_id = $2 AND t.status = 'active' FOR UPDATE OF t",
+        gone = event_gone_sql()
+    );
+    let gone: Option<bool> = sqlx::query_scalar(&sql)
+        .bind(ticket_id)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if gone.ok_or(AppError::NotFound)? {
+        return Err(AppError::Conflict(EVENT_GONE.into()));
+    }
+    ensure_not_disputed(tx, ticket_id).await
+}
+
+/// The account a place offer to `email` alerts: an active, not deleted account other than the
+/// sender, found in one query (TASK-305 R2). Its age and place cap are not looked at here; they
+/// are checked when the recipient accepts (`claim_ticket`).
+async fn offer_recipient(tx: &mut sqlx::PgConnection, email: &str, sender: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM users WHERE lower(email) = $1 AND blocked = false AND deleted_at IS NULL AND id <> $2",
+    )
+    .bind(email)
+    .bind(sender)
+    .fetch_optional(&mut *tx)
+    .await
+}
+
+/// `POST /api/tickets/:id/transfer` — the owner offers an active ticket to an email
+/// (owner decision 2026-11-14: a transfer is an offer the recipient accepts, like a gift).
 ///
-/// TASK-305 F2: the caller's own ticket is checked first (404 otherwise), so a caller without a
-/// ticket learns nothing about any email. After that every recipient problem — no such account,
-/// the caller themself, under the event's age rating or without a date of birth, already at the
-/// place cap — gives the one [`TRANSFER_REFUSED`] answer.
+/// The caller's own ticket is checked first (404 / 409 as for any action on it). After that the
+/// answer is always 202 `{"status":"sent"}`, whatever the email, and the same thing happens to the
+/// ticket: a pending offer (a gift without a link for the sender) that the sender sees and can
+/// cancel with `DELETE /api/tickets/:id/gift`. Only when the email belongs to another account does
+/// that account also get an in-app alert with the claim link; it accepts through
+/// `POST /api/tickets/claim`, where the event's age rating and the place cap are checked and any
+/// refusal is shown to the recipient alone. The ticket stays the sender's until then.
 pub async fn transfer_ticket(
     user: CurrentUser,
     State(st): State<AppState>,
     Path(ticket_id): Path<Uuid>,
     Json(req): Json<TransferReq>,
-) -> Result<Json<Ticket>, AppError> {
-    // P14: the "no user with this email" answer is an account-existence oracle; cap the probes.
+) -> Result<(StatusCode, Json<TransferSent>), AppError> {
+    // P14: transfer and gift share one bucket per sender.
     crate::ratelimit::hit(
         &st.db,
         &format!("transfer:{}", user.id),
@@ -502,33 +560,30 @@ pub async fn transfer_ticket(
     .await?;
     let mut tx = st.db.begin().await?;
     // Lock order ticket → event, the same as `return_ticket`.
-    let (event_id, cost_type, age_rating) = own_transferable_ticket(&mut tx, ticket_id, user.id).await?;
-    let recipient: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND blocked = false")
-        .bind(req.email.trim().to_lowercase())
-        .fetch_optional(&mut *tx)
-        .await?;
-    let recipient = recipient.filter(|r| *r != user.id).ok_or_else(transfer_refused)?;
-    // An age-restricted event's ticket cannot go to someone who doesn't meet the rating
-    // (otherwise transfer would bypass the checkout/reserve age gate).
-    if !crate::users::meets_age(&mut *tx, recipient, age_rating.as_deref()).await? {
-        return Err(transfer_refused());
+    own_transferable_ticket(&mut tx, ticket_id, user.id).await?;
+    let email = crate::auth::normalize_email(&req.email);
+    // One lookup, and the same writes for every email; only the alert row depends on it.
+    let recipient = offer_recipient(&mut tx, &email, user.id).await?;
+    let offer = create_offer(&mut tx, &st.jwt_secret, ticket_id, user.id, &email).await?;
+    if let Some(recipient) = recipient {
+        crate::notifications::notify_place_offer(&mut *tx, recipient, user.id, ticket_id, offer.gift_id).await?;
     }
-    // CT4 / D3: receiving a place counts toward the recipient's 5-place cap; same answer (N6).
-    match ensure_recipient_has_room(&mut tx, event_id, &cost_type, recipient, ticket_id).await {
-        Err(AppError::Conflict(_)) => return Err(transfer_refused()),
-        other => other?,
-    }
-    sqlx::query("UPDATE tickets SET owner_id = $2 WHERE id = $1")
-        .bind(ticket_id)
-        .bind(recipient)
-        .execute(&mut *tx)
-        .await?;
     tx.commit().await?;
-
-    Ok(Json(fetch_ticket(&st.db, ticket_id).await?))
+    Ok((StatusCode::ACCEPTED, Json(TransferSent { status: "sent" })))
 }
 
 // ── Gift / claim (TASK-110, BR-018/BR-022, WF-GiftClaim) ────────────────────────────
+
+/// The raw claim token of a gift: HMAC-SHA256 of the gift id under the server secret (TASK-305
+/// R2, UX7). Only its SHA-256 is stored (BR-022), so a database leak still cannot rebuild a
+/// working link, while the server can show the link again to the recipient of an offer.
+pub(crate) fn claim_token(secret: &str, gift_id: Uuid) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(b"underground/gift-claim/v1:");
+    mac.update(gift_id.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
 
 /// SHA-256 of a raw claim token — only the hash is stored (BR-022).
 fn hash_token(raw: &str) -> String {
@@ -558,17 +613,62 @@ pub struct GiftResp {
     pub expires_at: DateTime<Utc>,
 }
 
-/// Ensure a ticket can be gifted now: not under dispute, and either `active` or a
-/// `pending_claim` whose outstanding gift already expired (reclaimed for re-gifting).
-async fn ensure_giftable(tx: &mut sqlx::PgConnection, ticket_id: Uuid, status: &str) -> Result<(), AppError> {
-    let frozen: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE ticket_id = $1 AND escrow_status = 'frozen')")
-            .bind(ticket_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    if frozen {
-        return Err(AppError::Conflict("квиток під спором — передавання недоступне".into()));
+/// A pending offer of a ticket: the gift row and the raw token (returned to a gift's sender
+/// only, never to a transfer's).
+struct Offer {
+    gift_id: Uuid,
+    raw: String,
+    expires_at: DateTime<Utc>,
+}
+
+/// Put a ticket on offer to `to_email` (gift and transfer): a pending gift row and the ticket in
+/// `pending_claim`. The caller holds the ticket lock and has checked the ticket.
+async fn create_offer(
+    tx: &mut sqlx::PgConnection,
+    secret: &str,
+    ticket_id: Uuid,
+    from: Uuid,
+    to_email: &str,
+) -> Result<Offer, AppError> {
+    let gift_id = Uuid::new_v4();
+    let raw = claim_token(secret, gift_id);
+    let expires_at = Utc::now() + Duration::hours(claim_ttl_hours());
+    sqlx::query(
+        "INSERT INTO ticket_gifts (id, ticket_id, from_user_id, to_email, token_hash, expires_at) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(gift_id)
+    .bind(ticket_id)
+    .bind(from)
+    .bind(to_email)
+    .bind(hash_token(&raw))
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE tickets SET status = 'pending_claim' WHERE id = $1")
+        .bind(ticket_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(Offer {
+        gift_id,
+        raw,
+        expires_at,
+    })
+}
+
+/// Ensure a ticket can be gifted now: its event is not cancelled, blocked or over (TASK-305 R6,
+/// as for a transfer), not under dispute, and the ticket is either `active` or a `pending_claim`
+/// whose outstanding gift already expired (reclaimed for re-gifting).
+async fn ensure_giftable(
+    tx: &mut sqlx::PgConnection,
+    ticket_id: Uuid,
+    status: &str,
+    gone: bool,
+) -> Result<(), AppError> {
+    if gone {
+        return Err(AppError::Conflict(EVENT_GONE.into()));
     }
+    ensure_not_disputed(tx, ticket_id).await?;
     match status {
         "active" => Ok(()),
         "pending_claim" => {
@@ -613,30 +713,28 @@ pub async fn gift_ticket(
         return Err(AppError::Validation("email отримувача обов'язковий".into()));
     }
     let mut tx = st.db.begin().await?;
-    let status: Option<String> =
-        sqlx::query_scalar("SELECT status FROM tickets WHERE id = $1 AND owner_id = $2 FOR UPDATE")
-            .bind(ticket_id)
-            .bind(user.id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    ensure_giftable(&mut tx, ticket_id, &status.ok_or(AppError::NotFound)?).await?;
-    let raw = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let expires_at = Utc::now() + Duration::hours(claim_ttl_hours());
-    sqlx::query(
-        "INSERT INTO ticket_gifts (ticket_id, from_user_id, to_email, token_hash, expires_at) \
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(ticket_id)
-    .bind(user.id)
-    .bind(&email)
-    .bind(hash_token(&raw))
-    .bind(expires_at)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("UPDATE tickets SET status = 'pending_claim' WHERE id = $1")
+    let sql = format!(
+        "SELECT t.status, {gone} FROM tickets t JOIN events e ON e.id = t.event_id \
+         WHERE t.id = $1 AND t.owner_id = $2 FOR UPDATE OF t",
+        gone = event_gone_sql()
+    );
+    let row: Option<(String, bool)> = sqlx::query_as(&sql)
         .bind(ticket_id)
-        .execute(&mut *tx)
+        .bind(user.id)
+        .fetch_optional(&mut *tx)
         .await?;
+    let (status, gone) = row.ok_or(AppError::NotFound)?;
+    ensure_giftable(&mut tx, ticket_id, &status, gone).await?;
+    let recipient = offer_recipient(&mut tx, &email, user.id).await?;
+    let Offer {
+        gift_id,
+        raw,
+        expires_at,
+    } = create_offer(&mut tx, &st.jwt_secret, ticket_id, user.id, &email).await?;
+    // UX7: an account with that email gets an alert with the claim link.
+    if let Some(recipient) = recipient {
+        crate::notifications::notify_place_offer(&mut *tx, recipient, user.id, ticket_id, gift_id).await?;
+    }
     tx.commit().await?;
     crate::telemetry::log(
         &st.db,
@@ -732,14 +830,15 @@ pub async fn claim_ticket(
     }
     // Lock order gift → ticket → event.
     let sql = format!(
-        "SELECT t.event_id, e.age_rating, e.cost_type, e.status IN ('cancelled', 'blocked') OR {EVENT_OVER_SQL} \
-         FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $1 FOR UPDATE OF t"
+        "SELECT t.event_id, e.age_rating, e.cost_type, {gone} \
+         FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $1 FOR UPDATE OF t",
+        gone = event_gone_sql()
     );
-    let (event_id, age, cost_type, gone): (Uuid, Option<String>, String, Option<bool>) =
+    let (event_id, age, cost_type, gone): (Uuid, Option<String>, String, bool) =
         sqlx::query_as(&sql).bind(ticket_id).fetch_one(&mut *tx).await?;
     // TASK-305: a gift for a cancelled or finished event is not claimed; the gift stays pending
     // (rolled back) so the sender can revoke it.
-    if gone.unwrap_or(false) {
+    if gone {
         return Err(AppError::Conflict(EVENT_GONE.into()));
     }
     if !crate::users::meets_age(&mut *tx, user.id, age.as_deref()).await? {
@@ -819,6 +918,42 @@ mod tests {
         assert_eq!(claim_ttl_hours(), 48, "non-positive TTL is ignored");
         std::env::remove_var("CLAIM_TOKEN_TTL_HOURS");
         assert_eq!(claim_ttl_hours(), 48);
+    }
+
+    /// UX2: the door opens 6 hours before the start; earlier, 409 with the start in the event's
+    /// own zone.
+    #[test]
+    fn checkin_opens_six_hours_before_the_start() {
+        let start: DateTime<Utc> = "2030-07-01T17:00:00Z".parse().unwrap();
+        let at = |h: i64, m: i64| start - Duration::hours(h) + Duration::minutes(m);
+        assert!(ensure_checkin_open(Some(start), "Europe/Kyiv", at(6, 0)).is_ok());
+        assert!(ensure_checkin_open(Some(start), "Europe/Kyiv", at(1, 0)).is_ok());
+        assert!(ensure_checkin_open(Some(start), "Europe/Kyiv", start + Duration::hours(3)).is_ok());
+        assert!(
+            ensure_checkin_open(None, "Europe/Kyiv", at(100, 0)).is_ok(),
+            "no start: open"
+        );
+        match ensure_checkin_open(Some(start), "Europe/Kyiv", at(6, -1)) {
+            Err(AppError::Conflict(m)) => assert_eq!(m, "Ще рано: подія починається 01.07.2030 о 20:00"),
+            other => panic!("{:?}", other.err()),
+        }
+        match ensure_checkin_open(Some(start), "America/New_York", at(48, 0)) {
+            Err(AppError::Conflict(m)) => assert_eq!(m, "Ще рано: подія починається 01.07.2030 о 13:00"),
+            other => panic!("{:?}", other.err()),
+        }
+    }
+
+    /// The claim token is keyed: the same gift id under another secret gives another token, and
+    /// it has the 64-hex shape of the earlier random tokens.
+    #[test]
+    fn claim_token_is_keyed_by_the_secret() {
+        let id = Uuid::new_v4();
+        let t = claim_token("s1", id);
+        assert_eq!(t.len(), 64);
+        assert!(t.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(t, claim_token("s1", id));
+        assert_ne!(t, claim_token("s2", id));
+        assert_ne!(t, claim_token("s1", Uuid::new_v4()));
     }
 
     #[test]

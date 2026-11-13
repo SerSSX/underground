@@ -92,10 +92,28 @@ fn age_on(dob: NaiveDate, today: NaiveDate) -> i32 {
 /// name before the first booking).
 pub const GUEST_FALLBACK_NAME: &str = "Гість";
 
-/// SQL expression (users aliased `u`) for the name organisers and staff may see: the user's
-/// name, or [`GUEST_FALLBACK_NAME`] when it is a placeholder (empty, the email local part, or
-/// the whole email; see migration 0040). It reads `u.name_is_placeholder`, never `u.email`.
-pub const DISPLAY_NAME_SQL: &str = "CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END";
+/// The display-name rule as a string literal, so `concat!` can build constant queries from it
+/// (TASK-305 R1). Everything else uses [`DISPLAY_NAME_SQL`]; no other copy of the rule exists
+/// (`tests/task305_round2.rs` checks the sources).
+///
+/// «Гість» is shown only when the stored name is blank or is «Гість» itself (trimmed, any
+/// letter case). A name a person typed is always shown, even when it equals their email's local
+/// part (docs/decisions.md 2026-11-14). It never reads `u.email`. The case fold uses
+/// `translate`, not `lower`: `lower` follows the database locale and leaves Cyrillic alone under
+/// the C locale. The generated column `name_is_placeholder` (migration 0048) is no longer read.
+#[macro_export]
+macro_rules! display_name_sql {
+    () => {
+        "CASE WHEN u.name IS NULL OR btrim(u.name) = '' \
+            OR translate(btrim(u.name), 'ГІСТЬ', 'гість') = 'гість' \
+         THEN 'Гість' ELSE u.name END"
+    };
+}
+
+/// SQL expression (users aliased `u`) for the name everyone but the user themself sees: the
+/// user's name, or [`GUEST_FALLBACK_NAME`] when it is blank or «Гість» (see
+/// [`display_name_sql!`]).
+pub const DISPLAY_NAME_SQL: &str = display_name_sql!();
 
 /// True if the user satisfies an event's minimum-age `age_rating`. No restriction
 /// (none/unparseable) → always true; a restricted event requires a known dob old enough.

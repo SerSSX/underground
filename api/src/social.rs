@@ -43,12 +43,13 @@ async fn fetch_profile(db: &PgPool, id: Uuid, viewer: Option<Uuid>) -> Result<Op
             (SELECT count(*) FROM follows WHERE follower_id = u.id) AS following_count, \
             (SELECT count(*) FROM events WHERE organizer_id = u.id AND status = 'published') AS events_count, \
             (SELECT avg(r.rating)::float8 FROM reviews r JOIN events e ON e.id = r.event_id \
-                WHERE e.organizer_id = u.id AND e.status <> 'cancelled') AS rating_avg, \
+                WHERE e.organizer_id = u.id AND e.status <> 'cancelled' AND {counted}) AS rating_avg, \
             (SELECT count(*) FROM reviews r JOIN events e ON e.id = r.event_id \
-                WHERE e.organizer_id = u.id AND e.status <> 'cancelled') AS rating_count, \
+                WHERE e.organizer_id = u.id AND e.status <> 'cancelled' AND {counted}) AS rating_count, \
             EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = u.id) AS is_following \
          FROM users u WHERE u.id = $1 AND u.blocked = false",
-        name = crate::users::DISPLAY_NAME_SQL
+        name = crate::users::DISPLAY_NAME_SQL,
+        counted = crate::reviews::COUNTED_REVIEW_SQL,
     );
     sqlx::query_as(&sql).bind(id).bind(viewer).fetch_optional(db).await
 }

@@ -50,6 +50,8 @@ async fn serve() -> anyhow::Result<()> {
     if let Err(e) = config.validate() {
         anyhow::bail!("invalid production configuration: {e}");
     }
+    // TASK-305 R8: the login dummy hash is built before the first request, not during it.
+    underground_api::auth::warm_dummy_hash();
     let port = config.port;
     let cors_origins = config.cors_allowed_origins.clone();
     if cors_origins.is_empty() {
@@ -204,7 +206,8 @@ async fn email_worker(pool: sqlx::PgPool, cfg: EmailConfig) {
                 for p in &batch {
                     let (subject, _body) = email::build_confirmation(p);
                     // TODO(sendgrid): POST https://api.sendgrid.com/v3/mail/send (Bearer cfg.api_key, from cfg.from).
-                    tracing::info!(from = %cfg.from, to = %p.to_email, subject = %subject, "email.deliver");
+                    // TASK-305 R10: no recipient address in the logs; the order id is enough to trace it.
+                    tracing::info!(from = %cfg.from, order_id = %p.order_id, subject = %subject, "email.deliver");
                 }
                 if let Err(e) = email::mark_sent(&pool, &ids).await {
                     tracing::warn!(error = %e, "email: failed to watermark order outbox");
@@ -219,7 +222,10 @@ async fn email_worker(pool: sqlx::PgPool, cfg: EmailConfig) {
                 let ids: Vec<_> = batch.iter().map(|p| p.notification_id).collect();
                 for p in &batch {
                     let (subject, _body) = email::build_notification_email(p);
-                    tracing::info!(from = %cfg.from, to = %p.to_email, subject = %subject, kind = %p.kind, "email.deliver");
+                    tracing::info!(
+                        from = %cfg.from, notification_id = %p.notification_id, subject = %subject, kind = %p.kind,
+                        "email.deliver"
+                    );
                 }
                 if let Err(e) = email::mark_notifications_sent(&pool, &ids).await {
                     tracing::warn!(error = %e, "email: failed to watermark notification outbox");

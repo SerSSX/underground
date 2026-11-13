@@ -541,6 +541,26 @@ async fn transferred_ticket_hides_previous_owner_order(pool: PgPool) {
         ),
     )
     .await;
+    // TASK-305 R2 (owner decision 2026-11-14): a transfer is an offer; the recipient accepts it
+    // through the claim link in their alert.
+    assert_eq!(st, StatusCode::ACCEPTED);
+    let (_, alerts) = send(&app, build("GET", "/api/me/notifications", Some(&recipient), None)).await;
+    let token = alerts[0]["link"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("/g/")
+        .unwrap()
+        .to_string();
+    let (st, _) = send(
+        &app,
+        build(
+            "POST",
+            "/api/tickets/claim",
+            Some(&recipient),
+            Some(json!({ "token": token })),
+        ),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK);
 
     // The recipient now owns the ticket but must NOT see the original buyer's order / escrow.

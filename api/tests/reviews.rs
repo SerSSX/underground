@@ -47,7 +47,10 @@ async fn create_event(app: &Router, token: &str) -> String {
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .body(Body::from(
-            json!({"title": "Gig", "category": "Rock", "price": "0", "tickets_total": 10}).to_string(),
+            // TASK-305 R4b: reviews need a start date in the past (setup only; places are given in SQL).
+            json!({"title": "Gig", "category": "Rock", "price": "0", "tickets_total": 10,
+                "starts_at": "2020-01-01T19:00:00Z"})
+            .to_string(),
         ))
         .unwrap();
     let (_, v) = send(app, req).await;
@@ -107,13 +110,11 @@ async fn review_validates_rating_and_event(pool: PgPool) {
 async fn review_aggregate_and_upsert(pool: PgPool) {
     let app = make_app(pool.clone());
     let (maker, maker_id) = register(&app, "maker@x.co", "Maker").await;
-    // TASK-305 P: a name equal to the email's local part is a placeholder shown as «Гість», so
-    // these accounts' emails differ from their names (setup only; the assertions are unchanged).
-    let (alice, _) = register(&app, "alice.w@x.co", "Alice").await;
-    let (bob, _) = register(&app, "bob.k@x.co", "Bob").await;
+    let (alice, _) = register(&app, "alice@x.co", "Alice").await;
+    let (bob, _) = register(&app, "bob@x.co", "Bob").await;
     let event_id = create_event(&app, &maker).await;
-    give_ticket(&pool, &event_id, "alice.w@x.co").await;
-    give_ticket(&pool, &event_id, "bob.k@x.co").await;
+    give_ticket(&pool, &event_id, "alice@x.co").await;
+    give_ticket(&pool, &event_id, "bob@x.co").await;
 
     let (status, body) = send(
         &app,

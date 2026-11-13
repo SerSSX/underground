@@ -19,6 +19,9 @@ use crate::users::{self, User};
 
 const TOKEN_TTL_SECS: i64 = 7 * 24 * 3600;
 
+/// The answer for an avatar that is not one of our own uploads (TASK-305 R4b).
+pub const AVATAR_REFUSED: &str = "фото профілю має бути зображенням, завантаженим на сайт";
+
 /// Display-name and bio caps, in characters (TASK-305 F10).
 pub const NAME_MAX: usize = 80;
 pub const BIO_MAX: usize = 500;
@@ -41,6 +44,55 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     PasswordHash::new(hash)
         .and_then(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed))
         .is_ok()
+}
+
+/// Build the dummy hash now (startup), so the first login for an unknown account does not pay
+/// for it and answer slower than the ones after (TASK-305 R8).
+pub fn warm_dummy_hash() {
+    std::sync::LazyLock::force(&DUMMY_HASH);
+}
+
+/// Most argon2 jobs running at once (TASK-305 R8). Each takes ~19 MiB and a core for tens of
+/// milliseconds; more in parallel would only queue on the CPU and grow memory.
+pub const HASH_JOBS: usize = 2;
+
+static HASH_PERMITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(HASH_JOBS)));
+
+/// Run CPU-heavy hashing work off the async workers (`spawn_blocking`), at most [`HASH_JOBS`] at
+/// a time. The permit moves into the blocking job, so a caller that goes away (client
+/// disconnect) does not free a slot while its hash is still running.
+pub async fn run_hash_job<T, F>(job: F) -> Result<T, AppError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let permit = HASH_PERMITS
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| AppError::Internal)?;
+    tokio::task::spawn_blocking(move || {
+        let out = job();
+        drop(permit);
+        out
+    })
+    .await
+    .map_err(|_| AppError::Internal)
+}
+
+/// [`hash_password`] through [`run_hash_job`].
+pub async fn hash_password_async(password: &str) -> Result<String, AppError> {
+    let password = password.to_owned();
+    run_hash_job(move || hash_password(&password)).await?
+}
+
+/// [`verify_password`] through [`run_hash_job`]; `None` verifies against the dummy hash (the
+/// answer is always false, the time is a real verify's).
+pub async fn verify_password_async(password: &str, hash: Option<&str>) -> Result<bool, AppError> {
+    let password = password.to_owned();
+    let hash = hash.map(str::to_owned);
+    run_hash_job(move || verify_password(&password, hash.as_deref().unwrap_or(DUMMY_HASH.as_str()))).await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -162,7 +214,7 @@ pub async fn register(
     if taken {
         return Err(AppError::Conflict("email already registered".into()));
     }
-    let hash = hash_password(&req.password)?;
+    let hash = hash_password_async(&req.password).await?;
     let user = match users::create_user(&st.db, &email, &name, &hash).await {
         Ok(u) => u,
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
@@ -195,7 +247,7 @@ pub async fn login(
     let creds = users::find_credentials(&st.db, &email).await?;
     let hash = creds.as_ref().and_then(|c| c.password_hash.as_deref());
     // Always one argon2 verify, against the dummy hash when there is no real one (F4).
-    let matched = verify_password(&req.password, hash.unwrap_or(DUMMY_HASH.as_str()));
+    let matched = verify_password_async(&req.password, hash).await?;
     let creds = creds
         .filter(|c| matched && c.password_hash.is_some())
         .ok_or(AppError::Unauthorized)?;
@@ -281,11 +333,10 @@ pub async fn patch_me(
         return Err(AppError::Validation("bio must be at most 500 chars".into()));
     }
     let avatar_url = req.avatar_url.as_deref().map(str::trim).filter(|a| !a.is_empty());
-    // The same URL rule as event images (TASK-305 F3): https, or one of our own /uploads files.
-    if avatar_url.is_some_and(|a| !crate::events::is_safe_url(a, true)) {
-        return Err(AppError::Validation(
-            "фото профілю: посилання має починатися з https:// або бути завантаженим файлом".into(),
-        ));
+    // Only a picture uploaded here (TASK-305 R4b): our own `/uploads/` file, relative or under
+    // `PUBLIC_BASE_URL`. A third-party URL would let a profile load anything from anywhere.
+    if avatar_url.is_some_and(|a| !crate::uploads::is_own_upload_url(a, &crate::uploads::public_base_url())) {
+        return Err(AppError::Validation(AVATAR_REFUSED.into()));
     }
     if req.dob.is_some_and(|d| d > Utc::now().date_naive()) {
         return Err(AppError::Validation(
@@ -338,6 +389,42 @@ mod tests {
         assert!(!hash.contains("correct horse"), "hash must not contain the plaintext");
         assert!(verify_password("correct horse", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    /// R8: at most HASH_JOBS hashing jobs run at once, and on blocking threads: with ONE async
+    /// worker, two jobs still overlap (inline on the worker they could not), and never more than
+    /// two. The async verify gives the same verdicts as the sync one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn hash_jobs_run_off_the_runtime_two_at_a_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let jobs = (0..8).map(|_| {
+            let (running, peak) = (running.clone(), peak.clone());
+            tokio::spawn(run_hash_job(move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                running.fetch_sub(1, Ordering::SeqCst);
+            }))
+        });
+        for job in jobs.collect::<Vec<_>>() {
+            job.await.unwrap().unwrap();
+        }
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            HASH_JOBS,
+            "[SEC] {HASH_JOBS} at once, off the single async worker"
+        );
+
+        let hash = hash_password_async("correct horse").await.unwrap();
+        assert!(verify_password_async("correct horse", Some(&hash)).await.unwrap());
+        assert!(!verify_password_async("wrong", Some(&hash)).await.unwrap());
+        assert!(
+            !verify_password_async("x", None).await.unwrap(),
+            "dummy hash never matches"
+        );
     }
 
     #[test]

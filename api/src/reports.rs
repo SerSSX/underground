@@ -47,11 +47,15 @@ pub async fn create_report(
             "target_type must be event|user|post|review".into(),
         ));
     }
-    let reason = req.reason.trim();
-    if reason.is_empty() || reason.chars().count() > 200 {
+    // TASK-305 R5: controls and bidi controls out (the admin queue shows these as text), and a
+    // reason of whitespace or zero-width characters only is no reason.
+    let reason = crate::text::clean_multiline(&req.reason);
+    let reason = reason.as_str();
+    if crate::text::is_blank(reason) || reason.chars().count() > 200 {
         return Err(AppError::Validation("reason is required (max 200 chars)".into()));
     }
-    let details = req.details.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let details = req.details.as_deref().map(crate::text::clean_multiline);
+    let details = details.as_deref().filter(|s| !crate::text::is_blank(s));
     if details.is_some_and(|d| d.chars().count() > 1000) {
         return Err(AppError::Validation("details too long (max 1000 chars)".into()));
     }

@@ -141,7 +141,9 @@ async fn age_gating_blocks_underage_and_unknown(pool: PgPool) {
     assert_eq!(st, StatusCode::CREATED, "adult can reserve 16+");
     let ticket_id = t["id"].as_str().unwrap().to_string();
 
-    // Transfer can't bypass the age gate: gifting the 16+ ticket to the minor is rejected.
+    // Transfer can't bypass the age gate. TASK-305 R2 (owner decision 2026-11-14, transfer = an
+    // offer the recipient accepts): the sender always gets 202 "sent"; the minor's acceptance is
+    // what is refused, and the ticket stays the sender's.
     let (st, body) = send(
         &app,
         build(
@@ -152,16 +154,29 @@ async fn age_gating_blocks_underage_and_unknown(pool: PgPool) {
         ),
     )
     .await;
-    // TASK-305 F2 (owner-approved change, docs/decisions.md 2026-11-13): the shared refusal, so
-    // the answer does not tell the sender the recipient is a minor.
-    assert_eq!(
-        (st, body["error"].as_str()),
-        (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Some(underground_api::tickets::TRANSFER_REFUSED)
+    assert_eq!((st, body), (StatusCode::ACCEPTED, json!({"status":"sent"})));
+    let (_, alerts) = send(&app, build("GET", "/api/me/notifications", Some(&minor), None)).await;
+    let link = alerts[0]["link"]
+        .as_str()
+        .expect("the offer alert links to the claim page");
+    let token = link.strip_prefix("/g/").unwrap();
+    let (st, _) = send(
+        &app,
+        build(
+            "POST",
+            "/api/tickets/claim",
+            Some(&minor),
+            Some(json!({ "token": token })),
         ),
-        "can't gift an age-restricted ticket to a minor"
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "can't take an age-restricted ticket as a minor"
     );
+    let (_, mine) = send(&app, build("GET", "/api/me/tickets", Some(&adult), None)).await;
+    assert_eq!(mine[0]["id"], ticket_id.as_str(), "the ticket stays the sender's");
 
     // Organizer can change the rating via PUT (covers the update path).
     let (st, upd) = send(

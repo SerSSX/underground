@@ -205,6 +205,26 @@ pub fn public_base_url() -> String {
     std::env::var("PUBLIC_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into())
 }
 
+/// True when `url` names one of our own stored files (TASK-305 R4b, avatars): `/uploads/<name>`,
+/// or the same under `base` (the `PUBLIC_BASE_URL` origin the upload answer uses). `<name>` is
+/// one path segment of letters, digits, `.`, `_` and `-`, not starting with a dot — never a
+/// traversal, an encoded byte, a query or another host.
+pub fn is_own_upload_url(url: &str, base: &str) -> bool {
+    let base = base.trim_end_matches('/');
+    let path = match url.strip_prefix(base) {
+        Some(rest) if !base.is_empty() && rest.starts_with('/') => rest,
+        _ => url,
+    };
+    let Some(name) = path.strip_prefix("/uploads/") else {
+        return false;
+    };
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 fn allowed_content_type(content_type: &str) -> bool {
     matches!(content_type, "image/jpeg" | "image/png" | "image/webp")
 }
@@ -643,6 +663,46 @@ mod tests {
 
         std::env::remove_var("UPLOADS_DIR");
         std::env::remove_var("PUBLIC_BASE_URL");
+    }
+
+    /// R4b: only our own stored files are accepted as avatars.
+    #[test]
+    fn own_upload_url_rule() {
+        let base = "https://ug.example";
+        for ok in [
+            "/uploads/0d6c.webp",
+            "/uploads/0d6c-480.webp",
+            "https://ug.example/uploads/a_b.webp",
+        ] {
+            assert!(is_own_upload_url(ok, base), "{ok}");
+            assert!(
+                is_own_upload_url(ok, "https://ug.example/"),
+                "trailing slash in base: {ok}"
+            );
+        }
+        for bad in [
+            "https://cdn.example.com/a.png",
+            "https://ug.example.evil.com/uploads/a.webp",
+            "https://ug.example@evil.com/uploads/a.webp",
+            "http://ug.example/uploads/a.webp",
+            "https://ug.example/uploads/../secret",
+            "https://ug.example/other/a.webp",
+            "/uploads/",
+            "/uploads/../secret",
+            "/uploads/.hidden",
+            "/uploads/a/b.webp",
+            "/uploads/%2e%2e",
+            "/uploads/a.webp?x=1",
+            "/uploads/a.webp#f",
+            "//evil.example/uploads/a.webp",
+            "/uploadsx/a.webp",
+            "javascript:alert(1)",
+            "uploads/a.webp",
+        ] {
+            assert!(!is_own_upload_url(bad, base), "[SEC] {bad}");
+        }
+        assert!(!is_own_upload_url("/x/uploads/a.webp", ""), "empty base: relative only");
+        assert!(is_own_upload_url("/uploads/a.webp", ""));
     }
 
     #[test]

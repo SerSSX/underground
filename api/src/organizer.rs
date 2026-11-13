@@ -128,6 +128,9 @@ pub async fn event_tickets(
 /// One attendee on the guest list: a person, not a ticket (TASK-302 CT7).
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Guest {
+    /// The attendee's account, so the organiser can message them (TASK-305, coordinator-approved
+    /// 2026-11-14). Only the event's organiser gets this list.
+    pub user_id: Uuid,
     /// Display name with the CT8 fallback ("Гість"); never the email.
     pub name: String,
     /// Live places: active + pending_claim + used.
@@ -147,7 +150,7 @@ pub async fn event_guests(
 ) -> Result<Json<Vec<Guest>>, AppError> {
     crate::events::require_owner(&st.db, event_id, user.id).await?;
     let sql = format!(
-        "SELECT {name} AS name, count(*) AS places, \
+        "SELECT u.id AS user_id, {name} AS name, count(*) AS places, \
             count(*) FILTER (WHERE t.status = 'used') AS checked_in, \
             min(t.created_at) AS booked_at \
          FROM tickets t JOIN users u ON u.id = t.owner_id \

@@ -242,6 +242,13 @@ pub async fn scan(
     if !can_scan(&st.db, event_id, user.id).await? {
         return Err(AppError::Forbidden);
     }
+    // UX2: the door opens 6 hours before the start; earlier scans change nothing.
+    let (starts_at, timezone): (Option<DateTime<Utc>>, String) =
+        sqlx::query_as("SELECT starts_at, timezone FROM events WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&st.db)
+            .await?;
+    crate::tickets::ensure_checkin_open(starts_at, &timezone, Utc::now())?;
     let mut tx = st.db.begin().await?;
     // Only a signed short-TTL QR is accepted at the door (BR-023); an invalid or expired token
     // resolves to nothing → the "not_found" verdict. The raw qr_token is no longer accepted.

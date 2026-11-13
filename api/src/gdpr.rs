@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::auth::{verify_password, CurrentUser};
+use crate::auth::{verify_password_async, CurrentUser};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -43,7 +43,7 @@ pub async fn delete_me(
             let password = req
                 .password
                 .ok_or_else(|| AppError::Validation("password is required".into()))?;
-            if !verify_password(&password, &hash) {
+            if !verify_password_async(&password, Some(&hash)).await? {
                 return Err(AppError::Unauthorized);
             }
         }

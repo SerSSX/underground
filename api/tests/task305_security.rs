@@ -115,6 +115,26 @@ async fn owner_of(pool: &PgPool, ticket: Uuid) -> (Uuid, String) {
         .unwrap()
 }
 
+/// The event started an hour ago (reviews open; booking closed). Setup for review tests (R4b:
+/// an event without a start date takes no reviews).
+async fn start_now(pool: &PgPool, event: Uuid) {
+    sqlx::query("UPDATE events SET starts_at = now() - interval '1 hour', ends_at = NULL WHERE id = $1")
+        .bind(event)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// An active place for `owner` at `event`, inserted directly (setup).
+async fn give_place(pool: &PgPool, event: Uuid, owner: Uuid) {
+    sqlx::query("INSERT INTO tickets (event_id, owner_id, qr_token, price, status) VALUES ($1, $2, 'UG-' || gen_random_uuid(), 0, 'active')")
+        .bind(event)
+        .bind(owner)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 async fn make_past(pool: &PgPool, event: Uuid) {
     sqlx::query(
         "UPDATE events SET starts_at = now() - interval '2 days', ends_at = now() - interval '1 day' WHERE id = $1",
@@ -127,8 +147,9 @@ async fn make_past(pool: &PgPool, event: Uuid) {
 
 // ------------------------------------------------------------------------------------- F2
 
-/// F2: without owning the ticket, an unknown and a registered email get the same 404; the
-/// owner gets one shared refusal for every recipient problem (unknown, minor, no DOB, self).
+/// F2: without owning the ticket, an unknown and a registered email get the same 404. The
+/// owner's answers are covered by `task305_round2.rs` (R2: transfer is an offer, owner decision
+/// 2026-11-14; this test's owner half used to expect one shared 422 refusal and a direct move).
 #[sqlx::test(migrations = "./migrations")]
 async fn f2_transfer_checks_the_ticket_before_the_recipient(pool: PgPool) {
     let app = make_app(pool.clone());
@@ -136,7 +157,6 @@ async fn f2_transfer_checks_the_ticket_before_the_recipient(pool: PgPool) {
     let (owner, ot) = user(&pool, "owner@x.co", "Owner").await;
     let (_, stranger) = user(&pool, "stranger@x.co", "Stranger").await;
     let (minor, _) = user(&pool, "minor@x.co", "Minor").await;
-    user(&pool, "nodob@x.co", "NoDob").await;
     let (adult, _) = user(&pool, "adult@x.co", "Adult").await;
     set_dob(&pool, owner, "1990-01-01").await;
     set_dob(&pool, adult, "1991-01-01").await;
@@ -152,24 +172,11 @@ async fn f2_transfer_checks_the_ticket_before_the_recipient(pool: PgPool) {
     assert_eq!(unknown.0, StatusCode::NOT_FOUND, "[SEC] {}", unknown.1);
     assert_eq!(known, unknown, "[SEC] a registered email answers like an unknown one");
     assert_eq!(minor_, unknown, "[SEC] a minor answers like an unknown email");
-
-    // The owner: every recipient problem is the same refusal, and the ticket stays.
-    let refused = call_text(&app, "POST", &path, Some(&ot), json!({"email":"nobody@x.co"})).await;
-    assert_eq!(refused.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        serde_json::from_str::<Value>(&refused.1).unwrap()["error"],
-        underground_api::tickets::TRANSFER_REFUSED
-    );
-    for email in ["minor@x.co", "nodob@x.co", "owner@x.co", "OWNER@x.co"] {
-        let got = call_text(&app, "POST", &path, Some(&ot), json!({ "email": email })).await;
-        assert_eq!(got, refused, "[SEC] {email}: the refusal must not say why");
-    }
     assert_eq!(owner_of(&pool, ticket).await, (owner, "active".into()));
 
-    // And a real transfer still works.
-    let (s, _) = call(&app, "POST", &path, Some(&ot), Some(json!({"email":"adult@x.co"}))).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(owner_of(&pool, ticket).await.0, adult);
+    // The owner: "sent".
+    let (s, v) = call(&app, "POST", &path, Some(&ot), Some(json!({"email":"nobody@x.co"}))).await;
+    assert_eq!((s, v), (StatusCode::ACCEPTED, json!({"status":"sent"})));
 }
 
 /// F2 (event status): a gift is not claimed and a staff invite is not accepted for an event that
@@ -400,11 +407,12 @@ async fn f1_notification_titles_are_truncated(pool: PgPool) {
             .await
             .unwrap();
     let kinds: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
-    for kind in ["organizer_event", "event_match", "event_reminder"] {
+    // TASK-305 UX7 adds the organiser's `booking` alert (was: only fan and local got alerts).
+    for kind in ["organizer_event", "event_match", "event_reminder", "booking"] {
         assert!(kinds.contains(&kind), "{kind} sent: {kinds:?}");
     }
     for (user, kind, title, body) in &rows {
-        assert!(*user == fan || *user == local);
+        assert!(*user == fan || *user == local || (*user == org_id && kind == "booking"));
         for text in [Some(title), body.as_ref()].into_iter().flatten() {
             let t_count = text.chars().filter(|c| *c == 'Т').count();
             assert!(t_count <= 120, "[SEC] {kind}: {t_count} title characters copied");
@@ -419,12 +427,14 @@ async fn f1_notification_titles_are_truncated(pool: PgPool) {
 async fn f3_avatar_url_must_be_safe(pool: PgPool) {
     let app = make_app(pool.clone());
     let (_, t) = user(&pool, "u@x.co", "U").await;
-    for good in ["https://cdn.example.com/a.png", "/uploads/a.webp"] {
+    // TASK-305 R4b: only our own uploads (was: any https URL too; see task305_round2.rs).
+    for good in ["/uploads/a.webp"] {
         let (s, v) = call(&app, "PATCH", "/api/me", Some(&t), Some(json!({ "avatar_url": good }))).await;
         assert_eq!(s, StatusCode::OK, "{good}");
         assert_eq!(v["avatar_url"], good);
     }
     for bad in [
+        "https://cdn.example.com/a.png",
         "javascript:alert(1)",
         "data:image/svg+xml,<svg onload=alert(1)>",
         "//evil.example/a.png",
@@ -743,22 +753,12 @@ async fn review(app: &Router, token: &str, event: Uuid, rating: i32) -> (StatusC
 async fn f9_only_guests_review(pool: PgPool) {
     let app = make_app(pool.clone());
     let (_, org) = user(&pool, "org@x.co", "Org").await;
-    let (_, fan) = user(&pool, "fan@x.co", "Fan").await;
+    let (fan_id, fan) = user(&pool, "fan@x.co", "Fan").await;
     let (_, gone) = user(&pool, "gone@x.co", "Gone").await;
     let ev = event(&app, &org, json!({})).await;
-    assert_eq!(
-        review(&app, &fan, ev, 5).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "[SEC] no ticket"
-    );
-    reserve(&app, &fan, ev).await;
-    assert_eq!(review(&app, &fan, ev, 5).await.0, StatusCode::CREATED);
+    // Setup (R4b: reviews need a start date, and booking closes at the start): every place is
+    // booked first, then the event starts; the fan's place is added after the "no ticket" check.
     reserve(&app, &org, ev).await;
-    assert_eq!(
-        review(&app, &org, ev, 5).await.0,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "[SEC] organiser"
-    );
     let returned = reserve(&app, &gone, ev).await;
     let (s, _) = call(
         &app,
@@ -769,6 +769,19 @@ async fn f9_only_guests_review(pool: PgPool) {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+    start_now(&pool, ev).await;
+    assert_eq!(
+        review(&app, &fan, ev, 5).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "[SEC] no ticket"
+    );
+    give_place(&pool, ev, fan_id).await;
+    assert_eq!(review(&app, &fan, ev, 5).await.0, StatusCode::CREATED);
+    assert_eq!(
+        review(&app, &org, ev, 5).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "[SEC] organiser"
+    );
     assert_eq!(
         review(&app, &gone, ev, 1).await.0,
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -800,6 +813,7 @@ async fn f9_cancelled_events_leave_the_rating(pool: PgPool) {
     let bad = event(&app, &org, json!({})).await;
     for (ev, rating) in [(good, 5), (bad, 1)] {
         reserve(&app, &fan, ev).await;
+        start_now(&pool, ev).await;
         assert_eq!(review(&app, &fan, ev, rating).await.0, StatusCode::CREATED);
     }
     let (_, p) = call(&app, "GET", &format!("/api/users/{org_id}"), None, None).await;
@@ -879,6 +893,7 @@ async fn f10_caps_count_characters(pool: PgPool) {
     ok(s);
     let ev = event(&app, &org, json!({})).await;
     reserve(&app, &t, ev).await;
+    start_now(&pool, ev).await;
     let (s, _) = call(
         &app,
         "POST",
@@ -892,26 +907,35 @@ async fn f10_caps_count_characters(pool: PgPool) {
 
 // --------------------------------------------------------------------------------------- P
 
-/// P: an account whose name repeats its email (older sign-ups) shows as «Гість» to everyone else,
-/// on every surface that shows a name; no part of the email reaches the other user.
+/// P (TASK-305 R1 rule, docs/decisions.md 2026-11-14): an account whose stored name is blank or
+/// «Гість» (any case, spaces around) shows as «Гість» to everyone else, on every surface that
+/// shows a name; a name the person typed is shown even when it equals their email's local part;
+/// no email ever reaches the other user. (Was: a name equal to the email's local part or the whole
+/// email showed as «Гість».)
 #[sqlx::test(migrations = "./migrations")]
 async fn p_placeholder_names_never_show_the_email(pool: PgPool) {
     let app = make_app(pool.clone());
-    let (jane, jt) = user(&pool, "jane.doe@x.co", "jane.doe").await;
-    let (jim, jimt) = user(&pool, "jim.roe@x.co", "Jim.Roe@x.co").await;
+    let (jane, jt) = user(&pool, "jane.doe@x.co", "").await;
+    let (jim, jimt) = user(&pool, "jim.roe@x.co", " ГІСТЬ ").await;
+    let (kyiv, kt) = user(&pool, "kyivjazz@x.co", "kyivjazz").await;
     let (viewer, vt) = user(&pool, "viewer@x.co", "Viewer").await;
     let (_, org) = user(&pool, "org@x.co", "Org").await;
     let ev = event(&app, &org, json!({})).await;
     let mut seen = String::new();
-    // Placeholder accounts act toward the viewer.
-    for (id, t) in [(jane, &jt), (jim, &jimt)] {
+    // Placeholder accounts, and one with a typed name equal to its local part, act toward the viewer.
+    for (id, t) in [(jane, &jt), (jim, &jimt), (kyiv, &kt)] {
         call(&app, "POST", &format!("/api/users/{viewer}/follow"), Some(t), None).await;
         call(&app, "POST", &format!("/api/users/{id}/follow"), Some(&vt), None).await;
         assert_eq!(dm(&app, t, viewer, "hello").await.0, StatusCode::CREATED);
         call(&app, "POST", "/api/posts", Some(t), Some(json!({"text":"my wall"}))).await;
         reserve(&app, t, ev).await;
-        assert_eq!(review(&app, t, ev, 4).await.0, StatusCode::CREATED);
         call(&app, "POST", &format!("/api/events/{ev}/save"), Some(t), None).await;
+    }
+    let gift_ticket = reserve(&app, &jt, ev).await;
+    // Reviews open once the event has started (R4b: never without a start date).
+    start_now(&pool, ev).await;
+    for t in [&jt, &jimt, &kt] {
+        assert_eq!(review(&app, t, ev, 4).await.0, StatusCode::CREATED);
     }
     let (_, vpost) = call(
         &app,
@@ -930,7 +954,6 @@ async fn p_placeholder_names_never_show_the_email(pool: PgPool) {
         Some(json!({"text":"nice"})),
     )
     .await;
-    let gift_ticket = reserve(&app, &jt, ev).await;
     let (_, gift) = call(
         &app,
         "POST",
@@ -962,8 +985,23 @@ async fn p_placeholder_names_never_show_the_email(pool: PgPool) {
         assert!(text.contains("Гість"), "{path} shows the fallback name: {text}");
         seen.push_str(&text);
     }
+    let (s, jim_profile) = call(&app, "GET", &format!("/api/users/{jim}"), None, None).await;
+    assert_eq!((s, jim_profile["name"].clone()), (StatusCode::OK, json!("Гість")));
+    // The typed name is shown where the account appears.
+    for path in [
+        format!("/api/users/{kyiv}"),
+        format!("/api/users/{kyiv}/posts"),
+        format!("/api/users/{viewer}/followers"),
+        format!("/api/events/{ev}/reviews"),
+        "/api/me/conversations".into(),
+    ] {
+        let (_, v) = call(&app, "GET", &path, Some(&vt), None).await;
+        let text = v.to_string();
+        assert!(text.contains("\"kyivjazz\""), "{path} shows the chosen name: {text}");
+        seen.push_str(&text);
+    }
     let lower = seen.to_lowercase();
-    for leak in ["jane", "doe", "jim", "roe"] {
+    for leak in ["jane", "doe", "jim", "roe", "@x.co"] {
         assert!(!lower.contains(leak), "[SEC] '{leak}' reached another user: {seen}");
     }
 }

@@ -48,7 +48,10 @@ pub fn router(state: AppState) -> Router {
             "/api/me/devices",
             post(devices::register_device).delete(devices::unregister_device),
         )
-        .route("/api/telemetry", post(telemetry::log_event))
+        .route(
+            "/api/telemetry",
+            post(telemetry::log_event).layer(axum::extract::DefaultBodyLimit::max(telemetry::BODY_LIMIT)),
+        )
         .route("/api/reviews", post(reviews::post_review))
         .route("/api/events/:id/reviews", get(reviews::event_reviews))
         .route("/api/events/:id/social", get(eventsocial::social))

@@ -61,8 +61,14 @@ async fn create_event(app: &Router, token: &str, body: Value) -> String {
     v["id"].as_str().unwrap().to_string()
 }
 
-/// TASK-305 F9: only a guest reviews, so a reviewer first holds a place (setup only).
+/// TASK-305 F9: only a guest reviews, so a reviewer first holds a place; R4b: reviews need a
+/// start date in the past, so an event without one gets one (setup only).
 async fn give_ticket(pool: &PgPool, event: &str, email: &str) {
+    sqlx::query("UPDATE events SET starts_at = now() - interval '1 hour' WHERE id = $1::uuid AND starts_at IS NULL")
+        .bind(event)
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT INTO tickets (event_id, owner_id, qr_token, price, status) \
          SELECT $1::uuid, id, 'UG-' || gen_random_uuid(), 0, 'active' FROM users WHERE email = $2",

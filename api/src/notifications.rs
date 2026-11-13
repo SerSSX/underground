@@ -25,6 +25,26 @@ pub struct Notification {
     pub actor_id: Option<Uuid>,
     pub read: bool,
     pub created_at: DateTime<Utc>,
+    /// Where the alert leads in the web app, when that is not the event page (TASK-305 UX7): the
+    /// claim page `/g/<token>` of a place offered to the caller while the offer is open, or the
+    /// manage page `/organizer/<event id>` of a new booking. A relative path, or null.
+    pub link: Option<String>,
+}
+
+/// A notification as stored, before the claim link of an open offer is rebuilt.
+#[derive(sqlx::FromRow)]
+struct NotificationRow {
+    id: Uuid,
+    kind: String,
+    title: String,
+    body: Option<String>,
+    event_id: Option<Uuid>,
+    actor_id: Option<Uuid>,
+    read: bool,
+    created_at: DateTime<Utc>,
+    link: Option<String>,
+    /// The offer's gift, only while it is pending and not expired.
+    open_gift: Option<Uuid>,
 }
 
 /// Emit a social notification to `target` triggered by `actor`. The title is
@@ -44,14 +64,16 @@ pub async fn notify_actor(
     if target == actor {
         return Ok(0);
     }
-    let result = sqlx::query(
+    let result = sqlx::query(concat!(
         "INSERT INTO notifications (user_id, kind, title, body, event_id, actor_id) \
-         SELECT $1, $2, (SELECT CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END \
+         SELECT $1, $2, (SELECT ",
+        crate::display_name_sql!(),
+        " \
                 FROM users u WHERE u.id = $3) || ' ' || \
             CASE WHEN COALESCE((SELECT locale FROM user_prefs WHERE user_id = $1), 'uk') <> 'uk' \
                  THEN $5 ELSE $4 END, \
-            $6, $7, $3",
-    )
+            $6, $7, $3"
+    ))
     .bind(target)
     .bind(kind)
     .bind(actor)
@@ -100,17 +122,19 @@ pub async fn notify_event_match(db: &PgPool, event: &Event) -> Result<u64, sqlx:
 /// Notify every follower of the organizer that they announced a new event — the core
 /// virality loop. A null organizer matches no followers, so it's a natural no-op.
 pub async fn notify_followers_new_event(db: &PgPool, event: &Event) -> Result<u64, sqlx::Error> {
-    let result = sqlx::query(
+    let result = sqlx::query(concat!(
         "INSERT INTO notifications (user_id, kind, title, body, event_id) \
          SELECT f.follower_id, 'organizer_event', \
-            (SELECT CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END \
+            (SELECT ",
+        crate::display_name_sql!(),
+        " \
                 FROM users u WHERE u.id = $1) || \
             CASE WHEN COALESCE(up.locale, 'uk') <> 'uk' THEN ' announced an event' ELSE ' оголосив(ла) подію' END, \
             $2, $3 \
          FROM follows f \
          LEFT JOIN user_prefs up ON up.user_id = f.follower_id \
-         WHERE f.followee_id = $1",
-    )
+         WHERE f.followee_id = $1"
+    ))
     .bind(event.organizer_id)
     .bind(crate::text::truncate_chars(&event.title, NOTIFY_TITLE_MAX))
     .bind(event.id)
@@ -119,18 +143,107 @@ pub async fn notify_followers_new_event(db: &PgPool, event: &Event) -> Result<u6
     Ok(result.rows_affected())
 }
 
+/// SQL (events aliased `e`): the event title cut to [`NOTIFY_TITLE_MAX`] characters, the same
+/// cut as `text::truncate_chars`.
+fn event_title_cut_sql() -> String {
+    format!(
+        "CASE WHEN char_length(e.title) > {max} THEN left(e.title, {keep}) || '…' ELSE e.title END",
+        max = NOTIFY_TITLE_MAX,
+        keep = NOTIFY_TITLE_MAX - 1
+    )
+}
+
+/// UX7: `recipient` is offered a place on `ticket_id` by `sender` (a gift to their email, or a
+/// transfer). The alert stores the gift, not its token; [`my_notifications`] shows the claim link
+/// while the offer is open. Runs in the caller's transaction.
+pub async fn notify_place_offer<'e, E: sqlx::PgExecutor<'e>>(
+    db: E,
+    recipient: Uuid,
+    sender: Uuid,
+    ticket_id: Uuid,
+    gift_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    let sql = format!(
+        "INSERT INTO notifications (user_id, kind, title, body, event_id, actor_id, gift_id) \
+         SELECT $1, 'place_offer', \
+            (SELECT {name} FROM users u WHERE u.id = $2) || \
+            CASE WHEN COALESCE((SELECT locale FROM user_prefs WHERE user_id = $1), 'uk') <> 'uk' \
+                 THEN ' offers you a place' ELSE ' пропонує вам місце' END, \
+            {title}, e.id, $2, $3 \
+         FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $4",
+        name = crate::users::DISPLAY_NAME_SQL,
+        title = event_title_cut_sql(),
+    );
+    sqlx::query(&sql)
+        .bind(recipient)
+        .bind(sender)
+        .bind(gift_id)
+        .bind(ticket_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+/// UX7: the organiser of `event_id` is told that `booker` booked `places` places, with a link to
+/// the event's manage page. Nothing when the organiser booked their own event. Runs in the
+/// caller's transaction (reserve, paid-order fulfilment).
+pub async fn notify_booking<'e, E: sqlx::PgExecutor<'e>>(
+    db: E,
+    event_id: Uuid,
+    booker: Uuid,
+    places: i64,
+) -> Result<(), sqlx::Error> {
+    let sql = format!(
+        "INSERT INTO notifications (user_id, kind, title, body, event_id, link) \
+         SELECT e.organizer_id, 'booking', \
+            CASE WHEN COALESCE(p.locale, 'uk') <> 'uk' THEN 'New booking: ' ELSE 'Нове бронювання: ' END || {title}, \
+            CASE WHEN COALESCE(p.locale, 'uk') <> 'uk' THEN 'Places: ' ELSE 'Місць: ' END || $3, \
+            e.id, '/organizer/' || e.id \
+         FROM events e LEFT JOIN user_prefs p ON p.user_id = e.organizer_id \
+         WHERE e.id = $1 AND e.organizer_id IS NOT NULL AND e.organizer_id <> $2",
+        title = event_title_cut_sql(),
+    );
+    sqlx::query(&sql)
+        .bind(event_id)
+        .bind(booker)
+        .bind(places.to_string())
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// `GET /api/me/notifications` — newest first (capped at 100).
 pub async fn my_notifications(
     user: CurrentUser,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<Notification>>, AppError> {
-    let items: Vec<Notification> = sqlx::query_as(
-        "SELECT id, kind, title, body, event_id, actor_id, read, created_at \
-         FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100",
+    let rows: Vec<NotificationRow> = sqlx::query_as(
+        "SELECT n.id, n.kind, n.title, n.body, n.event_id, n.actor_id, n.read, n.created_at, n.link, \
+            g.id AS open_gift \
+         FROM notifications n \
+         LEFT JOIN ticket_gifts g ON g.id = n.gift_id AND g.status = 'pending' AND g.expires_at > now() \
+         WHERE n.user_id = $1 ORDER BY n.created_at DESC LIMIT 100",
     )
     .bind(user.id)
     .fetch_all(&st.db)
     .await?;
+    let items = rows
+        .into_iter()
+        .map(|r| Notification {
+            id: r.id,
+            kind: r.kind,
+            title: r.title,
+            body: r.body,
+            event_id: r.event_id,
+            actor_id: r.actor_id,
+            read: r.read,
+            created_at: r.created_at,
+            link: r
+                .open_gift
+                .map(|g| format!("/g/{}", crate::tickets::claim_token(&st.jwt_secret, g)))
+                .or(r.link),
+        })
+        .collect();
     Ok(Json(items))
 }
 

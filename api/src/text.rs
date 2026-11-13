@@ -12,7 +12,6 @@ use axum::body::{to_bytes, Body};
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use serde_json::Value;
 
 use crate::error::AppError;
 
@@ -74,24 +73,49 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     out
 }
 
-fn value_has_nul(v: &Value) -> bool {
-    match v {
-        Value::String(s) => s.contains('\0'),
-        Value::Array(items) => items.iter().any(value_has_nul),
-        Value::Object(map) => map.iter().any(|(k, v)| k.contains('\0') || value_has_nul(v)),
-        _ => false,
-    }
-}
-
-/// True when a JSON body decodes to a string (or key) holding NUL. A raw NUL byte is invalid
-/// JSON and fails at the extractor; inside a string NUL can only arrive as the `\u0000` escape,
-/// so a body without that escape is skipped without parsing. A body that does not parse is left
-/// to the handler's own extractor (its 400/422 answers stay as they were).
+/// True when a JSON body holds a NUL inside a string or key (TASK-305 F7, R7). A raw NUL byte is
+/// invalid JSON and fails at the extractor; inside a string NUL can only arrive as the `\u0000`
+/// escape. One pass over the bytes, tracking whether it is inside a string and skipping each
+/// escaped character, so `\\u0000` (an escaped backslash, then text) is not NUL. Nothing is
+/// allocated and nothing is parsed, so no size or nesting depth makes it slow or makes it give up
+/// (the earlier `serde_json::Value` parse built the whole tree and returned "clean" past its
+/// recursion limit). Only a string that closes counts: a body cut off inside its string is left
+/// to the handler's own extractor (400), as before.
 pub fn json_has_nul(bytes: &[u8]) -> bool {
     if !bytes.windows(6).any(|w| w == b"\\u0000") {
         return false;
     }
-    serde_json::from_slice::<Value>(bytes).is_ok_and(|v| value_has_nul(&v))
+    let mut in_string = false;
+    let mut nul_here = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match (in_string, bytes[i]) {
+            (false, b'"') => {
+                in_string = true;
+                nul_here = false;
+                i += 1;
+            }
+            (false, _) => i += 1,
+            (true, b'"') => {
+                if nul_here {
+                    return true;
+                }
+                in_string = false;
+                i += 1;
+            }
+            (true, b'\\') => {
+                if bytes.get(i + 1..i + 6) == Some(b"u0000".as_slice()) {
+                    nul_here = true;
+                    i += 6;
+                } else {
+                    // Any other escape: the backslash and the escaped byte (`\"` does not close).
+                    i += 2;
+                }
+            }
+            (true, _) => i += 1,
+        }
+    }
+    false
 }
 
 fn uri_has_nul(uri: &axum::http::Uri) -> bool {
@@ -165,5 +189,53 @@ mod tests {
         );
         assert!(!json_has_nul(br#"{"a":"fine"}"#));
         assert!(!json_has_nul(b"{\"a\":\"\\u0000"), "unparseable: left to the handler");
+    }
+
+    /// R7: the scan tracks escapes, so an escaped quote does not end the string early and an
+    /// escaped backslash does not start an escape.
+    #[test]
+    fn json_nul_scan_follows_escapes() {
+        assert!(
+            json_has_nul(br#"{"a":"q\"\u0000"}"#),
+            "after an escaped quote, still inside the string"
+        );
+        assert!(
+            json_has_nul(br#"["x\\", "\u0000"]"#),
+            "a string ending in an escaped backslash closes"
+        );
+        assert!(
+            !json_has_nul(br#"{"a":"\\\\u0000"}"#),
+            "two escaped backslashes, then text"
+        );
+        assert!(json_has_nul(br#"{"a":"\\\u0000"}"#), "an escaped backslash, then NUL");
+        assert!(
+            !json_has_nul(br#"{"a":1} \u0000"#),
+            "outside any string: not JSON text, left alone"
+        );
+    }
+
+    /// R7: a 2 MB array nested far past serde_json's recursion limit (128) is still scanned to
+    /// the end. The previous `serde_json::Value` parse gave up on it and let the NUL through.
+    #[test]
+    fn json_nul_scan_handles_a_2mb_deep_array_without_parsing() {
+        let depth = 1_000_000;
+        let mut body = Vec::with_capacity(2 * depth + 16);
+        body.extend(std::iter::repeat_n(b'[', depth));
+        body.extend_from_slice(br#""a\u0000b""#);
+        body.extend(std::iter::repeat_n(b']', depth));
+        assert!(body.len() > 2_000_000);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&body).is_err(),
+            "too deep for a Value parse"
+        );
+        let started = std::time::Instant::now();
+        assert!(json_has_nul(&body), "[SEC] the NUL at depth 1 000 000 is found");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        let clean: Vec<u8> = body.iter().map(|&b| if b == b'\\' { b'x' } else { b }).collect();
+        assert!(!json_has_nul(&clean));
     }
 }

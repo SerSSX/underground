@@ -14,6 +14,12 @@ use crate::state::AppState;
 /// Review text cap, in characters (TASK-305 F10).
 const MAX_TEXT_LEN: usize = 2000;
 
+/// SQL (reviews aliased `r`): the review counts — its author still holds an active or used place
+/// at that event (TASK-305 R4a). A review whose place was returned, cancelled or handed on stays
+/// stored but leaves the event's list, its average and the organiser's rating.
+pub const COUNTED_REVIEW_SQL: &str = "EXISTS (SELECT 1 FROM tickets ct \
+    WHERE ct.event_id = r.event_id AND ct.owner_id = r.author_id AND ct.status IN ('active', 'used'))";
+
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Review {
     pub id: Uuid,
@@ -75,7 +81,9 @@ pub async fn post_review(
     if !(1..=5).contains(&req.rating) {
         return Err(AppError::Validation("rating must be between 1 and 5".into()));
     }
-    let text = req.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    // Controls and bidi controls out, newlines kept; nothing visible means no text (TASK-305 R5).
+    let text = req.text.as_deref().map(crate::text::clean_multiline);
+    let text = text.as_deref().filter(|t| !crate::text::is_blank(t));
     if text.is_some_and(|t| t.chars().count() > MAX_TEXT_LEN) {
         return Err(AppError::Validation(format!(
             "text must be at most {MAX_TEXT_LEN} chars"
@@ -87,22 +95,30 @@ pub async fn post_review(
             .fetch_optional(&st.db)
             .await?;
     let (starts_at, organizer_id) = row.ok_or(AppError::NotFound)?;
-    // Reviews open once the event has started — a rating you cannot fake ahead of time.
-    if starts_at.is_some_and(|t| t > Utc::now()) {
+    // Reviews open once the event has started — a rating you cannot fake ahead of time. An event
+    // without a start date never opens them (TASK-305 R4b).
+    let Some(starts_at) = starts_at else {
+        return Err(AppError::Validation(
+            "у події немає дати початку — відгуки недоступні".into(),
+        ));
+    };
+    if starts_at > Utc::now() {
         return Err(AppError::Validation("відгуки відкриються після початку події".into()));
     }
     ensure_guest(&st, req.event_id, organizer_id, user.id).await?;
-    let review: Review = sqlx::query_as(
+    let review: Review = sqlx::query_as(concat!(
         "WITH upserted AS ( \
             INSERT INTO reviews (event_id, author_id, rating, text) VALUES ($1, $2, $3, $4) \
             ON CONFLICT (event_id, author_id) DO UPDATE SET rating = $3, text = $4, created_at = now() \
             RETURNING id, event_id, author_id, rating, text, created_at \
          ) \
          SELECT r.id, r.event_id, r.author_id, \
-            CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
+            ",
+        crate::display_name_sql!(),
+        " AS author_name, \
             r.rating, r.text, r.created_at \
-         FROM upserted r JOIN users u ON u.id = r.author_id",
-    )
+         FROM upserted r JOIN users u ON u.id = r.author_id"
+    ))
     .bind(req.event_id)
     .bind(user.id)
     .bind(req.rating)
@@ -130,16 +146,14 @@ pub async fn event_reviews(
     State(st): State<AppState>,
     Path(event_id): Path<Uuid>,
 ) -> Result<Json<EventReviews>, AppError> {
-    let reviews: Vec<Review> = sqlx::query_as(
-        "SELECT r.id, r.event_id, r.author_id, \
-            CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
-            r.rating, r.text, r.created_at \
+    let sql = format!(
+        "SELECT r.id, r.event_id, r.author_id, {name} AS author_name, r.rating, r.text, r.created_at \
          FROM reviews r JOIN users u ON u.id = r.author_id \
-         WHERE r.event_id = $1 ORDER BY r.created_at DESC",
-    )
-    .bind(event_id)
-    .fetch_all(&st.db)
-    .await?;
+         WHERE r.event_id = $1 AND {counted} ORDER BY r.created_at DESC",
+        name = crate::users::DISPLAY_NAME_SQL,
+        counted = COUNTED_REVIEW_SQL,
+    );
+    let reviews: Vec<Review> = sqlx::query_as(&sql).bind(event_id).fetch_all(&st.db).await?;
     let count = reviews.len() as i64;
     let avg_rating = (count > 0).then(|| reviews.iter().map(|r| f64::from(r.rating)).sum::<f64>() / count as f64);
     Ok(Json(EventReviews {

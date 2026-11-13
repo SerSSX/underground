@@ -22,7 +22,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::auth::{hash_password, normalize_email, verify_password, CurrentUser};
+use crate::auth::{hash_password_async, normalize_email, verify_password_async, CurrentUser};
 use crate::error::AppError;
 use crate::ratelimit::{env_limit, hit, ClientIp};
 use crate::state::AppState;
@@ -162,7 +162,7 @@ pub async fn reset_password(
     )
     .await?;
     check_new_password(&req.password)?;
-    let pw_hash = hash_password(&req.password)?;
+    let pw_hash = hash_password_async(&req.password).await?;
     // Whole reset is one transaction: claim token → rotate password → invalidate other tokens.
     let mut tx = st.db.begin().await?;
     // Atomically claim the token: only an unexpired, unused row matches, and stamping used_at in
@@ -244,7 +244,7 @@ pub async fn change_password(
             if current.is_empty() {
                 return Err(AppError::Validation("введіть поточний пароль".into()));
             }
-            if !verify_password(current, &hash) {
+            if !verify_password_async(current, Some(&hash)).await? {
                 return Err(AppError::Validation("неправильний поточний пароль".into()));
             }
         }
@@ -254,7 +254,7 @@ pub async fn change_password(
             }
         }
     }
-    let pw_hash = hash_password(&req.new)?;
+    let pw_hash = hash_password_async(&req.new).await?;
     // One transaction: the new password, the watermark and the retired reset links land together.
     let mut tx = st.db.begin().await?;
     // The watermark goes one whole second past now; the new token is minted AT that second.

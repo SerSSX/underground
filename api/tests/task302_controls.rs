@@ -694,6 +694,27 @@ async fn ct3_failure_mid_booking_rolls_back_everything(pool: PgPool) {
 
 // ── CT4: recipient cap on transfer and claim ─────────────────────────────────────────
 
+/// TASK-305 R2: the recipient accepts the newest place offered to them, through the claim link
+/// in their alert.
+async fn accept_offer(app: &Router, token: &str) -> (StatusCode, Value) {
+    let (_, alerts) = call(app, "GET", "/api/me/notifications", Some(token), None).await;
+    let offer = alerts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["kind"] == "place_offer")
+        .expect("an offer alert");
+    let claim = offer["link"].as_str().unwrap().strip_prefix("/g/").unwrap().to_string();
+    call(
+        app,
+        "POST",
+        "/api/tickets/claim",
+        Some(token),
+        Some(json!({ "token": claim })),
+    )
+    .await
+}
+
 /// T01, T02, C11.
 #[sqlx::test(migrations = "./migrations")]
 async fn ct4_receiving_places_respects_the_recipient_cap(pool: PgPool) {
@@ -701,13 +722,16 @@ async fn ct4_receiving_places_respects_the_recipient_cap(pool: PgPool) {
     let (_, org) = user(&pool, "o@x.co", "Org").await;
     let (u, ut) = user(&pool, "u@x.co", "Uma").await;
     let (v, vt) = user(&pool, "v@x.co", "Vik").await;
-    let (x, _) = user(&pool, "x@x.co", "Xen").await;
+    let (x, xt) = user(&pool, "x@x.co", "Xen").await;
     let event = free_event(&app, &org, 30).await;
 
     assert_eq!(reserve(&app, &vt, event, 5).await.0, StatusCode::CREATED);
     assert_eq!(reserve(&app, &ut, event, 5).await.0, StatusCode::CREATED);
     let mine = ticket_ids(&pool, u, event, "active").await;
 
+    // TASK-305 R2 (owner decision 2026-11-14): a transfer is an offer. The sender gets the same
+    // 202 for a full recipient and an unknown email (was: the same 422 refusal); the full
+    // recipient's acceptance is what is refused, and the ticket stays the sender's.
     let (s, body) = call(
         &app,
         "POST",
@@ -716,17 +740,11 @@ async fn ct4_receiving_places_respects_the_recipient_cap(pool: PgPool) {
         Some(json!({"email":"v@x.co"})),
     )
     .await;
-    // Fix batch 2, N6: refused with the same answer as an unknown email (was 409 naming the
-    // recipient's holdings), so the sender learns nothing about a third party.
-    assert_eq!(
-        s,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "[SEC] transfer to a full recipient: {body}"
-    );
+    assert_eq!(s, StatusCode::ACCEPTED, "transfer to a full recipient: {body}");
     let (s2, unknown) = call(
         &app,
         "POST",
-        &format!("/api/tickets/{}/transfer", mine[0]),
+        &format!("/api/tickets/{}/transfer", mine[3]),
         Some(&ut),
         Some(json!({"email":"nobody-here@x.co"})),
     )
@@ -736,7 +754,9 @@ async fn ct4_receiving_places_respects_the_recipient_cap(pool: PgPool) {
         (s, &body),
         "[PII] indistinguishable from an unknown email"
     );
-    assert_eq!(status_of(&pool, mine[0]).await, ("active".to_string(), u));
+    let (s, body) = accept_offer(&app, &vt).await;
+    assert_eq!(s, StatusCode::CONFLICT, "[SEC] acceptance by a full recipient: {body}");
+    assert_eq!(status_of(&pool, mine[0]).await, ("pending_claim".to_string(), u));
     assert_eq!(holdings(&pool, v, event).await, 5);
 
     let (s, gift) = call(
@@ -775,7 +795,8 @@ async fn ct4_receiving_places_respects_the_recipient_cap(pool: PgPool) {
         Some(json!({"email":"x@x.co"})),
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
+    assert_eq!(s, StatusCode::ACCEPTED);
+    assert_eq!(accept_offer(&app, &xt).await.0, StatusCode::OK);
     assert_eq!(holdings(&pool, x, event).await, 1);
     assert_eq!(reserve(&app, &ut, event, 1).await.0, StatusCode::CREATED);
     assert_eq!(holdings(&pool, u, event).await, 5);
@@ -924,7 +945,12 @@ async fn p14_transfer_and_gift_are_rate_limited(pool: PgPool) {
             Some(json!({"email": format!("nobody{i}@x.co")})),
         )
         .await;
-        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+        // TASK-305 R2 (owner decision 2026-11-14): every transfer is "sent" (was the 422 refusal
+        // for an unknown email); the offer is cancelled so the next probe starts from an active
+        // ticket. Cancelling does not count against the bucket.
+        assert_eq!(s, StatusCode::ACCEPTED);
+        let (s, _) = call(&app, "DELETE", &format!("/api/tickets/{ticket}/gift"), Some(&ut), None).await;
+        assert_eq!(s, StatusCode::OK);
     }
     let (s, _) = call(
         &app,
@@ -1050,14 +1076,21 @@ async fn ct7_guest_list_counts_people_and_places(pool: PgPool) {
         "Uma, Ivan, Ivan, the SQL-ish name; Wes (returned only) absent: {list}"
     );
     for row in rows {
+        // TASK-305: the row carries the attendee's account id for messaging (coordinator-approved
+        // 2026-11-14; was the four keys without `user_id`). Still no email.
         assert_eq!(
             keys(row),
-            set(&["name", "places", "checked_in", "booked_at"]),
+            set(&["user_id", "name", "places", "checked_in", "booked_at"]),
             "[PII] {row}"
         );
     }
     let uma = rows.iter().find(|r| r["name"] == "Uma").unwrap();
     assert_eq!((uma["places"].as_i64(), uma["checked_in"].as_i64()), (Some(4), Some(1)));
+    assert_eq!(
+        uma["user_id"],
+        json!(u),
+        "the row names the attendee's account (TASK-305)"
+    );
     let ivans: Vec<&Value> = rows.iter().filter(|r| r["name"] == "Ivan").collect();
     assert_eq!(ivans.len(), 2, "grouped by person, not by name");
     assert!(ivans.iter().all(|r| r["places"] == 2 && r["checked_in"] == 0));
@@ -1095,17 +1128,19 @@ async fn ct7_guest_list_is_organiser_only(pool: PgPool) {
     );
 }
 
-/// G09 / CT8: a name that is empty, the email local part (any case) or the whole email is shown
-/// as "Гість" — on the guest list, the per-ticket list and the scan response.
+/// G09 / CT8: a placeholder name is shown as "Гість" — on the guest list, the per-ticket list and
+/// the scan response. TASK-305 R1 (docs/decisions.md 2026-11-14): a placeholder is now a blank name
+/// or «Гість» itself in any case (was: empty, the email's local part or the whole email; a typed
+/// name equal to the local part is now shown, see task305_round2.rs).
 #[sqlx::test(migrations = "./migrations")]
 async fn ct8_placeholder_names_are_shown_as_guest(pool: PgPool) {
     let app = make_app(pool.clone());
     let (_, org) = user(&pool, "o@x.co", "Org").await;
     let event = free_event(&app, &org, 30).await;
     let people = [
-        ("pii.localpart.9c1@x.co", "pii.localpart.9c1"),
-        ("pii.localpart.9c2@x.co", "PII.LocalPart.9C2"),
-        ("pii.localpart.9c3@x.co", "pii.localpart.9c3@x.co"),
+        ("pii.localpart.9c1@x.co", ""),
+        ("pii.localpart.9c2@x.co", " ГІСТЬ "),
+        ("pii.localpart.9c3@x.co", "гість"),
         ("pii.localpart.9c4@x.co", "   "),
         ("olena.k@x.co", "Олена"),
     ];
@@ -1209,7 +1244,9 @@ async fn ct10_previous_owner_qr_is_dead(pool: PgPool) {
         Some(json!({"email":"v@x.co"})),
     )
     .await;
-    assert_eq!(s, StatusCode::OK);
+    // TASK-305 R2: the transfer is an offer; the QR dies when the recipient accepts it.
+    assert_eq!(s, StatusCode::ACCEPTED);
+    assert_eq!(accept_offer(&app, &vt).await.0, StatusCode::OK);
     let (_, v) = scan(&app, &org, event, &old).await;
     assert_eq!(
         (v["valid"].clone(), v["reason"].clone()),
@@ -1559,7 +1596,9 @@ async fn ct15_no_email_reaches_organiser_or_staff(pool: PgPool) {
     let (_, st) = user(&pool, &format!("staff.{MARK}@x.co"), "Stu").await;
     let (u, ut) = user(&pool, &format!("uma.{MARK}@x.co"), "Uma").await;
     let (gone, gone_t) = user(&pool, &format!("gone.{MARK}@x.co"), "Gone").await;
-    let (_, lp) = user(&pool, &format!("{MARK}@x.co"), MARK).await;
+    // TASK-305 R1 (docs/decisions.md 2026-11-14): a typed name is always shown, so the placeholder
+    // account now has a blank name (was: its name was the email's local part, MARK).
+    let (_, lp) = user(&pool, &format!("{MARK}@x.co"), "").await;
     let event = free_event(&app, &org, 30).await;
     let other = free_event(&app, &org, 30).await;
 
@@ -1649,7 +1688,8 @@ async fn ct15_no_email_reaches_organiser_or_staff(pool: PgPool) {
     let guests = parse(&t);
     for row in guests.as_array().unwrap() {
         assert!(
-            keys(row).is_subset(&set(&["name", "places", "checked_in", "booked_at"])),
+            // TASK-305: `user_id` added (coordinator-approved 2026-11-14).
+            keys(row).is_subset(&set(&["user_id", "name", "places", "checked_in", "booked_at"])),
             "[PII] {row}"
         );
     }
