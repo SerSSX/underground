@@ -102,9 +102,11 @@ w('  is_organizer=EXCLUDED.is_organizer, verified=EXCLUDED.verified, dob=EXCLUDE
 w('')
 
 w('-- Interests + home city: these are the inputs /api/discover ranks on. No prefs = cold feed.')
-w('INSERT INTO user_prefs (user_id, categories, city, country, locale) VALUES')
-w(people.map((p) => `  (${uref(p.email)}, ${arr(p.interests)}, ${q(p.city)}, 'Україна', 'uk')`).join(',\n'))
-w('ON CONFLICT (user_id) DO UPDATE SET categories=EXCLUDED.categories, city=EXCLUDED.city, country=EXCLUDED.country;')
+// onboarded = true (TASK-303 N1): seeded people have interests and a city, so the web must not send them to
+// onboarding (the column defaults to false for rows the API creates at sign-up).
+w('INSERT INTO user_prefs (user_id, categories, city, country, locale, onboarded) VALUES')
+w(people.map((p) => `  (${uref(p.email)}, ${arr(p.interests)}, ${q(p.city)}, 'Україна', 'uk', true)`).join(',\n'))
+w('ON CONFLICT (user_id) DO UPDATE SET categories=EXCLUDED.categories, city=EXCLUDED.city, country=EXCLUDED.country, onboarded=true;')
 w('')
 
 // ---------------------------------------------------------------- events
@@ -285,10 +287,10 @@ w('    WHERE e.starts_at > now() ORDER BY t.event_id, e.starts_at LIMIT 4);')
 w("UPDATE orders o SET buyer_id=(SELECT id FROM users WHERE lower(email)='user@underground.dev')")
 w('  FROM tickets t WHERE t.id=o.ticket_id')
 w("    AND t.owner_id=(SELECT id FROM users WHERE lower(email)='user@underground.dev');")
-w('INSERT INTO user_prefs (user_id, categories, city, country, locale)')
-w("  SELECT id, ARRAY['electronic','dj set','stand-up','exhibition','food & drink']::text[], 'Київ', 'Україна', 'uk'")
+w('INSERT INTO user_prefs (user_id, categories, city, country, locale, onboarded)')
+w("  SELECT id, ARRAY['electronic','dj set','stand-up','exhibition','food & drink']::text[], 'Київ', 'Україна', 'uk', true")
 w("  FROM users WHERE lower(email) IN ('user@underground.dev','maker@underground.dev','admin@underground.dev')")
-w('ON CONFLICT (user_id) DO UPDATE SET categories=EXCLUDED.categories, city=EXCLUDED.city, country=EXCLUDED.country;')
+w('ON CONFLICT (user_id) DO UPDATE SET categories=EXCLUDED.categories, city=EXCLUDED.city, country=EXCLUDED.country, onboarded=true;')
 w('INSERT INTO follows (follower_id, followee_id, created_at)')
 w("  SELECT u.id, o.id, now() - interval '5 days' FROM users u, users o")
 w("  WHERE lower(u.email)='user@underground.dev' AND o.is_organizer AND o.id <> u.id")

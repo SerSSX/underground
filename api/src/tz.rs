@@ -9,9 +9,13 @@
 
 use std::sync::OnceLock;
 
-fn finder() -> &'static tzf_rs::DefaultFinder {
-    static FINDER: OnceLock<tzf_rs::DefaultFinder> = OnceLock::new();
-    FINDER.get_or_init(tzf_rs::DefaultFinder::new)
+/// `EmbeddedFinder` (TASK-303 N3): it queries the bundled ~4 MB `.tzb` data in place, where
+/// `DefaultFinder` expands every polygon into heap memory at start-up. tzf-rs documents identical
+/// answers (only slower on border points, microseconds); `embedded_matches_default_finder` below
+/// checks that on a world grid plus the border cases.
+fn finder() -> &'static tzf_rs::EmbeddedFinder {
+    static FINDER: OnceLock<tzf_rs::EmbeddedFinder> = OnceLock::new();
+    FINDER.get_or_init(tzf_rs::EmbeddedFinder::new)
 }
 
 /// Load the boundary data now (it takes a moment) rather than on the first request.
@@ -297,5 +301,36 @@ mod tests {
         assert!(haversine_km(50.45, 30.52, 50.45, 30.52) < 0.001);
         let kyiv_london = haversine_km(50.4501, 30.5234, 51.5074, -0.1278);
         assert!((kyiv_london - 2133.0).abs() < 20.0, "{kyiv_london}");
+    }
+
+    /// N3: the low-memory finder answers exactly as the default one, on a 0.5° world grid (~260k
+    /// points, land and sea) plus jittered points near the tested borders.
+    #[test]
+    fn embedded_matches_default_finder() {
+        let full = tzf_rs::DefaultFinder::new();
+        let small = finder();
+        let mut checked = 0;
+        let mut lat = -89.75;
+        while lat < 90.0 {
+            let mut lng = -179.75;
+            while lng < 180.0 {
+                assert_eq!(small.get_tz_name(lng, lat), full.get_tz_name(lng, lat), "{lat},{lng}");
+                checked += 1;
+                lng += 0.5;
+            }
+            lat += 0.5;
+        }
+        for (lat, lng) in [
+            (42.9634, -85.6681),
+            (30.4383, -84.2807),
+            (35.2220, -101.8313),
+            (55.7596, -120.2353),
+            (51.5331, 46.0342),
+        ] {
+            for d in [-0.05, -0.01, 0.0, 0.01, 0.05] {
+                assert_eq!(small.get_tz_name(lng + d, lat - d), full.get_tz_name(lng + d, lat - d));
+            }
+        }
+        assert!(checked > 250_000, "{checked}");
     }
 }

@@ -14,6 +14,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/version", get(version))
+        .route("/api/features", get(features))
         .route("/api/events", get(events::list_events).post(events::create_event))
         .route(
             "/api/events/:id",
@@ -139,6 +140,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/email/verify-code", post(emailcode::verify_code))
         .route("/api/auth/forgot-password", post(passwords::forgot_password))
         .route("/api/auth/reset-password", post(passwords::reset_password))
+        .route("/api/me/password", post(passwords::change_password))
         .route("/api/me", get(auth::me).patch(auth::patch_me).delete(gdpr::delete_me))
         .route("/api/me/export", get(gdpr::export_me))
         .with_state(state)
@@ -151,6 +153,22 @@ struct Health {
 
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
+}
+
+/// What this deployment can do right now, read at runtime (TASK-304): the web offers code login
+/// and "Forgot password?" only when `email` is true.
+#[derive(Serialize)]
+struct Features {
+    email: bool,
+}
+
+async fn features() -> ([(axum::http::HeaderName, &'static str); 1], Json<Features>) {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Json(Features {
+            email: crate::mail::enabled(),
+        }),
+    )
 }
 
 #[derive(Serialize)]

@@ -51,6 +51,14 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Point → IANA time zone (TASK-303 G1 fix batch). Code MIT; the bundled boundary data (tzf-dist)
 # is MIT AND ODbL-1.0, from OpenStreetMap: owner accepted ODbL on 2026-11-13 (docs/decisions.md).
 tzf-rs = { version = "2.3", default-features = false, features = ["bundled"] }
+# Uploaded images (TASK-304): decode JPEG/PNG/WebP in pure Rust (zune-jpeg, png, image-webp), resize,
+# drop metadata. MIT OR Apache-2.0. No default features: only the three decoders, no rayon.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Lossy WebP ENCODING of our own decoded pixels via libwebp (vendored C, BSD-3-Clause; crate MIT OR
+# Apache-2.0, libwebp-sys MIT). Untrusted bytes are never handed to libwebp: decoding is image's Rust code.
+webp = { version = "0.3", default-features = false }
+# NFC for the event city compare (TASK-303 N2). Already in the tree via sqlx's stringprep; MIT OR Apache-2.0.
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

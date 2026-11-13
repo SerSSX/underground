@@ -44,11 +44,16 @@ pub struct Claims {
 }
 
 pub fn issue_token(user_id: Uuid, secret: &str) -> Result<String, AppError> {
-    let now = Utc::now().timestamp();
+    issue_token_at(user_id, secret, Utc::now().timestamp())
+}
+
+/// A token whose `iat` is `iat` (unix seconds). Used after a password change, where `iat` must
+/// equal the new `tokens_valid_after` watermark (one second ahead of now).
+pub fn issue_token_at(user_id: Uuid, secret: &str, iat: i64) -> Result<String, AppError> {
     let claims = Claims {
         sub: user_id.to_string(),
-        exp: (now + TOKEN_TTL_SECS) as usize,
-        iat: now,
+        exp: (iat + TOKEN_TTL_SECS) as usize,
+        iat,
     };
     // Pin HS256 explicitly on both sides (encode + decode) to prevent algorithm-substitution.
     encode(

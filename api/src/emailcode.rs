@@ -41,6 +41,8 @@ fn generate_code() -> String {
 #[derive(Deserialize)]
 pub struct RequestCodeReq {
     pub email: String,
+    /// The UI language; the mail uses the account's stored locale when there is one, else this.
+    pub locale: Option<String>,
 }
 
 /// `POST /api/auth/email/request-code` — email a login code. Always 204 (anti-enumeration).
@@ -78,8 +80,16 @@ pub async fn request_code(
             .bind(expires)
             .execute(&st.db)
             .await?;
-        tracing::info!(target: "email", to = %email, "login code queued");
-        tracing::debug!(target: "email", %code, "login code (dev)");
+        // The code itself is only in the mail (sent from a background task, so this answer does
+        // not wait on it); logs never carry it nor the address.
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT p.locale FROM users u JOIN user_prefs p ON p.user_id = u.id WHERE u.email = $1 AND u.blocked = false",
+        )
+        .bind(&email)
+        .fetch_optional(&st.db)
+        .await?;
+        let locale = stored.or(req.locale);
+        crate::mail::enqueue(crate::mail::code_mail(locale.as_deref(), &email, &code, CODE_TTL_MINS));
     }
     Ok(StatusCode::NO_CONTENT)
 }

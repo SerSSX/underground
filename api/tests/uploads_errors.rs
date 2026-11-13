@@ -32,10 +32,18 @@ async fn register_token(app: &Router) -> String {
 }
 
 fn upload_req(token: &str) -> Request<Body> {
-    let body = format!(
+    // TASK-304: a real PNG (uploads are decoded now; fake bytes would be refused before the write).
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(4, 4)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let mut body = format!(
         "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n\
-         Content-Type: image/png\r\n\r\npngdata\r\n--{BOUNDARY}--\r\n"
-    );
+         Content-Type: image/png\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&png.into_inner());
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
     Request::post("/api/uploads")
         .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
         .header("authorization", format!("Bearer {token}"))

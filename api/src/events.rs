@@ -482,8 +482,7 @@ struct EditBase {
 /// (ignoring case and surrounding spaces), a different point, country or country code. A client
 /// that re-sends the stored place unchanged moves nothing.
 fn place_changed(req: &UpdateEventReq, point: Option<(f64, f64)>, cur: &EditBase) -> bool {
-    let norm = |s: Option<&str>| s.map(|v| v.trim().to_lowercase()).unwrap_or_default();
-    let city = req.city.is_some() && norm(req.city.as_deref()) != norm(cur.city.as_deref());
+    let city = req.city.is_some() && city_key(req.city.as_deref()) != city_key(cur.city.as_deref());
     let new_point = point.is_some_and(|(a, b)| match cur.lat.zip(cur.lng) {
         Some((c, d)) => (a - c).abs() > 1e-7 || (b - d).abs() > 1e-7,
         None => true,
@@ -492,6 +491,14 @@ fn place_changed(req: &UpdateEventReq, point: Option<(f64, f64)>, cur: &EditBase
     let code = non_empty(req.country_code.as_deref())
         .is_some_and(|c| !cur.country_code.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(c)));
     city || new_point || country || code
+}
+
+/// A city name for comparison (TASK-303 N2): NFC, inner whitespace runs collapsed to one space,
+/// trimmed, lower-cased. "Нью  Йорк", " нью йорк" and a decomposed "й" compare equal.
+fn city_key(s: Option<&str>) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nfc: String = s.unwrap_or_default().nfc().collect();
+    nfc.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
 }
 
 /// Zero-width and bidi-control characters out of the free-text place fields (F11).
@@ -668,4 +675,19 @@ pub async fn delete_event(
         .execute(&st.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::city_key;
+
+    #[test]
+    fn city_key_collapses_whitespace_case_and_unicode_forms() {
+        assert_eq!(city_key(Some("  Нью   Йорк ")), city_key(Some("нью йорк")));
+        assert_eq!(city_key(Some("New\tYork")), "new york");
+        // "й" precomposed (U+0439) vs и + combining breve (U+0438 U+0306).
+        assert_eq!(city_key(Some("Київ\u{0439}")), city_key(Some("Київ\u{0438}\u{0306}")));
+        assert_ne!(city_key(Some("Lviv")), city_key(Some("Kyiv")));
+        assert_eq!(city_key(None), "");
+    }
 }

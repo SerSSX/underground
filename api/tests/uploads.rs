@@ -11,6 +11,13 @@ use underground_api::state::AppState;
 
 const BOUNDARY: &str = "XTESTBOUNDARY";
 
+/// A real 8×8 picture in `format` (TASK-304: uploads are decoded, so fake bytes no longer pass).
+fn real_image(format: image::ImageFormat) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(8, 8).write_to(&mut out, format).unwrap();
+    out.into_inner()
+}
+
 fn make_app(pool: PgPool) -> Router {
     std::env::set_var("UPLOADS_DIR", "/tmp/underground-test-uploads");
     router(AppState {
@@ -79,12 +86,13 @@ async fn upload_requires_auth(pool: PgPool) {
 async fn upload_then_serve(pool: PgPool) {
     let app = make_app(pool);
     let token = register_token(&app).await;
-    let body = multipart_body("file", "poster.png", "image/png", b"\x89PNG fake image bytes");
+    let body = multipart_body("file", "poster.png", "image/png", &real_image(image::ImageFormat::Png));
     let (status, v) = send(&app, upload_req(Some(&token), body)).await;
     assert_eq!(status, StatusCode::CREATED);
     let url = v["url"].as_str().unwrap();
+    // TASK-304 (owner-approved behaviour change): every upload is stored as WebP.
     assert!(
-        url.contains("/uploads/") && url.ends_with(".png"),
+        url.contains("/uploads/") && url.ends_with(".webp"),
         "absolute url: {url}"
     );
 
@@ -97,15 +105,20 @@ async fn upload_then_serve(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(&bytes[..], b"\x89PNG fake image bytes");
+    // TASK-304: the stored file is the re-encoded WebP, not the bytes sent.
+    assert!(&bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP");
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn upload_accepts_jpeg_and_webp(pool: PgPool) {
     let app = make_app(pool);
     let token = register_token(&app).await;
-    for (content_type, ext) in [("image/jpeg", ".jpg"), ("image/webp", ".webp")] {
-        let body = multipart_body("file", "x", content_type, b"image-bytes");
+    // TASK-304: real pictures, and both are stored as WebP.
+    for (content_type, ext, format) in [
+        ("image/jpeg", ".webp", image::ImageFormat::Jpeg),
+        ("image/webp", ".webp", image::ImageFormat::WebP),
+    ] {
+        let body = multipart_body("file", "x", content_type, &real_image(format));
         let (status, v) = send(&app, upload_req(Some(&token), body)).await;
         assert_eq!(status, StatusCode::CREATED, "{content_type} accepted");
         assert!(

@@ -1,10 +1,14 @@
-//! Password reset (structural bet): time-boxed, single-use reset tokens delivered by email.
+//! Passwords (TASK-304): reset by emailed link, and change while signed in.
 //!
-//! Only the SHA-256 hash of a token is ever stored, so a DB read cannot reset anyone's
-//! password. `forgot_password` always returns 204 — including for unknown addresses — so the
-//! endpoint can't be used to enumerate which emails are registered. Email transport is the same
-//! documented SendGrid follow-up as order confirmations (env-gated in `main.rs`); for now the
-//! reset link is logged so the flow is observable end-to-end in dev.
+//! Reset tokens are single-use, valid for [`RESET_TTL_MINS`], and only their SHA-256 hash is
+//! stored, so a DB read cannot reset anyone's password. `forgot_password` answers 204 with an
+//! empty body for every address — registered, unknown or blocked — after the same rate-limit
+//! checks, and the mail goes out from a background task (`mail::enqueue`), so neither the answer
+//! nor its timing tells whether an account exists. Asking again replaces the previous link.
+//!
+//! Changing the password signs out every other session: `tokens_valid_after` moves one second
+//! past now, and the caller gets a fresh token minted at exactly that second (JWT `iat` has
+//! one-second resolution, so without the +1 s a token stolen in the same second would survive).
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -14,16 +18,24 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::auth::{hash_password, normalize_email};
+use crate::auth::{hash_password, normalize_email, verify_password, CurrentUser};
 use crate::error::AppError;
+use crate::ratelimit::{env_limit, hit, ClientIp};
 use crate::state::AppState;
 
 /// How long a reset link stays valid.
-const RESET_TTL_MINS: i64 = 60;
+pub const RESET_TTL_MINS: i64 = 30;
+/// Password length bounds (bytes). The upper one keeps argon2 from hashing megabytes.
+const MIN_PASSWORD: usize = 8;
+const MAX_PASSWORD: usize = 256;
+/// How recent a password-less user's sign-in must be to SET a first password (as for erasure).
+const RECENT_LOGIN_SECS: i64 = 10 * 60;
 
 #[derive(Deserialize)]
 pub struct ForgotReq {
     pub email: String,
+    /// The UI language; used for the mail only when the account has no stored locale.
+    pub locale: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -43,49 +55,100 @@ pub fn token_hash(raw: &str) -> String {
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
-/// Build the (subject, body) of a reset email (pure → unit-testable). The link carries the raw token.
-pub fn build_reset_email(base_url: &str, raw_token: &str) -> (String, String) {
-    let subject = "Скидання паролю underground".to_string();
-    let link = format!("{base_url}/reset-password?token={raw_token}");
-    let body = format!(
-        "Ви запросили скидання паролю.\n\nВідкрийте посилання (дійсне 60 хв):\n{link}\n\n\
-         Якщо це були не ви — просто проігноруйте цей лист.",
-    );
-    (subject, body)
+/// The reset page link; it carries the raw token (hex only, so no escaping is needed).
+pub fn reset_link(base_url: &str, raw_token: &str) -> String {
+    format!("{}/reset-password?token={raw_token}", base_url.trim_end_matches('/'))
 }
 
-/// `POST /api/auth/forgot-password` — start a reset. Always 204, even for unknown/blocked emails.
-pub async fn forgot_password(State(st): State<AppState>, Json(req): Json<ForgotReq>) -> Result<StatusCode, AppError> {
+/// The (subject, plain-text body) of the Ukrainian reset mail (pure → unit-testable).
+pub fn build_reset_email(base_url: &str, raw_token: &str) -> (String, String) {
+    let m = crate::mail::reset_mail(Some("uk"), "", &reset_link(base_url, raw_token), RESET_TTL_MINS);
+    (m.subject, m.text)
+}
+
+fn check_new_password(password: &str) -> Result<(), AppError> {
+    if password.len() < MIN_PASSWORD {
+        return Err(AppError::Validation("password must be at least 8 characters".into()));
+    }
+    if password.len() > MAX_PASSWORD {
+        return Err(AppError::Validation("пароль задовгий (до 256 символів)".into()));
+    }
+    Ok(())
+}
+
+/// `POST /api/auth/forgot-password` — start a reset. Always 204 with no body (unknown, blocked
+/// and registered addresses alike); 429 only from limits that count every address the same way.
+pub async fn forgot_password(
+    State(st): State<AppState>,
+    ip: ClientIp,
+    Json(req): Json<ForgotReq>,
+) -> Result<StatusCode, AppError> {
     let email = normalize_email(&req.email);
-    let user_id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND blocked = false")
-        .bind(&email)
-        .fetch_optional(&st.db)
-        .await?;
-    if let Some(uid) = user_id {
+    // Both limits run before the lookup, for every address: a 429 says nothing about accounts.
+    hit(
+        &st.db,
+        &format!("forgot-ip:{}", ip.0),
+        env_limit("FORGOT_LIMIT_PER_IP", 20),
+        3600,
+    )
+    .await?;
+    hit(
+        &st.db,
+        &format!("forgot:{email}"),
+        env_limit("FORGOT_LIMIT_PER_EMAIL", 5),
+        3600,
+    )
+    .await?;
+    let found: Option<(Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT u.id, p.locale FROM users u LEFT JOIN user_prefs p ON p.user_id = u.id \
+         WHERE u.email = $1 AND u.blocked = false",
+    )
+    .bind(&email)
+    .fetch_optional(&st.db)
+    .await?;
+    if let Some((uid, locale)) = found {
         // Two v4 UUIDs → ~244 bits of CSPRNG entropy in the raw token; only its hash is stored.
         let raw = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let expires = Utc::now() + Duration::minutes(RESET_TTL_MINS);
+        let mut tx = st.db.begin().await?;
+        // Only the newest link works: earlier unused ones are retired.
+        sqlx::query("UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL")
+            .bind(uid)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, $3)")
             .bind(uid)
             .bind(token_hash(&raw))
             .bind(expires)
-            .execute(&st.db)
+            .execute(&mut *tx)
             .await?;
-        let (subject, body) = build_reset_email(&web_base_url(), &raw);
-        // info: observable that a reset was sent, WITHOUT the token. The link (which contains the
-        // raw token) is debug-only so it never lands in production logs — a prod log reader must
-        // not be able to reset accounts. The real delivery is the env-gated SendGrid follow-up.
-        tracing::info!(target: "email", to = %email, subject = %subject, "password reset email queued");
-        tracing::debug!(target: "email", %body, "password reset link (dev)");
+        tx.commit().await?;
+        let locale = locale.or(req.locale);
+        let link = reset_link(&web_base_url(), &raw);
+        crate::mail::enqueue(crate::mail::reset_mail(
+            locale.as_deref(),
+            &email,
+            &link,
+            RESET_TTL_MINS,
+        ));
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/auth/reset-password` — complete a reset with a valid token + new password.
-pub async fn reset_password(State(st): State<AppState>, Json(req): Json<ResetReq>) -> Result<StatusCode, AppError> {
-    if req.password.len() < 8 {
-        return Err(AppError::Validation("password must be at least 8 characters".into()));
-    }
+pub async fn reset_password(
+    State(st): State<AppState>,
+    ip: ClientIp,
+    Json(req): Json<ResetReq>,
+) -> Result<StatusCode, AppError> {
+    hit(
+        &st.db,
+        &format!("reset-ip:{}", ip.0),
+        env_limit("RESET_LIMIT_PER_IP", 30),
+        3600,
+    )
+    .await?;
+    check_new_password(&req.password)?;
     let pw_hash = hash_password(&req.password)?;
     // Whole reset is one transaction: claim token → rotate password → invalidate other tokens.
     let mut tx = st.db.begin().await?;
@@ -121,6 +184,81 @@ pub async fn reset_password(State(st): State<AppState>, Json(req): Json<ResetReq
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct ChangeReq {
+    /// The current password; required when the account has one.
+    pub current: Option<String>,
+    pub new: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct ChangeResp {
+    /// A fresh token for this device: every token issued before the change no longer works.
+    pub token: String,
+}
+
+/// `POST /api/me/password` — change (or, for a password-less account, set) the password.
+///
+/// Password accounts must send the right `current` (wrong → 422, not 401, so a client never
+/// mistakes it for "signed out"). Password-less accounts (email code, Google) may set one only within
+/// 10 minutes of signing in (401 "sign in again" otherwise), as for account erasure. Every other
+/// session is signed out; the answer carries the new token for this one.
+pub async fn change_password(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Json(req): Json<ChangeReq>,
+) -> Result<Json<ChangeResp>, AppError> {
+    // Guessing the current password with a stolen token: 10 tries per hour per account.
+    hit(
+        &st.db,
+        &format!("pwchange:{}", user.id),
+        env_limit("PWCHANGE_LIMIT_PER_USER", 10),
+        3600,
+    )
+    .await?;
+    check_new_password(&req.new)?;
+    let hash: Option<String> = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 AND blocked = false")
+        .bind(user.id)
+        .fetch_optional(&st.db)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    match hash {
+        Some(hash) => {
+            let current = req.current.as_deref().unwrap_or("");
+            if current.is_empty() {
+                return Err(AppError::Validation("введіть поточний пароль".into()));
+            }
+            if !verify_password(current, &hash) {
+                return Err(AppError::Validation("неправильний поточний пароль".into()));
+            }
+        }
+        None => {
+            if Utc::now().timestamp() - user.iat > RECENT_LOGIN_SECS {
+                return Err(AppError::ReauthRequired("увійдіть ще раз, щоб задати пароль".into()));
+            }
+        }
+    }
+    let pw_hash = hash_password(&req.new)?;
+    // The watermark goes one whole second past now; the new token is minted AT that second.
+    let valid_after: chrono::DateTime<Utc> = sqlx::query_scalar(
+        "UPDATE users SET password_hash = $1, tokens_valid_after = date_trunc('second', now()) + interval '1 second' \
+         WHERE id = $2 AND blocked = false RETURNING tokens_valid_after",
+    )
+    .bind(&pw_hash)
+    .bind(user.id)
+    .fetch_optional(&st.db)
+    .await?
+    .ok_or(AppError::Unauthorized)?;
+    // A reset link asked for before the change must not undo it.
+    sqlx::query("UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL")
+        .bind(user.id)
+        .execute(&st.db)
+        .await?;
+    let token = crate::auth::issue_token_at(user.id, &st.jwt_secret, valid_after.timestamp())?;
+    crate::telemetry::log(&st.db, Some(user.id), "password_changed", serde_json::json!({})).await;
+    Ok(Json(ChangeResp { token }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +277,14 @@ mod tests {
         let (subject, body) = build_reset_email("https://app.example", "tok123");
         assert!(subject.contains("Скидання"));
         assert!(body.contains("https://app.example/reset-password?token=tok123"));
+    }
+
+    #[test]
+    fn password_bounds() {
+        assert!(check_new_password("1234567").is_err());
+        assert!(check_new_password("12345678").is_ok());
+        assert!(check_new_password(&"x".repeat(256)).is_ok());
+        assert!(check_new_password(&"x".repeat(257)).is_err());
     }
 
     #[test]

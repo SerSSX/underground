@@ -19,9 +19,13 @@ pub struct User {
     /// Date of birth (self-view only) — drives client-side age-gating (P1 #77).
     pub dob: Option<NaiveDate>,
     pub created_at: DateTime<Utc>,
+    /// Whether the account has a password (TASK-304): /account asks for the current one to change
+    /// it, or offers to set a first one. Never the hash itself.
+    pub has_password: bool,
 }
 
-const USER_COLS: &str = "id, email, name, role, avatar_url, bio, is_organizer, dob, created_at";
+const USER_COLS: &str =
+    "id, email, name, role, avatar_url, bio, is_organizer, dob, created_at, (password_hash IS NOT NULL) AS has_password";
 
 #[derive(sqlx::FromRow)]
 pub struct Credentials {

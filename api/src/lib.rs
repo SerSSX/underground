@@ -20,6 +20,7 @@ pub mod eventsocial;
 pub mod gdpr;
 pub mod geo;
 pub mod kyc;
+pub mod mail;
 pub mod messages;
 pub mod notifications;
 pub mod orders;

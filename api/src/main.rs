@@ -61,6 +61,10 @@ async fn main() -> anyhow::Result<()> {
         }
         None => tracing::info!("push: FCM not configured — OS push disabled (in-app notifications still active)"),
     }
+    match underground_api::mail::MailConfig::from_env() {
+        Some(cfg) => tracing::info!(from = %cfg.from, "mail: Resend configured — reset links and login codes are sent"),
+        None => tracing::info!("mail: off (RESEND_API_KEY / EMAIL_FROM not set) — no reset or code emails"),
+    }
     match EmailConfig::from_env() {
         Some(cfg) => {
             tracing::info!(from = %cfg.from, "email: SendGrid configured — starting delivery worker");
