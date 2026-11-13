@@ -33,7 +33,7 @@
   "На ці дати подій немає. Ось найближчі:": "Rien à ces dates. Les plus proches :",
   "Нічого не знайшли": "Aucun résultat",
   "Спробуйте інші дати чи категорію — або створіть свою подію, і її побачать інші.": "Essayez d’autres dates ou une autre catégorie, ou créez votre propre événement pour que d’autres le découvrent.",
-  "Скинути фільтри": "Réinitialiser les filtres",
+  "Скинути фільтри": "Effacer les filtres",
   "Створити подію": "Créer un événement",
   "Профіль збережено": "Profil enregistré",
   "Фото оновлено": "Photo mise à jour",
@@ -83,8 +83,8 @@
   "Місць немає": "Complet",
   "Безкоштовно": "Gratuit",
   "лишилось {n} місце": {
-    "one": "Reste {n}",
-    "other": "Restent {n}"
+    "one": "Plus que {n}",
+    "other": "Plus que {n}"
   },
   "{n} цікавиться": {
     "one": "{n} intéressé",
@@ -108,6 +108,7 @@
   "Що буде, для кого, що взяти з собою": "Ce qui se passe, à qui cela s’adresse, quoi apporter",
   "Коли й де": "Quand et où",
   "Початок": "Début",
+  "Час за вашим поясом ({zone}): оберіть місто чи адресу з підказок, щоб узяти пояс місця.": "Les heures sont dans votre fuseau ({zone}) : choisissez la ville ou l’adresse dans les suggestions pour utiliser celui du lieu.",
   "Кінець (необовʼязково)": "Fin (facultatif)",
   "До цього часу гості можуть пройти за QR.": "Les invités peuvent entrer avec leur QR code jusqu’à cette heure.",
   "Адреса або місце": "Adresse ou lieu",
@@ -137,6 +138,7 @@
   "Конфіденційність": "Confidentialité",
   "Поскаржитися": "Signaler un abus",
   "Застосунок": "Application",
+  "© учасники OpenStreetMap": "© les contributeurs d’OpenStreetMap",
   "Мова": "Langue",
   "Події: {city}": "Événements : {city}",
   "Події категорії «{category}» поруч. Бронюйте місця безкоштовно.": "Événements {category} près de chez vous. Réservez vos places gratuitement.",
@@ -148,8 +150,11 @@
   "Закрити": "Fermer",
   "Шукаємо…": "Recherche…",
   "Підказки зараз недоступні — можна ввести вручну": "Les suggestions sont indisponibles pour le moment — vous pouvez le saisir vous-même",
+  "{n} підказка": {
+    "one": "{n} suggestion",
+    "other": "{n} suggestions"
+  },
   "Підказок немає — можна ввести вручну": "Aucune suggestion — vous pouvez le saisir vous-même",
-  "© учасники OpenStreetMap": "© les contributeurs d’OpenStreetMap",
   "Немає доступу до камери. Дозвольте камеру для цього сайту або введіть код вручну.": "Pas d’accès à l’appareil photo. Autorisez-le pour ce site ou saisissez le code à la main.",
   "Цей квиток уже пройшов": "Déjà validé",
   "Квиток на іншу подію": "Billet pour un autre événement",
@@ -198,7 +203,7 @@
   "Подія вже триває — бронювання закрите": "Déjà en cours : réservations closes",
   "Бронювання закрите": "Les réservations sont closes",
   "Усі місця заброньовані": "Toutes les places sont réservées",
-  "Подія лише для {age}+": "Réservé aux {age}+",
+  "Подія лише для {age}+": "Réservé aux {age} ans et +",
   "У вас {n} місце — це максимум": {
     "one": "Vous en avez {n} : c’est le maximum",
     "other": "Vous en avez {n} : c’est le maximum"
@@ -209,8 +214,8 @@
   "Дякуємо за відгук": "Merci pour votre avis",
   "Скаргу надіслано, дякуємо": "Signalement envoyé, merci",
   "Вільно {n} місце": {
-    "one": "Reste {n} place libre",
-    "other": "Restent {n} places libres"
+    "one": "Il reste {n} place",
+    "other": "Il reste {n} places"
   },
   "Керувати подією": "Gérer l’événement",
   "Забронювати ще": "Réserver plus",
@@ -262,6 +267,7 @@
   "Відновлення паролю": "Réinitialiser le mot de passe",
   "Якщо для цієї адреси є акаунт, ми надіслали лист із посиланням для зміни паролю. Перевірте пошту.": "Si un compte existe avec cette adresse, nous avons envoyé un lien de réinitialisation. Vérifiez votre boîte mail.",
   "Введіть email — надішлемо посилання для зміни паролю.": "Saisissez votre adresse e-mail et nous vous enverrons un lien de réinitialisation.",
+  "Email": "E-mail",
   "Надіслати посилання": "Envoyer le lien",
   "← Назад до входу": "← Retour à la connexion",
   "Подарунок недоступний": "Cadeau indisponible",
@@ -397,7 +403,7 @@
   "сканує": "scanner",
   "Забрати доступ у {name}": "Retirer l’accès à {name}",
   "Запрошення не прийняте": "Invitation pas encore acceptée",
-  "до": "jusqu’au",
+  "до {date}": "jusqu’au {date}",
   "Відкликати": "Révoquer",
   "Керування": "Gestion",
   "Відкрити бронювання": "Ouvrir les réservations",
@@ -459,9 +465,8 @@
   "Уже є акаунт?": "Déjà un compte ?",
   "Його побачить організатор у списку гостей.": "L’organisateur le verra dans la liste des invités.",
   "Щонайменше 8 символів": "Au moins 8 caractères",
-  "Реєструючись, ви погоджуєтесь з ": "En vous inscrivant, vous acceptez les ",
+  "Реєструючись, ви погоджуєтесь з {terms} і {privacy}.": "En vous inscrivant, vous acceptez les {terms} et la {privacy}.",
   "умовами": "conditions",
-  " і ": " et la ",
   "політикою конфіденційності": "politique de confidentialité",
   "Паролі не співпадають": "Les mots de passe ne correspondent pas",
   "Зміна паролю": "Nouveau mot de passe",
@@ -475,9 +480,6 @@
   "Ви зможете лише перевіряти QR гостей на вході цієї події. Доступу до редагування чи списку гостей не буде.": "Vous pourrez uniquement vérifier les QR codes des invités à l’entrée de cet événement : ni modification, ni liste des invités.",
   "Прийняти запрошення": "Accepter l’invitation",
   "Не зараз": "Pas maintenant",
-  "київський час": "heure de Kyiv",
-  "варшавський час": "heure de Varsovie",
-  "тбіліський час": "heure de Tbilissi",
   "{n} місце": {
     "one": "{n} place",
     "other": "{n} places"
@@ -522,7 +524,7 @@
   "Зустріч": "Rencontre",
   "Благодійність": "Solidarité",
   "Для родини": "Famille",
-  "Їжа й напої": "Food & drinks",
+  "Їжа й напої": "Cuisine et boissons",
   "Дегустація": "Dégustation",
   "Настільні ігри": "Jeux de société",
   "Квіз": "Quiz",

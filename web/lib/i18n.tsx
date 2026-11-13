@@ -4,10 +4,10 @@
 // live in lib/i18n-core.mjs (pure, shared with server code and node:test) and are re-exported here so
 // pages keep importing { useLang, tr } from one place.
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { syncUserLocale } from "./api";
 import {
-  DEFAULT_LANG, hasCatalog, isLang, pickLang, serverLocale, setCatalog, setCurrentLang,
+  DEFAULT_LANG, hasCatalog, isLang, pickLang, serverLocale, setCatalog, setCurrentLang, templateParts,
   type CatalogLang, type Lang,
 } from "./i18n-core.mjs";
 import { isoDateLabel } from "./dates.mjs";
@@ -35,8 +35,8 @@ async function ensureCatalog(l: Lang): Promise<void> {
   try {
     setCatalog(l, (await LOADERS[l]()).default);
   } catch {
-    // Chunk failed to load (offline, new deploy): register an empty catalog, so text falls back to English.
-    setCatalog(l, {});
+    // Chunk failed to load (offline, new deploy): register nothing, so text falls back to English now and the
+    // next pick or visit downloads it again (an empty catalog registered here stayed until a reload).
   }
 }
 
@@ -103,4 +103,12 @@ export function useLang() {
 /** A calendar date as written in an ISO string: "15 черв · 19:00" / "15 Jun · 19:00" / "6月15日 · 19:00". */
 export function fmtDateL(iso: string | null, lang: Lang): string {
   return isoDateLabel(iso, lang);
+}
+
+/** A translated sentence with elements inside it: rich(tf(lang, "Read the {terms}.", …, {}), { terms: <Link…/> }).
+ *  Slots without an element stay visible as "{name}" (loud, not silent). */
+export function rich(text: string, slots: Record<string, ReactNode>): ReactNode {
+  return templateParts(text).map((p, i) => (
+    <Fragment key={i}>{typeof p === "string" ? p : Object.prototype.hasOwnProperty.call(slots, p.slot) ? slots[p.slot] : `{${p.slot}}`}</Fragment>
+  ));
 }

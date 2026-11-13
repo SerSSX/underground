@@ -230,8 +230,10 @@ export async function login(email: string, password: string): Promise<string> {
   const data = await apiSend<{ token: string }>("POST", "/api/auth/login", { email, password });
   return data.token;
 }
+/** Sign-up carries the UI language (one of the 10) so the first emails and notifications are in it
+ *  (TASK-303 G2 fix F1; an API without the field ignores it). */
 export async function register(email: string, password: string, name: string): Promise<string> {
-  const data = await apiSend<{ token: string }>("POST", "/api/auth/register", { email, password, name });
+  const data = await apiSend<{ token: string }>("POST", "/api/auth/register", { email, password, name, locale: currentLang() });
   return data.token;
 }
 export async function forgotPassword(email: string): Promise<void> {
@@ -245,7 +247,8 @@ export async function requestEmailCode(email: string): Promise<void> {
   await apiSend("POST", "/api/auth/email/request-code", { email });
 }
 export async function verifyEmailCode(email: string, code: string): Promise<string> {
-  const data = await apiSend<{ token: string }>("POST", "/api/auth/email/verify-code", { email, code });
+  // May create the account: it starts in the UI language, as with register().
+  const data = await apiSend<{ token: string }>("POST", "/api/auth/email/verify-code", { email, code, locale: currentLang() });
   return data.token;
 }
 export async function getMe(): Promise<UserDto> {
@@ -564,11 +567,15 @@ export function fmtPrice(amount: string, currency: string): string {
 }
 
 /** Best-effort: persist the chosen locale to the user's prefs (logged-in only), so
- *  server-generated notifications match the UI language. Preserves existing prefs. */
+ *  server-generated notifications match the UI language. Preserves existing prefs.
+ *  Only for an onboarded user: the PUT creates the prefs row, and a row is what marks onboarding done, so
+ *  syncing a brand-new account would skip its interests step (TASK-303 G2 fix F1). New accounts get their
+ *  language from the sign-up body instead. */
 export async function syncUserLocale(locale: string): Promise<void> {
   if (!getToken()) return;
   try {
-    const prefs = await apiGet<{ categories: string[]; city: string | null }>("/api/me/prefs");
+    const prefs = await apiGet<{ categories: string[]; city: string | null; onboarded?: boolean }>("/api/me/prefs");
+    if (prefs.onboarded === false) return;
     await apiSend("PUT", "/api/me/prefs", { categories: prefs.categories, city: prefs.city, locale });
   } catch {
     /* ignore: locale sync is non-essential */

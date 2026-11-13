@@ -19,6 +19,10 @@ export default function Footer() {
             <Link href="/download">{tr(lang, "Застосунок", "App")}</Link>
           </nav>
         </div>
+        {/* Place names and addresses come from OpenStreetMap (ODbL, accepted by the owner 2026-11-13). */}
+        <p className="subtle xs footer-attrib">
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">{tr(lang, "© учасники OpenStreetMap", "© OpenStreetMap contributors")}</a>
+        </p>
       </div>
     </footer>
   );

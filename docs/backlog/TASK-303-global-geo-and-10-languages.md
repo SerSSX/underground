@@ -206,3 +206,30 @@ Not done / limits:
 - On home, a city picked from search filters by name or 30 km; distances are shown only after "near me".
 - `/api/cities` matches city names exactly (case-insensitive); a typed city spelled differently from the gazetteer
   falls back to the browser zone, as before.
+
+## G2 fix batch (web, 2026-11-13)
+
+From the independent web review (F*) and the translation review. web/ only; two items use the API agent's new
+contracts and work without them (fields absent → old behaviour).
+
+| Finding | Done | Test / check |
+|---|---|---|
+| F1 language at sign-up | `register` and email-code `verify-code` send `locale` (the UI language, one of 10; an older API ignores it). After a password login, `syncUserLocale` runs — and it now skips users whose prefs say `onboarded: false`, because its PUT would create the row and skip onboarding (this also fixed the language picker for a signed-in, not-yet-onboarded user). Prefs PUT still sends `uk`/`en` (`serverLocale`) until the API's 10-locale prefs land | tsc; real run: register body with `locale` → 201 |
+| F2 default names | `GeoPlace.name_default`/`city_default` read (sanitized); `cityStoredName` = `city_default ?? name_default ?? city ?? name` (city results) / `city_default ?? city` (addresses) is what the event form, account, onboarding and the home filter store; suggestion lists show the localized `cityLabel`. Home keeps the shown name as `ChosenCity.label` (heading, input) and matches events by either | `lib/geo.test.mjs` "stored city name…" |
+| F3 CI fails on missing keys | `lib/i18n.test.mjs` runs `checkCatalogs()` without `allowMissing`; checker header says so | node --test |
+| F4 literals + zone names | "Email" labels/placeholders via `tr` (login, register, forgot-password, g/[token]); zone label = `Intl.DateTimeFormat(lang,{timeZoneName:"longGeneric"})`, IANA city when Intl has no name (old Kyiv/Warsaw/Tbilisi keys removed); new gate `lib/i18n-literals.test.mjs`: Cyrillic outside tr/tf/tp in `app/**/*.tsx` fails, allow-list = 4 legal pages + 14 metadata files, each must exist | gate + its own negative cases; mutant (a `<span>Привіт</span>` component) → red |
+| F5 | `PlaceSuggest` decides "short" from the field's value | tsc |
+| F6 city filter | both points: `d ≤ 30 km` or (same name and `d ≤ 150 km`); no point: same name (stored or shown). Enter resolves the typed name to a point first (city suggestion with that name, else `/api/cities`), and applies only if nothing newer was chosen | `lib/geo.test.mjs` Springfield cases; real run: "Lisbon"+Enter → point + PT |
+| F7 prefilled create | home link carries `city`, `lat`,`lng` (0.1°) and `cc`; the form settles the zone from them (bias too, never the pin); when the zone fell back to the browser's, a hint under Start says so | real run: `?city=Tokyo&lat=35.7&lng=139.7&cc=JP` → "Starts · Japan Standard Time"; no city → hint shown |
+| F8 pin | only an address pick with `kind ≠ city` pins; editing compares the stored point with the gazetteer centre and drops an untouched centre; city text that only changes spacing/case keeps pin, country and zone | tsc (UI logic, no unit) |
+| F9 | a near-me answer (position or reverse) is dropped if the chosen city changed after the click | tsc |
+| F11 top bar | under 860 px: bar gap 12, wordmark 14 px / .2em, actions gap 6, compact buttons. Measured at 375 px, real text, signed out (before → after, page scroll width): es 401→375, pt 404→375, fr 404→375, pl 386→375, de 383→375; en/it/ja/tr/uk 375→375. Signed in: 375 in all 10 | headless measurement in the browser pane (iframes 375 px wide, every language) |
+| F12 | screen-reader live status in `PlaceSuggest` ("{n} suggestions", searching, unavailable); profile panel is a disclosure (no `role="menu"`), so the language select is no longer inside a menu | tsc |
+| F14/F15 | `.suggest-pop` min-width 100%; suggest inputs `autoComplete="off"` | real run |
+| F16 | a failed catalog chunk is no longer registered as empty: English now, retried on the next pick or visit | tsc |
+| Owner (ODbL) | "© OpenStreetMap contributors" → /copyright in the site footer | real run |
+| Translation code | "до {date}" is one `tf` template (ja "{date}まで", tr "{date} tarihine kadar"); the sign-up consent is one `tf` template rendered by `rich()` (`templateParts`: the text splits at `{terms}`/`{privacy}`, only those become links, markup in a translation stays text) | `lib/i18n.test.mjs` "templateParts"; real run ja/de/tr/uk |
+| Translation fixes | de, tr, ja, es, pt, fr, it, pl as listed by the reviewer (98 entries incl. the 5 new keys) | i18n-check |
+
+Keys: 552 (15 plural) = 553 + 5 (zone hint, "{n} підказка", "Email", "до {date}", consent) − 6 ("до", the two consent
+fragments "Реєструючись, ви погоджуєтесь з " and " і ", three zone names). `de` "Tiflis-Zeit" → no longer a key (zone names come from Intl).

@@ -24,3 +24,4 @@ export function tp(lang: Lang, n: number, uk: PluralForms, en: PluralForms, vars
 export function interpolate(template: string, vars?: Vars): string;
 export function placeholders(template: string): string[];
 export function pluralCategory(lang: Lang, n: number): string;
+export function templateParts(text: string): Array<string | { slot: string }>;

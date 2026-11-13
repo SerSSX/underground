@@ -127,7 +127,7 @@ export default function ClaimGiftPage() {
           <input
             className="input"
             type="email"
-            placeholder="Email"
+            placeholder={tr(lang, "Email", "Email")}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required

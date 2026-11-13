@@ -23,7 +23,6 @@ export default function AddressInput({ id, value, onChange, onPick, bias }: {
       bias={bias}
       describe={(p) => ({ primary: addressLabel(p), secondary: addressWhere(p) || undefined })}
       placeholder={tr(lang, "Бар «Пульт», вул. Нижній Вал 21", "Venue, street and number")}
-      autoComplete="street-address"
       maxLength={200}
     />
   );

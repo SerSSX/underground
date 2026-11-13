@@ -130,3 +130,19 @@ export function tp(lang, n, uk, en, vars) {
   }
   return interpolate(pickForm("en", n, en) ?? en.other ?? en.one, all);
 }
+
+/** A translated template cut at its placeholders, for text with links or other elements inside it:
+ *  "By signing up you accept the {terms} and the {privacy}." → ["By signing up you accept the ", { slot: "terms" },
+ *  " and the ", { slot: "privacy" }, "."]. The text stays text; only the named slots become elements, so a
+ *  translation can move them (verb-final languages) but never inject markup. */
+export function templateParts(text) {
+  const out = [];
+  let last = 0;
+  for (const m of String(text).matchAll(PLACEHOLDER)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push({ slot: m[1] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}

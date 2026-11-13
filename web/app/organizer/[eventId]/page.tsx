@@ -278,7 +278,7 @@ function ManageInner() {
               {staff.invites.filter((i) => i.status === "pending").map((i) => (
                 <div key={i.id} className="guest">
                   <span className="avatar sm" style={{ background: "var(--surface-3)" }}><UserPlus className="ico sm" /></span>
-                  <span className="grow muted">{tr(lang, "Запрошення не прийняте", "Invite not accepted yet")} · {tr(lang, "до", "until")} {shortWhen(i.expires_at, lang)}</span>
+                  <span className="grow muted">{tr(lang, "Запрошення не прийняте", "Invite not accepted yet")} · {tf(lang, "до {date}", "until {date}", { date: shortWhen(i.expires_at, lang) })}</span>
                   <button className="btn quiet sm" disabled={busy} onClick={() => revoke(i.id)}>{tr(lang, "Відкликати", "Revoke")}</button>
                 </div>
               ))}

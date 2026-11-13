@@ -108,6 +108,7 @@
   "Що буде, для кого, що взяти з собою": "Cosa succede, per chi è, cosa portare",
   "Коли й де": "Quando e dove",
   "Початок": "Inizio",
+  "Час за вашим поясом ({zone}): оберіть місто чи адресу з підказок, щоб узяти пояс місця.": "Gli orari sono nel tuo fuso ({zone}): scegli la città o l’indirizzo dai suggerimenti per usare quello del luogo.",
   "Кінець (необовʼязково)": "Fine (facoltativa)",
   "До цього часу гості можуть пройти за QR.": "Fino a quel momento gli ospiti possono entrare con il QR.",
   "Адреса або місце": "Indirizzo o luogo",
@@ -137,6 +138,7 @@
   "Конфіденційність": "Privacy",
   "Поскаржитися": "Segnala un abuso",
   "Застосунок": "App",
+  "© учасники OpenStreetMap": "© collaboratori di OpenStreetMap",
   "Мова": "Lingua",
   "Події: {city}": "Eventi: {city}",
   "Події категорії «{category}» поруч. Бронюйте місця безкоштовно.": "Eventi «{category}» vicino a te. Prenota i tuoi posti gratis.",
@@ -148,8 +150,11 @@
   "Закрити": "Chiudi",
   "Шукаємо…": "Ricerca in corso…",
   "Підказки зараз недоступні — можна ввести вручну": "I suggerimenti non sono disponibili ora: puoi scriverlo tu",
+  "{n} підказка": {
+    "one": "{n} suggerimento",
+    "other": "{n} suggerimenti"
+  },
   "Підказок немає — можна ввести вручну": "Nessun suggerimento: puoi scriverlo tu",
-  "© учасники OpenStreetMap": "© collaboratori di OpenStreetMap",
   "Немає доступу до камери. Дозвольте камеру для цього сайту або введіть код вручну.": "Nessun accesso alla fotocamera. Consenti la fotocamera per questo sito o inserisci il codice a mano.",
   "Цей квиток уже пройшов": "Già entrato",
   "Квиток на іншу подію": "Biglietto per un altro evento",
@@ -213,7 +218,7 @@
     "other": "{n} posti liberi"
   },
   "Керувати подією": "Gestisci evento",
-  "Забронювати ще": "Prenota altri",
+  "Забронювати ще": "Prenota altri posti",
   "Забронювати": "Prenota un posto",
   "Назад": "Indietro",
   "У вас {n} місце": {
@@ -262,6 +267,7 @@
   "Відновлення паролю": "Reimposta password",
   "Якщо для цієї адреси є акаунт, ми надіслали лист із посиланням для зміни паролю. Перевірте пошту.": "Se esiste un account per questo indirizzo, ti abbiamo inviato un link per reimpostare la password. Controlla la posta.",
   "Введіть email — надішлемо посилання для зміни паролю.": "Inserisci la tua email: ti invieremo un link per reimpostare la password.",
+  "Email": "Email",
   "Надіслати посилання": "Invia il link",
   "← Назад до входу": "← Torna all'accesso",
   "Подарунок недоступний": "Regalo non disponibile",
@@ -335,7 +341,7 @@
   "Скасувати бронь?": "Annullare la prenotazione?",
   "Місця знову стануть вільними для інших. Забронювати ще раз можна, поки є місця.": "I posti tornano disponibili per gli altri. Puoi prenotare di nuovo finché ci sono posti.",
   "Скільки місць скасувати": "Quanti posti annullare",
-  "Залишити": "Tieni",
+  "Залишити": "Mantieni",
   "Скасувати {n} місце": {
     "one": "Annulla {n} posto",
     "other": "Annulla {n} posti"
@@ -397,7 +403,7 @@
   "сканує": "scanner",
   "Забрати доступ у {name}": "Rimuovi {name}",
   "Запрошення не прийняте": "Invito non ancora accettato",
-  "до": "fino al",
+  "до {date}": "fino al {date}",
   "Відкликати": "Revoca",
   "Керування": "Controlli",
   "Відкрити бронювання": "Apri le prenotazioni",
@@ -459,9 +465,8 @@
   "Уже є акаунт?": "Hai già un account?",
   "Його побачить організатор у списку гостей.": "Lo vede l'organizzatore nell'elenco degli ospiti.",
   "Щонайменше 8 символів": "Almeno 8 caratteri",
-  "Реєструючись, ви погоджуєтесь з ": "Registrandoti accetti i ",
+  "Реєструючись, ви погоджуєтесь з {terms} і {privacy}.": "Registrandoti accetti i {terms} e {privacy}.",
   "умовами": "termini",
-  " і ": " e ",
   "політикою конфіденційності": "l'informativa sulla privacy",
   "Паролі не співпадають": "Le password non coincidono",
   "Зміна паролю": "Imposta una nuova password",
@@ -475,9 +480,6 @@
   "Ви зможете лише перевіряти QR гостей на вході цієї події. Доступу до редагування чи списку гостей не буде.": "Potrai solo controllare i QR degli ospiti all'ingresso di questo evento: nessuna modifica, nessun elenco ospiti.",
   "Прийняти запрошення": "Accetta l'invito",
   "Не зараз": "Non ora",
-  "київський час": "ora di Kyiv",
-  "варшавський час": "ora di Varsavia",
-  "тбіліський час": "ora di Tbilisi",
   "{n} місце": {
     "one": "{n} posto",
     "other": "{n} posti"
@@ -505,7 +507,7 @@
   "Мода": "Moda",
   "Література": "Letteratura",
   "Ремесла": "Artigianato",
-  "Лекція": "Lezione",
+  "Лекція": "Conferenza",
   "Конференція": "Conferenza",
   "Майстер-клас": "Workshop",
   "Курс": "Corso",

@@ -7,7 +7,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { searchPlaces, type GeoKind, type GeoPlace, type Point } from "../../lib/geo";
 import { roundCoord } from "../../lib/geo-core.mjs";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tp } from "../../lib/i18n";
 
 /** A suggestion that is not from the geocoder (e.g. cities that already have events), shown on an empty field. */
 export interface ExtraOption {
@@ -21,7 +21,7 @@ type Status = "idle" | "loading" | "done" | "error";
 const DEBOUNCE_MS = 300;
 
 export default function PlaceSuggest({
-  id, value, onChange, onPick, kind, describe, bias = null, placeholder, ariaLabel, autoComplete = "off",
+  id, value, onChange, onPick, kind, describe, bias = null, placeholder, ariaLabel,
   extra = [], ariaInvalid, maxLength = 200, popEnd = false, className = "input", onEnter,
 }: {
   id?: string;
@@ -35,7 +35,6 @@ export default function PlaceSuggest({
   bias?: Point | null;
   placeholder?: string;
   ariaLabel?: string;
-  autoComplete?: string;
   extra?: ExtraOption[];
   ariaInvalid?: boolean;
   maxLength?: number;
@@ -87,7 +86,8 @@ export default function PlaceSuggest({
     };
   }, [query, kind, lang, biasKey]);
 
-  const short = (query ?? value).trim().length < 2;
+  // From what the field shows, so a stale query never decides which list is open (fix F5).
+  const short = value.trim().length < 2;
   const options = short
     ? extra.map((o) => ({ key: o.key, primary: o.primary, secondary: o.secondary, select: o.onSelect }))
     : items.map((p, i) => ({ key: `${i}:${p.lat},${p.lng}`, ...describe(p), select: () => onPick(p) }));
@@ -136,7 +136,8 @@ export default function PlaceSuggest({
         aria-activedescendant={show && active >= 0 ? `${listId}-${active}` : undefined}
         aria-label={ariaLabel}
         aria-invalid={ariaInvalid || undefined}
-        autoComplete={autoComplete}
+        // Off: the browser's own autofill list would cover ours (fix F15).
+        autoComplete="off"
         maxLength={maxLength}
         value={value}
         placeholder={placeholder}
@@ -150,6 +151,13 @@ export default function PlaceSuggest({
         onBlur={() => setOpen(false)}
         onKeyDown={onKeyDown}
       />
+      {/* Read out by screen readers as the list changes (fix F12). */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {!open || short ? "" : status === "loading" ? tr(lang, "Шукаємо…", "Searching…")
+          : status === "error" ? tr(lang, "Підказки зараз недоступні — можна ввести вручну", "Suggestions are unavailable right now — you can type it in")
+          : status === "done" ? tp(lang, items.length, { one: "{n} підказка", few: "{n} підказки", many: "{n} підказок" }, { one: "{n} suggestion", other: "{n} suggestions" })
+          : ""}
+      </span>
       {show && (
         // mousedown would blur the input and close the list before the click lands.
         <div className={`suggest-pop${popEnd ? " end" : ""}`} onMouseDown={(e) => e.preventDefault()}>

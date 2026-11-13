@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  addressLabel, addressWhere, cityLabel, cityName, distanceKm, geoLang, haversineKm, inCity, kmShown, mapsHref,
+  addressLabel, addressWhere, cityLabel, cityName, cityStoredName, distanceKm, geoLang, haversineKm, inCity, kmShown, mapsHref,
   parseStoredCity, roundCoord, sanitizePlace, sanitizePlaces, sortByDistance, storeCity,
 } from "./geo-core.mjs";
 
@@ -62,6 +62,27 @@ test("the city filter: same name, or within 30 km when both have points", () => 
   assert.equal(inCity({ city: "Lviv" }, { name: "Lviv" }), true);
   assert.equal(inCity({ city: "" }, { name: "" }), false, "an empty name matches nothing");
   assert.equal(inCity({ city: "X" }, null), true, "no city chosen → everything");
+});
+
+test("the city filter: a shared name counts only up to 150 km when both have points (G2 fix F6)", () => {
+  const springfieldIL = { name: "Springfield", lat: 39.78, lng: -89.65 };
+  assert.equal(inCity({ city: "Springfield", lat: 37.21, lng: -93.29 }, springfieldIL), false, "Springfield, MO is ~380 km away");
+  assert.equal(inCity({ city: "Springfield", lat: 39.9, lng: -89.2 }, springfieldIL), true, "same name, ~40 km: the city's edge");
+  assert.equal(inCity({ city: "Elsewhere", lat: 39.9, lng: -89.2 }, springfieldIL), false, "another name ~40 km away");
+  assert.equal(inCity({ city: "Kyiv" }, { name: "Київ", label: "Kyiv" }), true, "the shown name matches too");
+});
+
+test("the stored city name is the OSM default-language one; labels stay localized (G2 fix F2)", () => {
+  const kyiv = { ...porto, name: "Kyiv", city: "Kyiv", name_default: "Київ", city_default: "Київ", state: null, country: "Ukraine", country_code: "UA" };
+  assert.equal(cityStoredName(kyiv), "Київ");
+  assert.equal(cityLabel(kyiv), "Kyiv, Ukraine");
+  assert.equal(cityStoredName({ ...flores, city_default: "Porto" }), "Porto");
+  assert.equal(cityStoredName({ ...porto }), "Porto", "an older API without default names");
+  assert.equal(cityStoredName({ ...flores, city: null }), "", "an address outside a city names no city");
+  const s = sanitizePlace({ ...kyiv, city_default: "Київ\u0000", name_default: 5 });
+  assert.equal(s.city_default, "Київ");
+  assert.equal(s.name_default, null);
+  assert.equal(sanitizePlace(porto).city_default, null);
 });
 
 test("distances: nearest first, events without a point last in their order; ~n km is at least 1", () => {

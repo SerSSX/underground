@@ -4,7 +4,7 @@ import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { register, setToken, errorMessage, safeNext } from "../../lib/api";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, rich, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import AuthCard from "../components/AuthCard";
 import { Eye } from "../components/Icon";
@@ -51,7 +51,7 @@ function RegisterForm() {
           <span className="hint">{tr(lang, "Його побачить організатор у списку гостей.", "The organiser sees it in the guest list.")}</span>
         </div>
         <div className="field">
-          <label htmlFor="email">Email</label>
+          <label htmlFor="email">{tr(lang, "Email", "Email")}</label>
           <input id="email" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" inputMode="email" />
         </div>
         <div className="field">
@@ -65,7 +65,11 @@ function RegisterForm() {
         {error && <div className="alert error">{error}</div>}
         <button className="btn block lg" disabled={busy || !name.trim() || !email.trim() || password.length < 8}>{busy ? "…" : tr(lang, "Створити акаунт", "Create account")}</button>
         <p className="subtle xs" style={{ textAlign: "center" }}>
-          {tr(lang, "Реєструючись, ви погоджуєтесь з ", "By signing up you accept the ")}<Link className="link" href="/terms">{tr(lang, "умовами", "terms")}</Link>{tr(lang, " і ", " and ")}<Link className="link" href="/privacy">{tr(lang, "політикою конфіденційності", "privacy policy")}</Link>.
+          {/* One sentence per language, links placed by the translation (verb-final languages, "。"). */}
+          {rich(tf(lang, "Реєструючись, ви погоджуєтесь з {terms} і {privacy}.", "By signing up you accept the {terms} and the {privacy}.", {}), {
+            terms: <Link className="link" href="/terms">{tr(lang, "умовами", "terms")}</Link>,
+            privacy: <Link className="link" href="/privacy">{tr(lang, "політикою конфіденційності", "privacy policy")}</Link>,
+          })}
         </p>
       </form>
     </AuthCard>

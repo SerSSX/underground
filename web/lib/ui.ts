@@ -3,7 +3,7 @@
 // lib/dates.mjs (TASK-303 L1: 10 languages).
 import { tr, tp, type Lang } from "./i18n-core.mjs";
 import { CATEGORY_LABELS } from "./categories.mjs";
-import { zonedParts } from "./dates.mjs";
+import { zonedParts, zoneLabel } from "./dates.mjs";
 
 export { dateBadge, shortWhen, longDate, timeOf } from "./dates.mjs";
 
@@ -79,12 +79,9 @@ export function countryTz(country: string | null | undefined): string | null {
   return (country && COUNTRY_TZ[country.trim().toLowerCase()]) || null;
 }
 
-/** A short label for a zone in the form: "київський час" / "Kyiv time", else the IANA city part ("Tokyo"). */
+/** A zone's name in the reader's language (Intl generic name, else the IANA city): lib/dates.mjs zoneLabel. */
 export function tzLabel(tz: string, lang: Lang): string {
-  if (tz === "Europe/Kyiv") return tr(lang, "київський час", "Kyiv time");
-  if (tz === "Europe/Warsaw") return tr(lang, "варшавський час", "Warsaw time");
-  if (tz === "Asia/Tbilisi") return tr(lang, "тбіліський час", "Tbilisi time");
-  return (tz.split("/").pop() ?? tz).replace(/_/g, " ");
+  return zoneLabel(tz, lang);
 }
 
 export function initials(name: string | null | undefined): string {

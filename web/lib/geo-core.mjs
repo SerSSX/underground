@@ -6,6 +6,9 @@
 
 /** Events whose point lies this close to the chosen city's point count as "in" it (a metro area). */
 export const CITY_RADIUS_KM = 30;
+/** An event that also carries the chosen city's name counts within this distance (a big city's edge);
+ *  beyond it the same name is another place ("Springfield"). */
+export const SAME_NAME_RADIUS_KM = 150;
 const MAX_TEXT = 200;
 const MAX_CITY = 100;
 
@@ -55,6 +58,9 @@ export function sanitizePlace(raw) {
     street: text(raw.street),
     housenumber: text(raw.housenumber, 20),
     city: text(raw.city, MAX_CITY),
+    // OSM default-language names (TASK-303 G2 fix batch; absent from older APIs → null).
+    name_default: text(raw.name_default, MAX_CITY),
+    city_default: text(raw.city_default, MAX_CITY),
     state: text(raw.state),
     country: text(raw.country, 80),
     country_code: cc && /^[A-Za-z]{2}$/.test(cc) ? cc.toUpperCase() : null,
@@ -78,10 +84,20 @@ function joinUnique(parts) {
   return out.join(", ");
 }
 
-/** The city a place names: a city result's own name, else the locality it lies in. */
+/** The city a place names, as the visitor reads it (their language when the geocoder has it): a city
+ *  result's own name, else the locality it lies in. For labels and lists. */
 export function cityName(place) {
   if (!place) return "";
   return (place.kind === "city" ? place.name ?? place.city : place.city) ?? "";
+}
+
+/** The city name to STORE (event city, prefs city, the home filter): the OSM default-language name, so an
+ *  event made by an English reader ("Kyiv") and one made by a Ukrainian reader ("Київ") share one name.
+ *  Falls back to the localized name when the API does not send default names. */
+export function cityStoredName(place) {
+  if (!place) return "";
+  if (place.kind === "city") return place.city_default ?? place.name_default ?? place.city ?? place.name ?? "";
+  return place.city_default ?? place.city ?? "";
 }
 
 /** "City, Region, Country" for a city suggestion. */
@@ -107,12 +123,17 @@ function sameName(a, b) {
   return typeof a === "string" && typeof b === "string" && a.trim().toLowerCase() === b.trim().toLowerCase() && a.trim() !== "";
 }
 
-/** Is an event in the chosen city: the same name, or (both have points) within CITY_RADIUS_KM.
- *  Names alone fail across languages ("Kyiv" vs "Київ"), so the point decides when there is one. */
-export function inCity(event, chosen, radiusKm = CITY_RADIUS_KM) {
+/** Is an event in the chosen city? When both have points: within CITY_RADIUS_KM, or the same name within
+ *  SAME_NAME_RADIUS_KM (names alone fail across languages, "Kyiv"/"Київ", and across countries,
+ *  "Springfield"). Without a point on either side: the same name (the stored or the shown one). */
+export function inCity(event, chosen) {
   if (!chosen) return true;
-  if (sameName(event.city, chosen.name)) return true;
-  return hasPoint(chosen) && hasPoint(event) && haversineKm(chosen.lat, chosen.lng, event.lat, event.lng) <= radiusKm;
+  const named = sameName(event.city, chosen.name) || sameName(event.city, chosen.label);
+  if (hasPoint(chosen) && hasPoint(event)) {
+    const d = haversineKm(chosen.lat, chosen.lng, event.lat, event.lng);
+    return d <= CITY_RADIUS_KM || (named && d <= SAME_NAME_RADIUS_KM);
+  }
+  return named;
 }
 
 /** Distance from `origin` to the event in km, or null when either has no point. */
@@ -171,6 +192,8 @@ export function parseStoredCity(raw) {
   const name = text(v.name, MAX_CITY);
   if (!name) return null;
   const out = { name };
+  const label = text(v.label, MAX_CITY);
+  if (label && label !== name) out.label = label;
   if (hasPoint(v)) Object.assign(out, { lat: v.lat, lng: v.lng });
   if (typeof v.country_code === "string" && /^[A-Z]{2}$/.test(v.country_code)) out.country_code = v.country_code;
   if (v.near === true && hasPoint(v)) out.near = true;
@@ -180,6 +203,7 @@ export function parseStoredCity(raw) {
 /** A chosen city → what is remembered. A "near me" point is kept at ~1 km, never the exact position. */
 export function storeCity(chosen) {
   const out = { name: chosen.name };
+  if (chosen.label && chosen.label !== chosen.name) out.label = chosen.label;
   if (hasPoint(chosen)) {
     const d = chosen.near ? 2 : 4;
     Object.assign(out, { lat: roundCoord(chosen.lat, d), lng: roundCoord(chosen.lng, d) });

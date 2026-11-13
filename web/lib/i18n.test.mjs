@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { LANGS, CATALOG_LANGS, tr, tf, tp, pickLang, setCatalog, pluralCategory, serverLocale } from "./i18n-core.mjs";
-import { dateBadge, shortWhen, longDate, timeOf, isoDateLabel } from "./dates.mjs";
+import { LANGS, CATALOG_LANGS, tr, tf, tp, pickLang, setCatalog, pluralCategory, serverLocale, templateParts } from "./i18n-core.mjs";
+import { dateBadge, shortWhen, longDate, timeOf, isoDateLabel, zoneLabel } from "./dates.mjs";
 import { serverText, canonicalServerText } from "./server-messages.mjs";
 import { CATEGORY_LABELS } from "./categories.mjs";
 import { extract, serialize, SOURCE_PATH } from "../scripts/i18n-extract.mjs";
@@ -46,6 +46,13 @@ test("tf interpolates {name} in every language and leaves an unknown placeholder
   assert.equal(tf("en", "Місце {i} з {total}", "Place {i} of {total}", { i: 2, total: 5 }), "Place 2 of 5");
   assert.equal(tf("en", "a {x} b", "a {x} b", {}), "a {x} b");
   assert.equal(tf("en", "{n} МБ", "{n} MB", { n: 0 }), "0 MB", "zero is a value, not missing");
+});
+
+test("templateParts: text with slots, so a translation may move a link but never add markup", () => {
+  assert.deepEqual(templateParts("Read the {terms} and {privacy}."), ["Read the ", { slot: "terms" }, " and ", { slot: "privacy" }, "."]);
+  assert.deepEqual(templateParts("{terms}と{privacy}に同意したことになります。"), [{ slot: "terms" }, "と", { slot: "privacy" }, "に同意したことになります。"]);
+  assert.deepEqual(templateParts("<b>x</b>"), ["<b>x</b>"], "markup stays text");
+  assert.deepEqual(templateParts(""), []);
 });
 
 test("tp: Ukrainian one/few/many", () => {
@@ -127,6 +134,14 @@ test("dates: unknown zone falls back instead of throwing; bad input gives empty"
   assert.equal(isoDateLabel("2026-06-15T19:05:00Z", "ja"), "6月15日 · 19:05");
 });
 
+test("zone labels: the generic name in the reader's language, else the IANA city", () => {
+  assert.equal(zoneLabel("Asia/Tokyo", "ja"), "日本標準時");
+  assert.equal(zoneLabel("Europe/Lisbon", "en"), "Western European Time");
+  assert.match(zoneLabel("Europe/Kyiv", "uk"), /східноєвропейськ/);
+  assert.equal(zoneLabel("Not/A_Zone", "en"), "A Zone", "unknown zone → its city part, no throw");
+  assert.equal(zoneLabel("Etc/GMT-3", "de"), "GMT-3", "an offset-only Intl name → the IANA part, as written");
+});
+
 test("server texts: known ones translate, unknown ones stay as sent", () => {
   assert.equal(serverText("uk", "квитки закінчились"), "квитки закінчились");
   assert.equal(serverText("en", "квитки закінчились"), "no places left");
@@ -155,8 +170,8 @@ test("locales/_source.json is up to date with the code, and every call is extrac
   assert.equal(readFileSync(SOURCE_PATH, "utf8"), serialize(source), "run: node scripts/i18n-extract.mjs");
 });
 
-test("catalogs: shapes and placeholders match the source (missing keys allowed until L2)", () => {
-  const { errors } = checkCatalogs({ allowMissing: true });
+test("catalogs: shapes and placeholders match the source, and no key is missing in any language", () => {
+  const { errors } = checkCatalogs();
   assert.deepEqual(errors, []);
 });
 

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import EventForm, { EMPTY_EVENT, toEventInput, type EventFormInitial } from "../../components/EventForm";
 import { createEvent, getToken, toIso, browserTz, type EventDto } from "../../../lib/api";
 import { useLang, tr, tf } from "../../../lib/i18n";
+import { hasPoint } from "../../../lib/geo-core.mjs";
 import { Toast, useToast } from "../../components/Toast";
 import { CircleCheck, Copy, ExternalLink, Users } from "../../components/Icon";
 
@@ -17,10 +18,19 @@ export default function NewEventPage() {
   const [tz, setTz] = useState<string | null>(null);
   // "Create the first event in {city}" from the home page arrives as ?city=; read once on the client.
   const [initial, setInitial] = useState<EventFormInitial | null>(null);
+  const [hint, setHint] = useState<{ lat: number; lng: number; cc: string | null } | null>(null);
   useEffect(() => {
     setTz(browserTz());
-    const city = (new URLSearchParams(window.location.search).get("city") ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
-    setInitial({ ...EMPTY_EVENT, city });
+    const q = new URLSearchParams(window.location.search);
+    const city = (q.get("city") ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
+    // The city's point and country from the home page, for its time zone; checked like any URL input.
+    const lat = Number(q.get("lat"));
+    const lng = Number(q.get("lng"));
+    const cc = (q.get("cc") ?? "").trim();
+    const point = city && q.get("lat") && q.get("lng") && hasPoint({ lat, lng }) ? { lat, lng } : null;
+    const code = /^[A-Za-z]{2}$/.test(cc) ? cc.toUpperCase() : null;
+    setHint(point ? { ...point, cc: code } : null);
+    setInitial({ ...EMPTY_EVENT, city, country_code: city ? code : null });
   }, []);
 
   useEffect(() => {
@@ -72,6 +82,7 @@ export default function NewEventPage() {
       </div>
       {!initial ? <div className="skeleton" style={{ height: 320 }} /> : <EventForm
         initial={initial}
+        cityHint={hint}
         tz={tz}
         submitLabel={tr(lang, "Опублікувати", "Publish")}
         allowDraft

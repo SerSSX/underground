@@ -9,7 +9,7 @@ import { FREE_ONLY } from "../../lib/flags";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { categoryLabel, countryTz, tzLabel } from "../../lib/ui";
 import { isZone, zoneFor } from "../../lib/geo";
-import { addressLabel, cityName, CITY_RADIUS_KM, hasPoint, haversineKm, type GeoPlace, type Point } from "../../lib/geo-core.mjs";
+import { addressLabel, cityStoredName, CITY_RADIUS_KM, hasPoint, haversineKm, type GeoPlace, type Point } from "../../lib/geo-core.mjs";
 import { ImageIcon, X, ChevronDown } from "./Icon";
 
 export interface EventFormInitial {
@@ -71,6 +71,7 @@ export default function EventForm({
   minSeats = 1,
   editing = false,
   tz = null,
+  cityHint = null,
 }: {
   initial: EventFormInitial;
   submitLabel: string;
@@ -82,6 +83,9 @@ export default function EventForm({
   editing?: boolean;
   /** Zone the date input is in: the event's when editing, the organiser's own when creating. */
   tz?: string | null;
+  /** The prefilled city's point and country (home → "Create the first event"): sets the zone and the address
+   *  bias, never the event's own pin (fix F7). */
+  cityHint?: (Point & { cc?: string | null }) | null;
 }) {
   const { lang } = useLang();
   const [f, setF] = useState<EventFormInitial>(FREE_ONLY ? { ...initial, is_free: true } : initial);
@@ -94,9 +98,11 @@ export default function EventForm({
   // gets (GET /api/geo/timezone, the same rule as create); a typed city falls back to our gazetteer by name;
   // nothing known → the `tz` prop (the browser's zone when creating, the stored zone when editing). The one
   // `zone` below converts the times AND is sent as the event's zone, so the stored instant and zone agree.
-  const [cityPoint, setCityPoint] = useState<Point | null>(hasPoint(initial) ? { lat: initial.lat as number, lng: initial.lng as number } : null);
+  const [cityPoint, setCityPoint] = useState<Point | null>(
+    hasPoint(initial) ? { lat: initial.lat as number, lng: initial.lng as number } : cityHint ? { lat: cityHint.lat, lng: cityHint.lng } : null,
+  );
   // A new object per keystroke, so the lookup below always re-runs (and always clears zonePending).
-  const [typedCity, setTypedCity] = useState<{ text: string } | null>(!editing && initial.city.trim() ? { text: initial.city } : null);
+  const [typedCity, setTypedCity] = useState<{ text: string } | null>(!editing && !cityHint && initial.city.trim() ? { text: initial.city } : null);
   const [zonePending, setZonePending] = useState(!editing && !!initial.city.trim());
   const zoneSeq = useRef(0);
 
@@ -136,6 +142,30 @@ export default function EventForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typedCity]);
 
+  // A prefilled city with its point: its zone straight from the API, as for a picked city.
+  useEffect(() => {
+    if (!editing && cityHint && initial.city.trim()) void settleZone({ point: cityHint, cc: cityHint.cc, city: initial.city });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Editing: a stored point that is only the city's gazetteer centre (the address was typed, not picked) is
+  // not a pin — the hint must not say "pinned", and the Maps link already treats it as no pin (fix F8).
+  useEffect(() => {
+    const city = initial.city.trim();
+    if (!editing || !hasPoint(initial) || city.length < 2) return;
+    const ctl = new AbortController();
+    searchCities(city, ctl.signal)
+      .then((list) => {
+        const c = list.find((x) => x.name.toLowerCase() === city.toLowerCase());
+        if (!c || Math.abs(c.lat - (initial.lat as number)) > 1e-6 || Math.abs(c.lng - (initial.lng as number)) > 1e-6) return;
+        // Untouched since load: drop the centre (the API puts it back from the city name on save).
+        setF((prev) => (prev.lat === initial.lat && prev.lng === initial.lng ? { ...prev, lat: null, lng: null } : prev));
+      })
+      .catch(() => { /* keep what is stored */ });
+    return () => ctl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** Forget the previous place's zone at once: until the new one is known, the fallback applies. */
   function placeChanging() {
     zoneSeq.current++;
@@ -144,6 +174,12 @@ export default function EventForm({
   }
 
   function typeCity(text: string) {
+    // Only spacing or letter case changed ("київ " → "Київ"): the same city, so pin, country and zone stay (F8).
+    const norm = (v: string) => v.replace(/\s+/g, " ").trim().toLowerCase();
+    if (norm(text) !== "" && norm(text) === norm(f.city)) {
+      setF((prev) => ({ ...prev, city: text }));
+      return;
+    }
     placeChanging();
     // The picked point and country described the previous place.
     setF((prev) => ({ ...prev, city: text, lat: null, lng: null, country: null, country_code: null }));
@@ -171,10 +207,12 @@ export default function EventForm({
   function pickAddress(p: GeoPlace) {
     placeChanging();
     setTypedCity(null);
-    const name = cityName(p);
-    const city = name || f.city;
+    const city = cityStoredName(p) || f.city;
+    // A whole city picked in the address field names the city, not a spot: no pin (fix F8).
+    const pin = p.kind !== "city";
     setF((prev) => ({
-      ...prev, venue_address: addressLabel(p), city, lat: p.lat, lng: p.lng,
+      ...prev, venue_address: pin ? addressLabel(p) : prev.venue_address, city,
+      lat: pin ? p.lat : null, lng: pin ? p.lng : null,
       country: p.country ?? prev.country ?? null, country_code: p.country_code ?? prev.country_code ?? null,
     }));
     setCityPoint({ lat: p.lat, lng: p.lng });
@@ -270,9 +308,13 @@ export default function EventForm({
           <Section title={tr(lang, "Коли й де", "When and where")}>
             <div className="grid-2">
             <div className="field">
-              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{zone ? <span className="subtle" style={{ fontWeight: 500 }}> · {tzLabel(zone, lang)}</span> : null}</label>
+              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{zone ? <span className="subtle" style={{ fontWeight: 500 }} title={zone}> · {tzLabel(zone, lang)}</span> : null}</label>
               <input id="ev-date" className="input" type="datetime-local" value={f.starts_at_local} onChange={(e) => set("starts_at_local", e.target.value)} aria-invalid={!!show("date")} />
-              {show("date") && <span className="err">{show("date")}</span>}
+              {show("date") ? <span className="err">{show("date")}</span>
+                : !editing && f.timezone === undefined && !zonePending && zone ? (
+                  // The place's zone is not known: times are in the organiser's own (fix F7). Say so.
+                  <span className="hint">{tf(lang, "Час за вашим поясом ({zone}): оберіть місто чи адресу з підказок, щоб узяти пояс місця.", "Times are in your own zone ({zone}): pick the city or address from the suggestions to use the venue's.", { zone: tzLabel(zone, lang) })}</span>
+                ) : null}
             </div>
             <div className="field">
               <label htmlFor="ev-end">{tr(lang, "Кінець (необовʼязково)", "Ends (optional)")}</label>

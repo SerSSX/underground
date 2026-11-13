@@ -44,7 +44,7 @@ export default function ForgotPasswordPage() {
             {tr(lang, "Введіть email — надішлемо посилання для зміни паролю.", "Enter your email and we'll send a reset link.")}
           </p>
           <form className="form" onSubmit={submit}>
-            <input className="input" type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+            <input className="input" type="email" placeholder={tr(lang, "Email", "Email")} value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
             {error && <div className="error">{error}</div>}
             <button className="btn block" disabled={busy || !email.trim()}>{busy ? "…" : tr(lang, "Надіслати посилання", "Send reset link")}</button>
           </form>

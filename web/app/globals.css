@@ -89,7 +89,13 @@ button { font-family: inherit; }
 .tabbar { display: none; }
 @media (max-width: 860px) {
   .navlinks, .topbar .hide-mobile { display: none !important; }
-  .topbar-inner { height: 56px; padding: 0 16px; }
+  /* Fix F11: the signed-out bar (wordmark + language + "Log in") must fit 375 px in all 10 languages; es/pt/fr
+     "Iniciar sesión" / "Se connecter" overflowed by up to 29 px. Measured widths: TASK-303 doc, G2 fix batch. */
+  .topbar-inner { height: 56px; padding: 0 16px; gap: 12px; }
+  .topbar .wordmark { letter-spacing: 0.2em; font-size: 14px; }
+  .topbar-actions { gap: 6px; min-width: 0; }
+  .topbar-actions .btn.sm { padding: 0 12px; white-space: nowrap; }
+  .lang-pick { padding: 0 6px; }
   .container { padding: 16px 16px calc(var(--tabbar-h) + 32px + env(safe-area-inset-bottom)); }
   .tabbar {
     display: grid; grid-template-columns: repeat(5, 1fr);
@@ -438,7 +444,7 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 /* Place suggestions (TASK-303 G2) */
 .suggest { position: relative; min-width: 0; }
 .suggest > .input { width: 100%; }
-.suggest-pop { position: absolute; left: 0; right: 0; top: calc(100% + 6px); min-width: min(300px, calc(100vw - 32px)); z-index: 60; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-3); padding: 6px; }
+.suggest-pop { position: absolute; left: 0; right: 0; top: calc(100% + 6px); min-width: 100%; z-index: 60; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-3); padding: 6px; }
 .suggest-pop.end { left: auto; }
 .suggest-pop ul { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
 /* The field's icon sits before the (positioned) suggestion wrapper: keep it painted on top. */
@@ -451,3 +457,5 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 .suggest-foot a { color: var(--muted); text-decoration: underline; }
 .near-row { margin-top: 10px; }
 .near-row .msg { font-size: 13px; color: var(--muted); }
+.footer-attrib { margin: 0; }
+.footer-attrib a { color: var(--muted-2); text-decoration: underline; }

@@ -7,3 +7,4 @@ export function dateBadge(iso: string | null | undefined, lang: Lang, tz?: strin
 export function shortWhen(iso: string | null | undefined, lang: Lang, tz?: string | null): string;
 export function longDate(iso: string | null | undefined, lang: Lang, tz?: string | null): string;
 export function isoDateLabel(iso: string | null | undefined, lang: Lang): string;
+export function zoneLabel(tz: string, lang: Lang): string;

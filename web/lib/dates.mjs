@@ -95,3 +95,19 @@ export function isoDateLabel(iso, lang) {
   const date = trimDot(dtf(lang, { day: "numeric", month: "short" }, "UTC").format(new Date(Date.UTC(y, m - 1, d))));
   return iso.length >= 16 ? `${date} · ${iso.slice(11, 16)}` : date;
 }
+
+/** A zone's name for people, in their language (TASK-303 G2 fix F4): Intl's generic name ("Eastern European
+ *  Time", "日本標準時", "за східноєвропейським часом"). Where Intl has no name (it would print "GMT+3") or does
+ *  not support generic names, the IANA city ("Buenos Aires"). */
+export function zoneLabel(tz, lang) {
+  const city = (String(tz).split("/").pop() ?? String(tz)).replace(/_/g, " ");
+  try {
+    const part = new Intl.DateTimeFormat(INTL_LOCALES[lang] ?? lang, { timeZone: tz, timeZoneName: "longGeneric" })
+      .formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName");
+    const name = part?.value?.trim();
+    return name && !/^(GMT|UTC)\b/.test(name) && !/\d/.test(name) ? name : city;
+  } catch {
+    return city;
+  }
+}

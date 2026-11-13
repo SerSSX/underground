@@ -3,7 +3,8 @@
 import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { login, requestEmailCode, verifyEmailCode, setToken, errorMessage, isUnauthorized, safeNext } from "../../lib/api";
+import { login, requestEmailCode, verifyEmailCode, setToken, errorMessage, isUnauthorized, safeNext, syncUserLocale } from "../../lib/api";
+import { serverLocale } from "../../lib/i18n-core.mjs";
 import { EMAIL_CODE_LOGIN } from "../../lib/flags";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
@@ -37,6 +38,8 @@ function LoginForm() {
   }
   const done = (token: string) => {
     setToken(token);
+    // The language picked before signing in follows the account (skipped for a not-yet-onboarded one).
+    void syncUserLocale(serverLocale(lang));
     refresh();
     router.push(next);
   };
@@ -75,7 +78,7 @@ function LoginForm() {
       {mode === "password" ? (
         <form className="form" onSubmit={submitPassword}>
           <div className="field">
-            <label htmlFor="email">Email</label>
+            <label htmlFor="email">{tr(lang, "Email", "Email")}</label>
             <input id="email" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" inputMode="email" />
           </div>
           <div className="field">
@@ -90,7 +93,7 @@ function LoginForm() {
       ) : !codeSent ? (
         <form className="form" onSubmit={sendCode}>
           <div className="field">
-            <label htmlFor="email2">Email</label>
+            <label htmlFor="email2">{tr(lang, "Email", "Email")}</label>
             <input id="email2" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" inputMode="email" />
             <span className="hint">{tr(lang, "Надішлемо 6-значний код. Пароль не потрібен.", "We'll send a 6-digit code. No password needed.")}</span>
           </div>

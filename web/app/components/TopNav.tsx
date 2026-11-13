@@ -57,19 +57,21 @@ export default function TopNav() {
               <span className="avatar" style={{ background: "var(--surface-2)" }} aria-hidden />
             ) : authed ? (
               <div style={{ position: "relative" }} ref={menuRef}>
-                <button className="avatar-btn" aria-haspopup="menu" aria-expanded={open} aria-label={tr(lang, "Меню профілю", "Profile menu")} onClick={() => setOpen((o) => !o)}>
+                <button className="avatar-btn" aria-expanded={open} aria-controls="profile-menu" aria-label={tr(lang, "Меню профілю", "Profile menu")} onClick={() => setOpen((o) => !o)}>
                   <span className="avatar">{me.avatar_url ? <img src={me.avatar_url} alt="" /> : initials(me.name)}</span>
                 </button>
                 {open && (
-                  <div className="menu" role="menu">
+                  // A disclosure panel, not role="menu": it holds a <select> (the language), which a menu may not
+                  // contain, and its links work with Tab like any links (fix F12).
+                  <div className="menu" id="profile-menu">
                     <div className="menu-head">
                       <div className="strong">{me.name}</div>
                       <div className="muted xs">{me.email}</div>
                     </div>
-                    <Link href="/account" role="menuitem"><User className="ico sm" />{tr(lang, "Профіль", "Profile")}</Link>
-                    <Link href="/organizer" role="menuitem"><LayoutGrid className="ico sm" />{tr(lang, "Мої події", "My events")}</Link>
-                    <div className="menu-lang" role="none"><Globe className="ico sm" aria-hidden /><LanguagePicker onPicked={() => setOpen(false)} /></div>
-                    <button role="menuitem" className="danger" onClick={signOut}><LogOut className="ico sm" />{tr(lang, "Вийти", "Log out")}</button>
+                    <Link href="/account"><User className="ico sm" />{tr(lang, "Профіль", "Profile")}</Link>
+                    <Link href="/organizer"><LayoutGrid className="ico sm" />{tr(lang, "Мої події", "My events")}</Link>
+                    <div className="menu-lang"><Globe className="ico sm" aria-hidden /><LanguagePicker onPicked={() => setOpen(false)} /></div>
+                    <button className="danger" onClick={signOut}><LogOut className="ico sm" />{tr(lang, "Вийти", "Log out")}</button>
                   </div>
                 )}
               </div>

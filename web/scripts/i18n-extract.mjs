@@ -32,7 +32,7 @@ function walk(dir, out = []) {
 }
 
 /** Blank out comments (keeping offsets and newlines), leaving strings and template literals intact. */
-function stripComments(src) {
+export function stripComments(src) {
   const out = src.split("");
   let i = 0;
   const n = src.length;
@@ -73,7 +73,7 @@ function stripComments(src) {
 }
 
 /** Split the arguments of a call starting right after "(": raw text per argument and the end offset. */
-function splitArgs(src, start) {
+export function splitArgs(src, start) {
   const args = [];
   let depth = 0;
   let i = start;

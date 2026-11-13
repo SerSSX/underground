@@ -1,12 +1,13 @@
 "use client";
 
 import PlaceSuggest, { type ExtraOption } from "./PlaceSuggest";
-import { cityLabel, cityName, type GeoPlace } from "../../lib/geo-core.mjs";
+import { cityLabel, cityName, cityStoredName, type GeoPlace } from "../../lib/geo-core.mjs";
 import { useLang, tr } from "../../lib/i18n";
 
-/** City field with worldwide suggestions from the geocoder (TASK-303 G2), "City, Region, Country".
- *  Picking sets the text to the city's name; `onPick` also gets the place (point, country, code). Any typed
- *  name is accepted as is. */
+/** City field with worldwide suggestions from the geocoder (TASK-303 G2), "City, Region, Country" in the
+ *  reader's language. Picking sets the text to the city's STORED name (OSM default language, e.g. "Київ" for
+ *  an English reader's "Kyiv", so every language files events under one name); `onPick` also gets the place
+ *  (point, country, code). Any typed name is accepted as is. */
 export default function CityInput({
   value, onChange, onPick, id, placeholder, ariaLabel, extra, popEnd, className, ariaInvalid, onEnter,
 }: {
@@ -32,14 +33,13 @@ export default function CityInput({
       value={value}
       onChange={onChange}
       onPick={(p) => {
-        const name = cityName(p) || p.name || p.label;
+        const name = cityStoredName(p) || cityName(p) || p.name || p.label;
         if (onPick) onPick(p, name);
         else onChange(name);
       }}
       describe={(p) => ({ primary: cityLabel(p) })}
       placeholder={placeholder ?? tr(lang, "Почни вводити місто…", "Start typing a city…")}
       ariaLabel={ariaLabel}
-      autoComplete="address-level2"
       maxLength={100}
       extra={extra}
       popEnd={popEnd}

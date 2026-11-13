@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Check the translated catalogs against locales/_source.json (TASK-303 L1). No dependencies.
 //
-//   node scripts/i18n-check.mjs                  exit 1 on any problem, missing keys included (the L2 bar)
-//   node scripts/i18n-check.mjs --allow-missing  missing keys are reported, not failed (what CI runs now)
+//   node scripts/i18n-check.mjs                  exit 1 on any problem, missing keys included — the bar CI holds
+//                                                (lib/i18n.test.mjs runs the same check without allowMissing)
+//   node scripts/i18n-check.mjs --allow-missing  missing keys are reported, not failed (local drafting only)
 //
 // A problem is: a catalog that is not a JSON object; a value of the wrong shape (text where the source is
 // a plural object, or the reverse; an empty text); a plural without a form the language needs (its CLDR
