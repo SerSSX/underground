@@ -64,6 +64,8 @@ libc = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# A request body that stalls, for the upload-deadline test (already in the tree via axum).
+futures-util = "0.3"
 
 [profile.release]
 opt-level = 3

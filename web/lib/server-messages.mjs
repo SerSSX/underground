@@ -83,6 +83,7 @@ export const SERVER_MESSAGES = {
   "пошта тимчасово недоступна, спробуйте пізніше": "mail is temporarily unavailable, try again later",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "the image is too complex to process — save it as JPEG or make it smaller",
   "забагато завантажень одночасно, спробуйте за хвилину": "too many uploads at once, try again in a minute",
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "the upload is taking too long — check your connection and try again",
 };
 
 /** Server texts with numbers in them: the regex captures the values, in the order of `vars`. */

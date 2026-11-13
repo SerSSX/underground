@@ -173,3 +173,18 @@ See `deploy/README.md` → "Пошта (Resend)"; the key is set with `deploy/se
   address list can be brute-forced from a plain hash).
 - Bucket IPv6 per-IP mail caps by /64 (one host owns a whole /64; today each address in it counts separately).
 - People behind carrier-grade NAT share one IP and so share the 10-a-day mail cap.
+
+## Review round 5 (2026-11-13)
+
+- N: the whole multipart read runs under `UPLOAD_BODY_SECS` (60 s); a body that trickles in gets 408 «завантаження
+  триває надто довго — перевірте з'єднання і спробуйте ще раз» (all catalogs) and frees its place. One account holds
+  at most one place in the waiting room (an in-memory set of user ids with a drop guard, taken right after the queue
+  place, released with it); a second concurrent upload by the same account gets **429** (the existing rate-limit
+  message: it is about that account, not about server load). Test `task304_upload_body`.
+  The test found a real bug on its first run: `set.insert(u).then_some(Self(u))` built the guard eagerly and, on a
+  refusal, dropped it while the lock was held — a self-deadlock (and it would have freed the first upload's place).
+  Fixed (lock released before any guard exists); unit test `a_refused_second_place_leaves_the_first_in_place`.
+- Test setup changes (no assertion changed): `task304_upload_queue` now uses one user per upload, and
+  `task304_upload_cancel`'s request B is another user — with the per-user place both scenarios need distinct users.
+- DEV compose does not pass `UPLOAD_QUEUE`, `UPLOAD_BODY_SECS`, `IMAGE_DECODE_CPU_SECS`, `IMAGE_DECODE_WALL_SECS`
+  (noted in docs/configuration-manual.md).

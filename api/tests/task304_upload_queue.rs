@@ -44,19 +44,24 @@ async fn a_full_waiting_room_answers_503_and_the_api_stays_up(pool: PgPool) {
         db: pool,
         jwt_secret: "test-secret".into(),
     });
-    let req = Request::post("/api/auth/register")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({"email":"queue@x.co","password":"password1","name":"U"}).to_string(),
-        ))
+    // One user per upload: since round 5 a user holds at most one place in the room.
+    let mut tokens = Vec::new();
+    for i in 0..=UPLOAD_QUEUE {
+        let req = Request::post("/api/auth/register")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", format!("198.51.100.{}", 70 + i))
+            .body(Body::from(
+                json!({"email": format!("queue{i}@x.co"), "password": "password1", "name": "U"}).to_string(),
+            ))
+            .unwrap();
+        let v: Value = serde_json::from_slice(
+            &to_bytes(app.clone().oneshot(req).await.unwrap().into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
         .unwrap();
-    let v: Value = serde_json::from_slice(
-        &to_bytes(app.clone().oneshot(req).await.unwrap().into_body(), usize::MAX)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let token = v["token"].as_str().unwrap().to_string();
+        tokens.push(v["token"].as_str().unwrap().to_string());
+    }
     let mut png = Cursor::new(Vec::new());
     DynamicImage::new_rgb8(16, 16)
         .write_to(&mut png, ImageFormat::Png)
@@ -66,7 +71,7 @@ async fn a_full_waiting_room_answers_503_and_the_api_stays_up(pool: PgPool) {
     // A long decode holds the slot; UPLOAD_QUEUE uploads come in and wait for it.
     let slot = hold_decode_slot().await;
     let waiting: Vec<_> = (0..UPLOAD_QUEUE)
-        .map(|_| tokio::spawn(app.clone().oneshot(upload_req(&token, &png))))
+        .map(|i| tokio::spawn(app.clone().oneshot(upload_req(&tokens[i], &png))))
         .collect();
     for _ in 0..2000 {
         if upload_queue_free() == 0 {
@@ -77,10 +82,13 @@ async fn a_full_waiting_room_answers_503_and_the_api_stays_up(pool: PgPool) {
     assert_eq!(upload_queue_free(), 0, "the waiting room is full");
 
     // One more: refused at once, not queued behind the others.
-    let extra = tokio::time::timeout(Duration::from_secs(5), app.clone().oneshot(upload_req(&token, &png)))
-        .await
-        .expect("[SEC] the extra upload must be refused at once, not wait in memory")
-        .unwrap();
+    let extra = tokio::time::timeout(
+        Duration::from_secs(5),
+        app.clone().oneshot(upload_req(&tokens[UPLOAD_QUEUE], &png)),
+    )
+    .await
+    .expect("[SEC] the extra upload must be refused at once, not wait in memory")
+    .unwrap();
     assert_eq!(extra.status(), StatusCode::SERVICE_UNAVAILABLE);
     let v: Value = serde_json::from_slice(&to_bytes(extra.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(v["error"], BUSY_MESSAGE);

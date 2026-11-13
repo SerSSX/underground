@@ -35,6 +35,7 @@
 | `IMAGE_DECODE_MEM_MB` | `192` | Межа адресного простору (МіБ) дочірнього процесу, що декодує завантажені картинки (`underground-api decode-image`); Linux її жорстко застосовує, macOS — ні. Плюс 20 с процесора і 30 с часу; перевищення → 422 «зображення надто складне» |
 | `IMAGE_DECODE_CPU_SECS` / `IMAGE_DECODE_WALL_SECS` | `20` / `30` | Процесорний і загальний час дочірнього декодера (у проді не змінювати; Linux-тест ліміту піднімає їх собі до 300, бо debug-збірка повільна) |
 | `UPLOAD_QUEUE` | `3` | Скільки завантажень картинок API приймає одночасно (одне декодується, решта чекають із тілом у пам’яті); понад — 503 «забагато завантажень одночасно» |
+| `UPLOAD_BODY_SECS` | `60` | За скільки секунд клієнт має передати все тіло завантаження; повільніше → 408 «завантаження триває надто довго», місце в черзі звільняється. Окремо: один користувач — щонайбільше одне місце в черзі (друге одночасне завантаження → 429) |
 | `IMAGE_DECODER_BIN` | власний виконуваний файл API | Шлях до програми-декодера (лише для тестів) |
 | `FORGOT_LIMIT_PER_IP` / `FORGOT_LIMIT_PER_EMAIL` | `20` / `5` за годину | Запити «забули пароль» з одного IP / на одну адресу |
 | `RESET_LIMIT_PER_IP` | `30` за годину | Спроби скинути пароль за посиланням з одного IP |
@@ -44,6 +45,10 @@
 > Паролі — argon2id (параметри-константи в коді; ніколи не в env/логах) — BR-016.
 
 > Кожна змінна валідовується на старті; відсутність required у проді = fail-fast. Зміна env/secrets — лише з апрувом (§10).
+
+> **DEV compose:** `UPLOAD_QUEUE`, `UPLOAD_BODY_SECS`, `IMAGE_DECODE_CPU_SECS` and `IMAGE_DECODE_WALL_SECS` are NOT
+> passed by `deploy/docker-compose.dev.yml`, so on DEV they stay at their defaults (3, 60, 20, 30) unless the compose
+> file is edited to pass them. (`IMAGE_DECODE_MEM_MB`, `MAIL_DAILY_BUDGET`, `MAIL_DAILY_PER_IP` are passed.)
 
 ## Ports (§8.1, hard)
 

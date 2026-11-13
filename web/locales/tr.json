@@ -612,5 +612,6 @@
   "зображення завелике: до 32 мегапікселів": "görsel çok büyük: en fazla 32 megapiksel",
   "пошта тимчасово недоступна, спробуйте пізніше": "e-posta geçici olarak kullanılamıyor, daha sonra tekrar dene",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "görsel işlenemeyecek kadar karmaşık — JPEG olarak kaydet ya da küçült",
-  "забагато завантажень одночасно, спробуйте за хвилину": "aynı anda çok fazla yükleme var, bir dakika sonra tekrar dene"
+  "забагато завантажень одночасно, спробуйте за хвилину": "aynı anda çok fazla yükleme var, bir dakika sonra tekrar dene",
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "yükleme çok uzun sürüyor — bağlantını kontrol edip tekrar dene"
 }

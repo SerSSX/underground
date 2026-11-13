@@ -68,6 +68,21 @@ async fn a_dropped_upload_keeps_its_slot_until_its_decode_ends(pool: PgPool) {
     )
     .unwrap();
     let token = v["token"].as_str().unwrap().to_string();
+    // B is another user: since round 5 one user holds at most one place, and A's place stays taken
+    // until A's orphaned decode ends.
+    let req = Request::post("/api/auth/register")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"email":"cancel-b@x.co","password":"password1","name":"B"}).to_string(),
+        ))
+        .unwrap();
+    let v: Value = serde_json::from_slice(
+        &to_bytes(app.clone().oneshot(req).await.unwrap().into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let token_b = v["token"].as_str().unwrap().to_string();
 
     // A: a picture that takes a while to decode and re-encode (debug build: seconds).
     let big = jpeg(4000, 3000);
@@ -91,7 +106,7 @@ async fn a_dropped_upload_keeps_its_slot_until_its_decode_ends(pool: PgPool) {
     );
 
     // B arrives while A's orphaned decode still runs: it must wait for it, not run beside it.
-    let resp = app.clone().oneshot(upload_req(&token, &jpeg(64, 48))).await.unwrap();
+    let resp = app.clone().oneshot(upload_req(&token_b, &jpeg(64, 48))).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let (in_flight, peak) = decode_stats();
     assert_eq!(

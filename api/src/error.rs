@@ -32,6 +32,9 @@ pub enum AppError {
     /// 503: an upstream service (the geocoder) failed. Carries a short safe message only.
     #[error("{0}")]
     Unavailable(String),
+    /// 408: the client took too long to send its request body (TASK-304 upload deadline).
+    #[error("{0}")]
+    RequestTimeout(String),
 }
 
 impl IntoResponse for AppError {
@@ -50,6 +53,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             AppError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            AppError::RequestTimeout(_) => StatusCode::REQUEST_TIMEOUT,
         };
         // Body carries only a safe message — never internal details (SEC).
         (status, Json(json!({ "error": self.to_string() }))).into_response()
@@ -80,6 +84,10 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(status_of(AppError::RateLimited), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            status_of(AppError::RequestTimeout("x".into())),
+            StatusCode::REQUEST_TIMEOUT
+        );
         assert_eq!(
             status_of(AppError::Unavailable("u".into())),
             StatusCode::SERVICE_UNAVAILABLE

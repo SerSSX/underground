@@ -612,5 +612,6 @@
   "зображення завелике: до 32 мегапікселів": "l'immagine è troppo grande: massimo 32 megapixel",
   "пошта тимчасово недоступна, спробуйте пізніше": "l'email è temporaneamente non disponibile, riprova più tardi",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "l'immagine è troppo complessa da elaborare: salvala come JPEG o riducine le dimensioni",
-  "забагато завантажень одночасно, спробуйте за хвилину": "troppi caricamenti contemporaneamente, riprova tra un minuto"
+  "забагато завантажень одночасно, спробуйте за хвилину": "troppi caricamenti contemporaneamente, riprova tra un minuto",
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "il caricamento sta impiegando troppo tempo: controlla la connessione e riprova"
 }

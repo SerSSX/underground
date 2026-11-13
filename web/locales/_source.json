@@ -610,6 +610,7 @@
   "пошта тимчасово недоступна, спробуйте пізніше": "mail is temporarily unavailable, try again later",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "the image is too complex to process — save it as JPEG or make it smaller",
   "забагато завантажень одночасно, спробуйте за хвилину": "too many uploads at once, try again in a minute",
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "the upload is taking too long — check your connection and try again",
   "Помилка {status}": "Error {status}",
   "на одну людину — не більше {max} місць (у вас уже {held})": "at most {max} places per person (you already have {held})",
   "забагато активних запрошень (до {max}); скасуйте непотрібні": "too many pending invitations (up to {max}); cancel the ones you don't need"

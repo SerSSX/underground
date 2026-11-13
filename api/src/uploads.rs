@@ -120,6 +120,72 @@ pub fn upload_queue_free() -> usize {
 
 /// The answer when the waiting room is full.
 pub const BUSY_MESSAGE: &str = "забагато завантажень одночасно, спробуйте за хвилину";
+/// The answer when the body did not arrive within [`UPLOAD_BODY_SECS`].
+pub const SLOW_BODY_MESSAGE: &str = "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз";
+/// Seconds a client has to send the whole upload body (`UPLOAD_BODY_SECS` overrides). A body that
+/// trickles in would otherwise hold its waiting-room place for ever.
+pub const UPLOAD_BODY_SECS: u64 = 60;
+
+/// Users with an upload in the waiting room: one place per user, so one account cannot fill it.
+fn users_in_room() -> &'static std::sync::Mutex<std::collections::HashSet<Uuid>> {
+    static U: OnceLock<std::sync::Mutex<std::collections::HashSet<Uuid>>> = OnceLock::new();
+    U.get_or_init(Default::default)
+}
+
+/// A user's place in the waiting room; dropping it frees the place.
+struct UserPlace(Uuid);
+
+impl UserPlace {
+    fn take(user: Uuid) -> Option<Self> {
+        // The lock is released BEFORE a guard can exist: `then_some(Self(..))` would build (and,
+        // on refusal, drop) a guard while the lock is held — a self-deadlock that also frees the
+        // place of the upload already in the room.
+        let inserted = users_in_room().lock().unwrap_or_else(|p| p.into_inner()).insert(user);
+        if inserted {
+            Some(Self(user))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for UserPlace {
+    fn drop(&mut self) {
+        users_in_room()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// Read the `file` field: its bytes, after the type and size checks.
+async fn read_file(multipart: &mut Multipart) -> Result<axum::body::Bytes, AppError> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::Validation("bad multipart".into()))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let content_type = field.content_type().unwrap_or("").to_string();
+        if !allowed_content_type(&content_type) {
+            return Err(AppError::Validation("only jpeg/png/webp images are allowed".into()));
+        }
+        let data = field
+            .bytes()
+            .await
+            .map_err(|_| AppError::Validation("upload too large or interrupted".into()))?;
+        if data.is_empty() {
+            return Err(AppError::Validation("empty file".into()));
+        }
+        if data.len() > MAX_BYTES {
+            return Err(AppError::Validation("file must be at most 5 MB".into()));
+        }
+        return Ok(data);
+    }
+    Err(AppError::Validation("missing 'file' field".into()))
+}
 
 /// Children running right now and the most seen at once (read by the cancellation test).
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
@@ -507,6 +573,8 @@ pub async fn upload(
     let queued = upload_queue()
         .try_acquire_owned()
         .map_err(|_| AppError::Unavailable(BUSY_MESSAGE.into()))?;
+    // One place per user: a second upload of the same account while one is in the room → 429.
+    let user_place = UserPlace::take(user.id).ok_or(AppError::RateLimited)?;
     crate::ratelimit::hit(
         &st.db,
         &format!("upload:{}", user.id),
@@ -514,64 +582,45 @@ pub async fn upload(
         3600,
     )
     .await?;
-    while let Some(field) = multipart
-        .next_field()
+    // The whole body within the deadline; a trickling client loses its place with 408.
+    let deadline = Duration::from_secs(env_u64("UPLOAD_BODY_SECS", UPLOAD_BODY_SECS));
+    let data = tokio::time::timeout(deadline, read_file(&mut multipart))
         .await
-        .map_err(|_| AppError::Validation("bad multipart".into()))?
-    {
-        if field.name() != Some("file") {
-            continue;
-        }
-        let content_type = field.content_type().unwrap_or("").to_string();
-        if !allowed_content_type(&content_type) {
-            return Err(AppError::Validation("only jpeg/png/webp images are allowed".into()));
-        }
-        let data = field
-            .bytes()
-            .await
-            .map_err(|_| AppError::Validation("upload too large or interrupted".into()))?;
-        if data.is_empty() {
-            return Err(AppError::Validation("empty file".into()));
-        }
-        if data.len() > MAX_BYTES {
-            return Err(AppError::Validation("file must be at most 5 MB".into()));
-        }
-        // Both permits move INTO a task of its own: dropping this request (client gone) neither
-        // frees them nor stops the child. The decode slot is released when the child has been
-        // reaped (`decode_in_child` waits for it on every path, timeout included); the waiting-room
-        // place right after.
-        let permit = processing().acquire_owned().await.map_err(|_| AppError::Internal)?;
-        let processed = tokio::spawn(async move {
-            let _in_the_room = queued;
-            let _one_at_a_time = permit;
-            let now = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
-            PEAK.fetch_max(now, Ordering::SeqCst);
-            let out = decode_in_child(data).await;
-            IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
-            out
-        })
+        .map_err(|_| AppError::RequestTimeout(SLOW_BODY_MESSAGE.into()))??;
+    // Both permits move INTO a task of its own: dropping this request (client gone) neither
+    // frees them nor stops the child. The decode slot is released when the child has been
+    // reaped (`decode_in_child` waits for it on every path, timeout included); the waiting-room
+    // place right after.
+    let permit = processing().acquire_owned().await.map_err(|_| AppError::Internal)?;
+    let processed = tokio::spawn(async move {
+        let _in_the_room = (queued, user_place);
+        let _one_at_a_time = permit;
+        let now = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+        PEAK.fetch_max(now, Ordering::SeqCst);
+        let out = decode_in_child(data).await;
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        out
+    })
+    .await
+    .map_err(|_| AppError::Internal)??;
+    let dir = uploads_dir();
+    tokio::fs::create_dir_all(&dir).await.map_err(|_| AppError::Internal)?;
+    let id = Uuid::new_v4();
+    let (name, small_name) = (format!("{id}.webp"), format!("{id}-480.webp"));
+    tokio::fs::write(format!("{dir}/{name}"), &processed.large)
         .await
-        .map_err(|_| AppError::Internal)??;
-        let dir = uploads_dir();
-        tokio::fs::create_dir_all(&dir).await.map_err(|_| AppError::Internal)?;
-        let id = Uuid::new_v4();
-        let (name, small_name) = (format!("{id}.webp"), format!("{id}-480.webp"));
-        tokio::fs::write(format!("{dir}/{name}"), &processed.large)
-            .await
-            .map_err(|_| AppError::Internal)?;
-        tokio::fs::write(format!("{dir}/{small_name}"), &processed.small)
-            .await
-            .map_err(|_| AppError::Internal)?;
-        let base = public_base_url();
-        return Ok((
-            StatusCode::CREATED,
-            Json(UploadResp {
-                url: format!("{base}/uploads/{name}"),
-                url_small: format!("{base}/uploads/{small_name}"),
-            }),
-        ));
-    }
-    Err(AppError::Validation("missing 'file' field".into()))
+        .map_err(|_| AppError::Internal)?;
+    tokio::fs::write(format!("{dir}/{small_name}"), &processed.small)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    let base = public_base_url();
+    Ok((
+        StatusCode::CREATED,
+        Json(UploadResp {
+            url: format!("{base}/uploads/{name}"),
+            url_small: format!("{base}/uploads/{small_name}"),
+        }),
+    ))
 }
 
 #[cfg(test)]
@@ -623,6 +672,17 @@ mod tests {
         let mut huge = f.clone();
         huge[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(decode_frame(&huge), None, "a length past the end");
+    }
+
+    #[test]
+    fn a_refused_second_place_leaves_the_first_in_place() {
+        let u = Uuid::new_v4();
+        let first = UserPlace::take(u).expect("the first place");
+        assert!(UserPlace::take(u).is_none(), "one place per user");
+        assert!(UserPlace::take(u).is_none(), "the refusal did not free the first place");
+        drop(first);
+        let again = UserPlace::take(u);
+        assert!(again.is_some(), "free again once the first ends");
     }
 
     #[test]
