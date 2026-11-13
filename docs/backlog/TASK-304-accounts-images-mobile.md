@@ -144,3 +144,32 @@ See `deploy/README.md` → "Пошта (Resend)"; the key is set with `deploy/se
   no shared database yet) checked before the lookup for every address → 429; per-address cap now 5 per rolling hour.
   Residual in docs/decisions.md.
 - Web: the /account password length counts code points (`[...s].length`), as the API does.
+
+## Review round 4 (2026-11-13)
+
+- F: a waiting room of `UPLOAD_QUEUE` = 3 uploads (one decoding, two waiting), taken with `try_acquire_owned` BEFORE
+  the body is read; a 4th gets 503 «забагато завантажень одночасно, спробуйте за хвилину» (all catalogs). The place is
+  held by the decode task until it ends. Bounds API memory to ~3 × 5 MB of bodies. Test `task304_upload_queue`.
+  The size is `UPLOAD_QUEUE` (default 3, read once). The test binaries that upload from many parallel tests
+  (task304_images, task304_upload_cancel, uploads, uploads_errors) set it to 64 in their setup — a fixture change, no
+  assertion changed; `task304_upload_queue` keeps the production 3.
+- G: the child stays outside the timed future; on timeout (and on an I/O error or an oversized answer) the API kills
+  it and waits for it, so the decode slot is released only after the child has been reaped.
+- I: `RLIMIT_CORE = 0` in the child: no core dump holding an uploader's picture.
+- J: at most 16 + 4 + 2 × 16 MB read from the child's stdout, more → "too complex"; the child's encode failure is
+  "too complex" (422), no longer 500.
+- H and test changes (was / now / why):
+  - `hostile_pictures_are_processed_or_refused_and_the_api_survives`: was — all four fixtures on every OS; now — the
+    three ~300 MB ones on Linux only, the animated one everywhere; why — macOS does not enforce the child's limit, so
+    on the owner's 8 GB Mac each really took ~300 MB (the Mac swapped to a full disk on 13 Nov).
+  - New Linux-only binary `task304_image_limits_linux`: a 4032 × 3024 baseline JPEG answers 201 with the DEFAULT
+    limit; the decoy JPEG 422 with the default limit and 201 with `IMAGE_DECODE_MEM_MB=4096` (a memory kill, not a
+    time kill). It raises `IMAGE_DECODE_CPU_SECS` / `IMAGE_DECODE_WALL_SECS` to 300 for itself only, because debug
+    decodes on a CI runner are slow; production stays at 20 s / 30 s.
+
+## Before prod (record only, review round 4 K)
+
+- Hash IPs and addresses in `mail_sends` with an HMAC under a server key, not plain SHA-256 (an IPv4 or a known
+  address list can be brute-forced from a plain hash).
+- Bucket IPv6 per-IP mail caps by /64 (one host owns a whole /64; today each address in it counts separately).
+- People behind carrier-grade NAT share one IP and so share the 10-a-day mail cap.

@@ -611,5 +611,6 @@
   "файл не є зображенням JPEG, PNG або WebP": "dosya bir JPEG, PNG veya WebP görseli değil",
   "зображення завелике: до 32 мегапікселів": "görsel çok büyük: en fazla 32 megapiksel",
   "пошта тимчасово недоступна, спробуйте пізніше": "e-posta geçici olarak kullanılamıyor, daha sonra tekrar dene",
-  "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "görsel işlenemeyecek kadar karmaşık — JPEG olarak kaydet ya da küçült"
+  "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "görsel işlenemeyecek kadar karmaşık — JPEG olarak kaydet ya da küçült",
+  "забагато завантажень одночасно, спробуйте за хвилину": "aynı anda çok fazla yükleme var, bir dakika sonra tekrar dene"
 }

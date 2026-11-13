@@ -15,7 +15,9 @@
 //! were bypassed): decoding and encoding run in a child process — this same binary started as
 //! `underground-api decode-image` — with a hard address-space limit (`RLIMIT_AS`,
 //! `IMAGE_DECODE_MEM_MB`, default 192 MiB), a CPU limit ([`DECODE_CPU_SECS`]) and a wall-clock
-//! timeout ([`DECODE_WALL_SECS`]). Whatever a picture makes a decoder allocate, the child dies
+//! timeout ([`DECODE_WALL_SECS`]); no core dumps. At most [`UPLOAD_QUEUE`] uploads are let in at
+//! once (one decoding, the rest waiting with their bodies in memory); one more gets 503 before its
+//! body is read. Whatever a picture makes a decoder allocate, the child dies
 //! alone and the API answers "too complex". The child gets the upload on stdin and nothing else:
 //! no environment (so no secrets), no database, no network. One child runs at a time.
 //! `RLIMIT_AS` is enforced by Linux (production, CI); macOS ignores it, so on a Mac the limit is
@@ -62,10 +64,23 @@ pub const DECODE_SUBCOMMAND: &str = "decode-image";
 /// Address-space limit of the child, unless `IMAGE_DECODE_MEM_MB` says otherwise. With the API's
 /// own ~40–60 MB this keeps both under the container's 256 MB.
 pub const DEFAULT_DECODE_MEM_MB: u64 = 192;
-/// CPU seconds the child may use (`RLIMIT_CPU`; the kernel kills it after that).
+/// CPU seconds the child may use (`RLIMIT_CPU`; the kernel kills it after that), unless
+/// `IMAGE_DECODE_CPU_SECS` says otherwise.
 pub const DECODE_CPU_SECS: u64 = 20;
-/// Wall-clock seconds before the API kills the child.
+/// Wall-clock seconds before the API kills the child, unless `IMAGE_DECODE_WALL_SECS` says otherwise.
 pub const DECODE_WALL_SECS: u64 = 30;
+/// Uploads let in at once: the one being decoded plus those waiting for it. Each holds its body
+/// (≤ 5 MB) in API memory, so this bounds the waiting room; one more answers 503 at once, before its
+/// body is read. `UPLOAD_QUEUE` overrides it (read once, at the first upload).
+pub const UPLOAD_QUEUE: usize = 3;
+
+/// The waiting-room size in force.
+pub fn upload_queue_size() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| env_u64("UPLOAD_QUEUE", UPLOAD_QUEUE as u64) as usize)
+}
+/// Most bytes read back from the child: the frame header plus two pictures of at most 16 MB.
+const MAX_FRAME: usize = 16 + 4 + 2 * 16 * 1024 * 1024;
 
 /// Child exit codes (0 = success, the frame is on stdout).
 const EXIT_NOT_IMAGE: i32 = 3;
@@ -81,6 +96,30 @@ fn processing() -> Arc<Semaphore> {
     static P: OnceLock<Arc<Semaphore>> = OnceLock::new();
     P.get_or_init(|| Arc::new(Semaphore::new(1))).clone()
 }
+
+/// The waiting room (see [`UPLOAD_QUEUE`]).
+fn upload_queue() -> Arc<Semaphore> {
+    static Q: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    Q.get_or_init(|| Arc::new(Semaphore::new(upload_queue_size()))).clone()
+}
+
+/// Test hook: take the decode slot, as a long decode would.
+#[doc(hidden)]
+pub async fn hold_decode_slot() -> tokio::sync::OwnedSemaphorePermit {
+    processing()
+        .acquire_owned()
+        .await
+        .expect("the decode semaphore is never closed")
+}
+
+/// Test hook: free places in the waiting room.
+#[doc(hidden)]
+pub fn upload_queue_free() -> usize {
+    upload_queue().available_permits()
+}
+
+/// The answer when the waiting room is full.
+pub const BUSY_MESSAGE: &str = "забагато завантажень одночасно, спробуйте за хвилину";
 
 /// Children running right now and the most seen at once (read by the cancellation test).
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
@@ -134,7 +173,8 @@ impl From<Reject> for AppError {
             Reject::NotImage => AppError::Validation("файл не є зображенням JPEG, PNG або WebP".into()),
             Reject::TooLarge => AppError::Validation("зображення завелике: до 32 мегапікселів".into()),
             Reject::Complex => AppError::Validation(COMPLEX_MESSAGE.into()),
-            Reject::Encode => AppError::Internal,
+            // The child could not encode: the same honest answer as any other child failure.
+            Reject::Encode => AppError::Validation(COMPLEX_MESSAGE.into()),
         }
     }
 }
@@ -334,18 +374,21 @@ fn decoder_bin() -> std::io::Result<PathBuf> {
     }
 }
 
-/// The child's address-space limit in bytes (`IMAGE_DECODE_MEM_MB`, default 192).
-pub fn decode_mem_bytes() -> u64 {
-    std::env::var("IMAGE_DECODE_MEM_MB")
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|mb| *mb > 0)
-        .unwrap_or(DEFAULT_DECODE_MEM_MB)
-        .saturating_mul(1024 * 1024)
+        .filter(|n| *n > 0)
+        .unwrap_or(default)
+}
+
+/// The child's address-space limit in bytes (`IMAGE_DECODE_MEM_MB`, default 192).
+pub fn decode_mem_bytes() -> u64 {
+    env_u64("IMAGE_DECODE_MEM_MB", DEFAULT_DECODE_MEM_MB).saturating_mul(1024 * 1024)
 }
 
 /// Runs in the forked child between fork and exec: only async-signal-safe calls (setrlimit).
-fn limit_child(mem_bytes: u64) -> std::io::Result<()> {
+fn limit_child(mem_bytes: u64, cpu_secs: u64) -> std::io::Result<()> {
     fn set(resource: libc::c_int, value: u64) -> std::io::Result<()> {
         let lim = libc::rlimit {
             rlim_cur: value as libc::rlim_t,
@@ -357,7 +400,9 @@ fn limit_child(mem_bytes: u64) -> std::io::Result<()> {
         }
         Ok(())
     }
-    set(libc::RLIMIT_CPU as libc::c_int, DECODE_CPU_SECS)?;
+    set(libc::RLIMIT_CPU as libc::c_int, cpu_secs)?;
+    // No core dump: it would hold the uploader's picture, on the box's disk.
+    set(libc::RLIMIT_CORE as libc::c_int, 0)?;
     // Linux enforces the address-space limit; macOS accepts or refuses it but never enforces it,
     // so it is not set there.
     #[cfg(target_os = "linux")]
@@ -375,49 +420,74 @@ async fn decode_in_child(data: axum::body::Bytes) -> Result<Processed, AppError>
         AppError::Internal
     })?;
     let mem = decode_mem_bytes();
+    let cpu = env_u64("IMAGE_DECODE_CPU_SECS", DECODE_CPU_SECS);
+    let wall = Duration::from_secs(env_u64("IMAGE_DECODE_WALL_SECS", DECODE_WALL_SECS));
     let mut cmd = tokio::process::Command::new(bin);
     cmd.arg(DECODE_SUBCOMMAND)
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        // A backstop only: every path below reaps the child itself.
         .kill_on_drop(true);
     // SAFETY: the closure only calls setrlimit (async-signal-safe) and allocates nothing.
     unsafe {
-        cmd.pre_exec(move || limit_child(mem));
+        cmd.pre_exec(move || limit_child(mem, cpu));
     }
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!(error = %e, "uploads: cannot start the decoder child");
         AppError::Internal
     })?;
     let mut stdin = child.stdin.take().ok_or(AppError::Internal)?;
-    let run = async move {
+    let stdout = child.stdout.take().ok_or(AppError::Internal)?;
+    // The child stays OUTSIDE the timed future, so a timeout can kill it and wait for it: the slot
+    // is released only after the child has been reaped.
+    let io = async {
         // A child that dies early closes the pipe: the write error is irrelevant, its status says why.
         let _ = stdin.write_all(&data).await;
         drop(stdin);
-        child.wait_with_output().await
+        let mut out = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(
+            &mut tokio::io::AsyncReadExt::take(stdout, MAX_FRAME as u64 + 1),
+            &mut out,
+        )
+        .await
+        .map(|_| out)
     };
-    // On timeout the future is dropped, and with it the child (kill_on_drop).
-    let out = match tokio::time::timeout(Duration::from_secs(DECODE_WALL_SECS), run).await {
-        Ok(Ok(out)) => out,
+    let out = match tokio::time::timeout(wall, io).await {
+        Ok(Ok(out)) if out.len() <= MAX_FRAME => out,
+        Ok(Ok(_)) => {
+            tracing::warn!("uploads: decoder child answered more than the frame cap");
+            let _ = child.kill().await;
+            return Err(Reject::Complex.into());
+        }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "uploads: decoder child I/O failed");
+            let _ = child.kill().await;
             return Err(Reject::Complex.into());
         }
         Err(_) => {
-            tracing::warn!("uploads: decoder child timed out and was killed");
+            tracing::warn!("uploads: decoder child timed out; killing it");
+            let _ = child.kill().await; // kill + wait: reaped before the slot is freed
             return Err(Reject::Complex.into());
         }
     };
-    match out.status.code() {
-        Some(0) => decode_frame(&out.stdout).ok_or_else(|| {
+    // stdout reached EOF: the child is exiting; reap it (bounded, in case it lingers).
+    let status = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(Ok(status)) => status,
+        _ => {
+            let _ = child.kill().await;
+            return Err(Reject::Complex.into());
+        }
+    };
+    match status.code() {
+        Some(0) => decode_frame(&out).ok_or_else(|| {
             tracing::error!("uploads: decoder child answered a malformed frame");
             AppError::Internal
         }),
         Some(EXIT_NOT_IMAGE) => Err(Reject::NotImage.into()),
         Some(EXIT_TOO_LARGE) => Err(Reject::TooLarge.into()),
-        Some(EXIT_COMPLEX) => Err(Reject::Complex.into()),
-        Some(EXIT_ENCODE) => Err(Reject::Encode.into()),
+        Some(EXIT_COMPLEX | EXIT_ENCODE) => Err(Reject::Complex.into()),
         other => {
             // Killed by a signal (memory, CPU) or a panic/abort.
             tracing::warn!(status = ?other, "uploads: decoder child died");
@@ -433,6 +503,10 @@ pub async fn upload(
     State(st): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadResp>), AppError> {
+    // The waiting room, BEFORE any of the body is read: a full room answers 503 at once.
+    let queued = upload_queue()
+        .try_acquire_owned()
+        .map_err(|_| AppError::Unavailable(BUSY_MESSAGE.into()))?;
     crate::ratelimit::hit(
         &st.db,
         &format!("upload:{}", user.id),
@@ -462,10 +536,13 @@ pub async fn upload(
         if data.len() > MAX_BYTES {
             return Err(AppError::Validation("file must be at most 5 MB".into()));
         }
-        // The permit moves INTO a task of its own: dropping this request (client gone) neither
-        // frees it nor kills the child; the slot is released only when the child has ended.
+        // Both permits move INTO a task of its own: dropping this request (client gone) neither
+        // frees them nor stops the child. The decode slot is released when the child has been
+        // reaped (`decode_in_child` waits for it on every path, timeout included); the waiting-room
+        // place right after.
         let permit = processing().acquire_owned().await.map_err(|_| AppError::Internal)?;
         let processed = tokio::spawn(async move {
+            let _in_the_room = queued;
             let _one_at_a_time = permit;
             let now = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
             PEAK.fetch_max(now, Ordering::SeqCst);

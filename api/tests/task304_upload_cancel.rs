@@ -49,6 +49,8 @@ async fn a_dropped_upload_keeps_its_slot_until_its_decode_ends(pool: PgPool) {
     std::env::set_var("UPLOADS_DIR", "/tmp/underground-test-uploads");
     // TASK-304 review: uploads are decoded by a child process — this test build's API binary.
     std::env::set_var("IMAGE_DECODER_BIN", env!("CARGO_BIN_EXE_underground-api"));
+    // Many tests here upload in parallel: a wider waiting room than production's 3 (round 4).
+    std::env::set_var("UPLOAD_QUEUE", "64");
     let app: Router = router(AppState {
         db: pool,
         jwt_secret: "test-secret".into(),

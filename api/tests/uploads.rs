@@ -22,6 +22,8 @@ fn make_app(pool: PgPool) -> Router {
     std::env::set_var("UPLOADS_DIR", "/tmp/underground-test-uploads");
     // TASK-304 review: uploads are decoded by a child process — this test build's API binary.
     std::env::set_var("IMAGE_DECODER_BIN", env!("CARGO_BIN_EXE_underground-api"));
+    // Many tests here upload in parallel: a wider waiting room than production's 3 (round 4).
+    std::env::set_var("UPLOAD_QUEUE", "64");
     router(AppState {
         db: pool,
         jwt_secret: "test-secret".into(),

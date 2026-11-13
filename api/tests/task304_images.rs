@@ -21,6 +21,8 @@ fn make_app(pool: PgPool) -> Router {
     std::env::set_var("UPLOADS_DIR", "/tmp/underground-test-uploads");
     // TASK-304 review: uploads are decoded by a child process — this test build's API binary.
     std::env::set_var("IMAGE_DECODER_BIN", env!("CARGO_BIN_EXE_underground-api"));
+    // Many tests here upload in parallel: a wider waiting room than production's 3 (round 4).
+    std::env::set_var("UPLOAD_QUEUE", "64");
     router(AppState {
         db: pool,
         jwt_secret: "test-secret".into(),
@@ -317,11 +319,14 @@ async fn processed_or_too_complex(app: &Router, token: &str, name: &str, ct: &st
 /// progressive frame; lossless WebP; 16-bit RGBA at the pixel cap) and an animated WebP. Each is
 /// either processed or refused as too complex, and the API process survives. (Was: refused as "too
 /// large" by `decode_cost`; now: decided by the child's hard memory limit; why: the heuristic was
-/// bypassed twice and is deleted.)
+/// bypassed twice and is deleted.) The three ~300 MB fixtures run on Linux only (round 4): macOS
+/// does not enforce the child's limit, so there they would really take ~300 MB each on the owner's
+/// 8 GB Mac; the animated one runs everywhere.
 #[sqlx::test(migrations = "./migrations")]
 async fn hostile_pictures_are_processed_or_refused_and_the_api_survives(pool: PgPool) {
     let app = make_app(pool);
     let token = register_token(&app).await;
+    #[cfg(target_os = "linux")]
     for (name, ct, data) in [
         (
             "prog-decoy.jpg",

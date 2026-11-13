@@ -611,5 +611,6 @@
   "файл не є зображенням JPEG, PNG або WebP": "el archivo no es una imagen JPEG, PNG o WebP",
   "зображення завелике: до 32 мегапікселів": "la imagen es demasiado grande: hasta 32 megapíxeles",
   "пошта тимчасово недоступна, спробуйте пізніше": "el correo no está disponible temporalmente, inténtalo más tarde",
-  "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "la imagen es demasiado compleja para procesarla: guárdala como JPEG o redúcela"
+  "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "la imagen es demasiado compleja para procesarla: guárdala como JPEG o redúcela",
+  "забагато завантажень одночасно, спробуйте за хвилину": "demasiadas subidas a la vez, inténtalo dentro de un minuto"
 }
