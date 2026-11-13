@@ -18,10 +18,13 @@
 //! HTTP status and Resend's message id — never the key, the recipient or the body.
 //!
 //! Abuse bound (TASK-304 review): every mail first takes a slot from [`reserve`] — at most
-//! `MAIL_DAILY_BUDGET` (default 80, under Resend's free 100/day) in any 24 h, and at most
-//! [`PER_RECIPIENT_DAILY`] to one address. Counted in the DATABASE (`mail_sends`, recipient as a
-//! SHA-256 hash), not in process memory, so it survives restarts and holds with several API
-//! replicas. A spent budget is answered honestly (503 "mail temporarily unavailable"), never as
+//! `MAIL_DAILY_BUDGET` (default 80, under Resend's free 100/day) in any 24 h, at most
+//! `MAIL_DAILY_PER_IP` (default 10) asked for by one client IP in 24 h, and at most
+//! [`PER_RECIPIENT_HOURLY`] to one address in any hour (so a targeted lockout ends about an hour
+//! after the attacker stops). Counted in the DATABASE (`mail_sends`, recipient and IP as SHA-256
+//! hashes), not in process memory, so it survives restarts and holds with several API replicas.
+//! Residual (owner's call, docs/decisions.md): many IPs can still spend the daily budget or keep
+//! delaying one address. A spent budget is answered honestly (503 "mail temporarily unavailable"), never as
 //! "sent"; the decision is taken before any account lookup, identically for every address.
 //!
 //! The order-confirmation and notification outboxes in `email.rs` are NOT sent through this
@@ -144,9 +147,10 @@ pub fn is_single_address(email: &str) -> bool {
     !local.is_empty() && !domain.is_empty()
 }
 
-/// Most mails to one address in any 24 h.
-pub const PER_RECIPIENT_DAILY: i64 = 10;
+/// Most mails to one address in any rolling hour.
+pub const PER_RECIPIENT_HOURLY: i64 = 5;
 const DEFAULT_DAILY_BUDGET: i64 = 80;
+const DEFAULT_DAILY_PER_IP: i64 = 10;
 /// Advisory-lock namespace for the budget (count + insert are serialised).
 const BUDGET_LOCK: i32 = 0x4d41_494c; // "MAIL"
 
@@ -155,17 +159,24 @@ pub fn recipient_hash(email: &str) -> String {
     hex::encode(Sha256::digest(email.trim().to_lowercase().as_bytes()))
 }
 
+/// How `mail_sends` stores the client IP: SHA-256 hex (no plain IP at rest).
+pub fn ip_hash(ip: &str) -> String {
+    hex::encode(Sha256::digest(ip.trim().as_bytes()))
+}
+
 fn daily_budget() -> i64 {
     crate::ratelimit::env_limit("MAIL_DAILY_BUDGET", DEFAULT_DAILY_BUDGET)
 }
 
-/// Take one slot of the daily mail budget for `to`. Callers run this BEFORE they look the address
-/// up, for every address alike, so the outcome never depends on whether an account exists.
-/// Spent global budget → 503 "mail temporarily unavailable"; this address's daily cap → 429.
-/// Logs one WARN when the slot taken is the last one of the budget.
-pub async fn reserve(db: &PgPool, to: &str) -> Result<(), AppError> {
+/// Take one slot of the mail budget for `to`, asked for from `ip`. Callers run this BEFORE they look
+/// the address up, for every address alike, so the outcome never depends on whether an account
+/// exists. Spent global budget → 503 "mail temporarily unavailable"; this IP's daily cap or this
+/// address's hourly cap → 429. Logs one WARN when the slot taken is the last one of the budget.
+pub async fn reserve(db: &PgPool, to: &str, ip: &str) -> Result<(), AppError> {
     let budget = daily_budget();
+    let per_ip = crate::ratelimit::env_limit("MAIL_DAILY_PER_IP", DEFAULT_DAILY_PER_IP);
     let hash = recipient_hash(to);
+    let ip_h = ip_hash(ip);
     let mut tx = db.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
         .bind(BUDGET_LOCK)
@@ -174,10 +185,13 @@ pub async fn reserve(db: &PgPool, to: &str) -> Result<(), AppError> {
     sqlx::query("DELETE FROM mail_sends WHERE sent_at <= now() - interval '1 day'")
         .execute(&mut *tx)
         .await?;
-    let (total, mine): (i64, i64) = sqlx::query_as(
-        "SELECT count(*), count(*) FILTER (WHERE to_hash = $1) FROM mail_sends WHERE sent_at > now() - interval '1 day'",
+    let (total, from_ip, to_addr): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE ip_hash = $2), \
+                count(*) FILTER (WHERE to_hash = $1 AND sent_at > now() - interval '1 hour') \
+         FROM mail_sends WHERE sent_at > now() - interval '1 day'",
     )
     .bind(&hash)
+    .bind(&ip_h)
     .fetch_one(&mut *tx)
     .await?;
     if total >= budget {
@@ -185,11 +199,12 @@ pub async fn reserve(db: &PgPool, to: &str) -> Result<(), AppError> {
             "пошта тимчасово недоступна, спробуйте пізніше".into(),
         ));
     }
-    if mine >= PER_RECIPIENT_DAILY {
+    if from_ip >= per_ip || to_addr >= PER_RECIPIENT_HOURLY {
         return Err(AppError::RateLimited);
     }
-    sqlx::query("INSERT INTO mail_sends (to_hash) VALUES ($1)")
+    sqlx::query("INSERT INTO mail_sends (to_hash, ip_hash) VALUES ($1, $2)")
         .bind(&hash)
+        .bind(&ip_h)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;

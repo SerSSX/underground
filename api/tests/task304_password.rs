@@ -499,3 +499,36 @@ async fn password_bounds_count_characters(pool: PgPool) {
     assert_eq!(st, StatusCode::OK, "200 characters (400 bytes) is accepted: {v}");
     assert_eq!(login(&app, "chars@x.co", &"ж".repeat(200)).await, StatusCode::OK);
 }
+
+/// `FORGOT_LIMIT_PER_IP` (20 an hour). Moved here from task304_mail in review round 3: with mail
+/// off no mail slot is taken, so this limit is what answers.
+#[sqlx::test(migrations = "./migrations")]
+async fn forgot_is_rate_limited_per_ip(pool: PgPool) {
+    let app = make_app(pool);
+    let ask = |ip: &'static str, i: usize| {
+        let app = app.clone();
+        async move {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/auth/forgot-password")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", ip)
+                .body(Body::from(json!({"email": format!("nobody{i}@x.co")}).to_string()))
+                .unwrap();
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    for i in 0..20 {
+        assert_eq!(ask("203.0.113.50", i).await, StatusCode::NO_CONTENT, "request {i}");
+    }
+    assert_eq!(
+        ask("203.0.113.50", 99).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "[SEC] 21st request from one IP in an hour"
+    );
+    assert_eq!(
+        ask("203.0.113.51", 99).await,
+        StatusCode::NO_CONTENT,
+        "another IP is not affected"
+    );
+}

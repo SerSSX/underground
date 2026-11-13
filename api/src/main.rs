@@ -28,8 +28,21 @@ const ESCROW_INTERVAL_SECS: u64 = 60 * 60;
 /// How often the transactional-email outbox is drained.
 const EMAIL_INTERVAL_SECS: u64 = 60;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// `underground-api decode-image` is the image child process (TASK-304): it must start before any
+/// runtime or thread exists, so it is dispatched here, ahead of Tokio, and never touches the
+/// environment file, the database or the network.
+fn main() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some(underground_api::uploads::DECODE_SUBCOMMAND) {
+        std::process::exit(underground_api::uploads::decode_child_main());
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to start the Tokio runtime")?
+        .block_on(serve())
+}
+
+async fn serve() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     init_tracing();
 

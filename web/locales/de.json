@@ -610,5 +610,6 @@
   "пароль задовгий (до 256 символів)": "das Passwort ist zu lang (höchstens 256 Zeichen)",
   "файл не є зображенням JPEG, PNG або WebP": "die Datei ist kein JPEG-, PNG- oder WebP-Bild",
   "зображення завелике: до 32 мегапікселів": "das Bild ist zu groß: höchstens 32 Megapixel",
-  "пошта тимчасово недоступна, спробуйте пізніше": "E-Mail ist vorübergehend nicht verfügbar, versuch es später noch einmal"
+  "пошта тимчасово недоступна, спробуйте пізніше": "E-Mail ist vorübergehend nicht verfügbar, versuch es später noch einmal",
+  "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "das Bild ist zu aufwendig zu verarbeiten – speichere es als JPEG oder verkleinere es"
 }

@@ -110,7 +110,7 @@ pub async fn forgot_password(
     // A mail slot before the lookup, for every address alike (TASK-304 review): a spent daily
     // budget is 503 "mail temporarily unavailable" for any address, never a pretended "sent".
     if crate::mail::enabled() {
-        crate::mail::reserve(&st.db, &email).await?;
+        crate::mail::reserve(&st.db, &email, &ip.0).await?;
     }
     let found: Option<(Uuid, Option<String>)> = sqlx::query_as(
         "SELECT u.id, p.locale FROM users u LEFT JOIN user_prefs p ON p.user_id = u.id \

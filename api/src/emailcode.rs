@@ -76,7 +76,7 @@ pub async fn request_code(
         // A mail slot first (TASK-304 review), before any account lookup and the same for every
         // address: a spent daily budget answers 503 instead of pretending a code was sent.
         if crate::mail::enabled() {
-            crate::mail::reserve(&st.db, &email).await?;
+            crate::mail::reserve(&st.db, &email, &ip.0).await?;
         }
         let code = generate_code();
         let expires = Utc::now() + Duration::minutes(CODE_TTL_MINS);

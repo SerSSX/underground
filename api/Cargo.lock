@@ -2696,6 +2696,7 @@ dependencies = [
  "hmac",
  "image",
  "jsonwebtoken",
+ "libc",
  "reqwest",
  "rust_decimal",
  "serde",

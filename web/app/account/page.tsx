@@ -82,6 +82,9 @@ export default function AccountPage() {
 
   const hasPassword = me?.has_password !== false;
   const pwMismatch = pwRepeat.length > 0 && pwNew !== pwRepeat;
+  // Characters as the API counts them (Unicode code points): an emoji is one, not two UTF-16 units.
+  const pwChars = [...pwNew].length;
+  const pwBad = pwChars > 0 && (pwChars < 8 || pwChars > 256);
   const savePassword = async () => {
     setBusy("password");
     setPwError(null);
@@ -189,8 +192,8 @@ export default function AccountPage() {
           )}
           <div className="field">
             <label htmlFor="pw-new">{tr(lang, "Новий пароль", "New password")}</label>
-            <input id="pw-new" className="input" type="password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} autoComplete="new-password" minLength={8} maxLength={256} required aria-describedby="pw-new-hint" aria-invalid={pwNew.length > 0 && pwNew.length < 8} />
-            <span id="pw-new-hint" className={pwNew.length > 0 && pwNew.length < 8 ? "err" : "hint"}>{tr(lang, "Щонайменше 8 символів", "At least 8 characters")}</span>
+            <input id="pw-new" className="input" type="password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} autoComplete="new-password" required aria-describedby="pw-new-hint" aria-invalid={pwBad} />
+            <span id="pw-new-hint" className={pwBad ? "err" : "hint"}>{tr(lang, "Щонайменше 8 символів", "At least 8 characters")}</span>
           </div>
           <div className="field">
             <label htmlFor="pw-repeat">{tr(lang, "Повторіть пароль", "Confirm password")}</label>
@@ -198,7 +201,7 @@ export default function AccountPage() {
             {pwMismatch && <span className="err">{tr(lang, "Паролі не співпадають", "Passwords don't match")}</span>}
           </div>
           {pwError && <div className="alert error" role="alert">{pwError}</div>}
-          <button className="btn secondary" style={{ alignSelf: "flex-start" }} disabled={busy === "password" || pwNew.length < 8 || pwNew !== pwRepeat || (hasPassword && !pwCurrent)}>
+          <button className="btn secondary" style={{ alignSelf: "flex-start" }} disabled={busy === "password" || pwChars < 8 || pwChars > 256 || pwNew !== pwRepeat || (hasPassword && !pwCurrent)}>
             {hasPassword ? tr(lang, "Змінити пароль", "Change password") : tr(lang, "Задати пароль", "Set password")}
           </button>
         </form>

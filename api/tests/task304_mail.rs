@@ -346,16 +346,12 @@ async fn forgot_answers_the_same_for_known_unknown_and_blocked(pool: PgPool) {
         "no mail to a blocked account"
     );
 
-    // The per-address limit counts every address alike: the 6th ask is 429 for both.
-    for _ in 0..4 {
-        assert_eq!(
-            forgot(&app, "known@x.co", "198.51.100.4").await.0,
-            StatusCode::NO_CONTENT
-        );
-        assert_eq!(
-            forgot(&app, "unknown@x.co", "198.51.100.4").await.0,
-            StatusCode::NO_CONTENT
-        );
+    // The per-address limit counts every address alike: the 6th ask is 429 for both. (From several
+    // IPs, so the per-IP mail cap of 10 a day is not what answers.)
+    for i in 0..4 {
+        let ip = format!("198.51.100.{}", 40 + i);
+        assert_eq!(forgot(&app, "known@x.co", &ip).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(forgot(&app, "unknown@x.co", &ip).await.0, StatusCode::NO_CONTENT);
     }
     let known6 = forgot(&app, "known@x.co", "198.51.100.5").await;
     let unknown6 = forgot(&app, "unknown@x.co", "198.51.100.5").await;
@@ -363,21 +359,40 @@ async fn forgot_answers_the_same_for_known_unknown_and_blocked(pool: PgPool) {
     assert_eq!(known6, unknown6, "[SEC] the limit is no oracle either");
 }
 
+/// Review round 3 (E): one IP may ask for at most 10 mails a day (`MAIL_DAILY_PER_IP`), checked
+/// before the account lookup — the 11th is 429 for a known and an unknown address alike; another
+/// IP is not affected. (The FORGOT_LIMIT_PER_IP test moved to task304_password: with mail on, this
+/// tighter cap answers first.)
 #[sqlx::test(migrations = "./migrations")]
-async fn forgot_is_rate_limited_per_ip(pool: PgPool) {
+async fn one_ip_gets_at_most_ten_mail_slots_a_day(pool: PgPool) {
     let app = make_app(pool);
-    for i in 0..20 {
-        let (st, _, _) = forgot(&app, &format!("nobody{i}@x.co"), "203.0.113.50").await;
-        assert_eq!(st, StatusCode::NO_CONTENT, "request {i}");
+    register(&app, "ipcap@x.co", "en").await;
+    for i in 0..10 {
+        let (st, _, _) = forgot(&app, &format!("made-up-{i}@x.co"), "203.0.113.60").await;
+        assert_eq!(st, StatusCode::NO_CONTENT, "slot {i}");
     }
-    let (st, _, _) = forgot(&app, "nobody99@x.co", "203.0.113.50").await;
+    let known = forgot(&app, "ipcap@x.co", "203.0.113.60").await;
+    let unknown = forgot(&app, "made-up-99@x.co", "203.0.113.60").await;
     assert_eq!(
-        st,
+        known.0,
         StatusCode::TOO_MANY_REQUESTS,
-        "[SEC] 21st request from one IP in an hour"
+        "[SEC] 11th mail slot from one IP"
     );
-    let (st, _, _) = forgot(&app, "nobody99@x.co", "203.0.113.51").await;
-    assert_eq!(st, StatusCode::NO_CONTENT, "another IP is not affected");
+    assert_eq!(known, unknown, "[SEC] identical for an address without an account");
+    let (st, _) = send(
+        &app,
+        build(
+            "POST",
+            "/api/auth/email/request-code",
+            "203.0.113.60",
+            Some(json!({"email": "code-ip@x.co"})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "code sign-in shares the cap");
+    let (st, _, _) = forgot(&app, "ipcap@x.co", "203.0.113.61").await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "another IP still works");
+    assert_eq!(mails_to("ipcap@x.co", 1).await.len(), 1, "and its mail goes out");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -495,35 +510,48 @@ async fn a_spent_daily_budget_answers_503_for_any_address(pool: PgPool) {
 }
 
 /// Review item 4: at most 10 mails to one address a day, counted the same for any address.
+/// At most 5 mails to one address in any rolling hour, counted the same for any address; slots
+/// older than an hour no longer count, so a targeted lockout ends about an hour after it stops.
+/// (Was: 10 a day; now: 5 an hour; why: review round 3 — a day-long lockout was too easy.)
 #[sqlx::test(migrations = "./migrations")]
-async fn one_address_gets_at_most_ten_mails_a_day(pool: PgPool) {
+async fn one_address_gets_at_most_five_mails_an_hour(pool: PgPool) {
     let app = make_app(pool.clone());
     register(&app, "cap@x.co", "en").await;
-    for addr in ["cap@x.co", "nobody-c@x.co"] {
-        sqlx::query("INSERT INTO mail_sends (to_hash) SELECT $1 FROM generate_series(1, 10)")
-            .bind(underground_api::mail::recipient_hash(addr))
+    register(&app, "later@x.co", "en").await;
+    let insert = |addr: &str, age: &str| {
+        let pool = pool.clone();
+        let (h, age) = (underground_api::mail::recipient_hash(addr), age.to_string());
+        async move {
+            sqlx::query(&format!(
+                "INSERT INTO mail_sends (to_hash, sent_at) SELECT $1, now() - interval '{age}' FROM generate_series(1, 5)"
+            ))
+            .bind(h)
             .execute(&pool)
             .await
             .unwrap();
-    }
+        }
+    };
+    insert("cap@x.co", "5 minutes").await;
+    insert("nobody-c@x.co", "5 minutes").await;
+    insert("later@x.co", "61 minutes").await;
     let known = forgot(&app, "cap@x.co", "198.51.100.11").await;
     let unknown = forgot(&app, "nobody-c@x.co", "198.51.100.11").await;
     assert_eq!(
         known.0,
         StatusCode::TOO_MANY_REQUESTS,
-        "[SEC] 11th mail to one address refused"
+        "[SEC] 6th mail to one address within the hour"
     );
     assert_eq!(known, unknown, "[SEC] identically for an address without an account");
     assert_eq!(
-        forgot(&app, "other@x.co", "198.51.100.11").await.0,
+        forgot(&app, "later@x.co", "198.51.100.11").await.0,
         StatusCode::NO_CONTENT,
-        "other addresses unaffected"
+        "slots older than an hour no longer count"
     );
+    assert_eq!(mails_to("later@x.co", 1).await.len(), 1);
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(mails_to("cap@x.co", 1).await.is_empty());
 }
 
-/// Review item 4: one request can never name several recipients.
 #[sqlx::test(migrations = "./migrations")]
 async fn a_list_of_addresses_is_refused(pool: PgPool) {
     let app = make_app(pool);

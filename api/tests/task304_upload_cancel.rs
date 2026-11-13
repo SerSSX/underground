@@ -47,6 +47,8 @@ fn jpeg(w: u32, h: u32) -> Vec<u8> {
 #[sqlx::test(migrations = "./migrations")]
 async fn a_dropped_upload_keeps_its_slot_until_its_decode_ends(pool: PgPool) {
     std::env::set_var("UPLOADS_DIR", "/tmp/underground-test-uploads");
+    // TASK-304 review: uploads are decoded by a child process — this test build's API binary.
+    std::env::set_var("IMAGE_DECODER_BIN", env!("CARGO_BIN_EXE_underground-api"));
     let app: Router = router(AppState {
         db: pool,
         jwt_secret: "test-secret".into(),

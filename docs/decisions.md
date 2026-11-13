@@ -34,7 +34,15 @@ Owner's answer (verbatim): «Так, погоджую (Recommended)».
 
 The review found that real mail (reset links, login codes) can be sent to any address. Reading taken without
 asking (cheap to change, env-configurable): a global daily send budget (`MAIL_DAILY_BUDGET`, default 80, below
-Resend's free 100/day) and a per-recipient daily cap; when the budget is spent the API refuses new mails with an
+Resend's free 100/day) and a per-recipient cap; when the budget is spent the API refuses new mails with an
 honest "mail is temporarily unavailable" instead of claiming it was sent. Per-address limits stay strict: an
 attacker can delay a victim's codes/reset by spamming that address, a known trade-off versus mail-bombing; a
 password account can still sign in with its password.
+
+Updated after review round 3 (still the orchestrator's reading, reversible): a per-IP cap of 10 mail slots per
+24 h (`MAIL_DAILY_PER_IP`), so one IP can no longer spend the whole budget; the per-address cap is 5 per rolling
+hour (was 10 per day), so a targeted lockout ends about an hour after the attacker stops. All counted before the
+account lookup, identically for every address. **Residual, for the owner:** an attacker with many IPs (8+ at the
+default caps) can still spend the daily budget, which stops reset and code mail for everyone until slots free up
+(rolling 24 h), or keep one address delayed for as long as the attack lasts. Closing that needs a CAPTCHA, a paid
+mail plan with a higher budget, or both: a product and money decision.

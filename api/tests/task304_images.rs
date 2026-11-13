@@ -19,6 +19,8 @@ const BOUNDARY: &str = "XTESTBOUNDARY";
 
 fn make_app(pool: PgPool) -> Router {
     std::env::set_var("UPLOADS_DIR", "/tmp/underground-test-uploads");
+    // TASK-304 review: uploads are decoded by a child process — this test build's API binary.
+    std::env::set_var("IMAGE_DECODER_BIN", env!("CARGO_BIN_EXE_underground-api"));
     router(AppState {
         db: pool,
         jwt_secret: "test-secret".into(),
@@ -240,8 +242,8 @@ async fn non_images_are_refused_whatever_their_name(pool: PgPool) {
 async fn too_many_pixels_are_refused_before_decoding(pool: PgPool) {
     let app = make_app(pool);
     let token = register_token(&app).await;
-    // 6000×6000 = 36 MP: over the 32 MP cap. Only the pixel check refuses it with the pixel message
-    // (the memory estimate would refuse it too, but runs after it).
+    // 6000×6000 = 36 MP: over the 32 MP cap, refused from the header by the pixel check (in the
+    // child), with the pixel message.
     let bomb = png_claiming(6000, 6000);
     assert!(bomb.len() < 200, "a tiny file");
     let (status, v) = send(&app, upload_req(&token, "bomb.png", "image/png", &bomb)).await;
@@ -250,7 +252,7 @@ async fn too_many_pixels_are_refused_before_decoding(pool: PgPool) {
         v["error"], "зображення завелике: до 32 мегапікселів",
         "[SEC] the pixel cap refused it"
     );
-    // A 100k × 100k claim is refused by the decoder limits as well.
+    // A 100k × 100k claim gets the same honest answer (no decoder size limit answers first).
     assert_eq!(process(&png_claiming(100_000, 100_000)).err(), Some(Reject::TooLarge));
     // Exactly at the cap (8000 × 4000) passes the check (and then fails on the missing pixel data).
     assert_eq!(process(&png_claiming(8000, 4000)).err(), Some(Reject::NotImage));
@@ -291,77 +293,123 @@ fn transparency_is_kept() {
     assert!(back.get_pixel(5, 5)[3] < 10 && back.get_pixel(60, 5)[3] > 245);
 }
 
-/// A real 16×16 progressive 4:4:4 JPEG whose frame header (SOF2) is rewritten to claim `w`×`h`.
-fn progressive_jpeg_claiming(w: u16, h: u16) -> Vec<u8> {
-    let mut j = include_bytes!("fixtures/progressive_444_16px.jpg").to_vec();
-    let at = j.windows(2).position(|m| m == [0xFF, 0xC2]).expect("SOF2");
-    j[at + 5..at + 7].copy_from_slice(&h.to_be_bytes());
-    j[at + 7..at + 9].copy_from_slice(&w.to_be_bytes());
-    j
+const COMPLEX: &str = "зображення надто складне для обробки — збережіть як JPEG або зменште розмір";
+
+/// Upload `data`; the answer must be a stored picture or the honest "too complex" refusal — and the
+/// API must keep working afterwards (a small upload right after answers 201).
+async fn processed_or_too_complex(app: &Router, token: &str, name: &str, ct: &str, data: &[u8]) -> StatusCode {
+    let (status, v) = send(app, upload_req(token, name, ct, data)).await;
+    match status {
+        StatusCode::CREATED => {}
+        StatusCode::UNPROCESSABLE_ENTITY => assert_eq!(v["error"], COMPLEX, "{name}: {v}"),
+        other => panic!("{name}: unexpected {other} {v}"),
+    }
+    let (after, _) = send(
+        app,
+        upload_req(token, "ok.png", "image/png", &picture(16, 16, ImageFormat::Png)),
+    )
+    .await;
+    assert_eq!(after, StatusCode::CREATED, "[SEC] the API survives {name}");
+    status
 }
 
-/// Review item 2: what a decode would hold is bounded from the header, before any allocation —
-/// pixels under the 32 MP cap are not enough when the bytes per pixel or the decoder's own
-/// buffers would blow the API's memory.
+/// Review round 3: worst cases the old header estimate let through (a decoy marker before a
+/// progressive frame; lossless WebP; 16-bit RGBA at the pixel cap) and an animated WebP. Each is
+/// either processed or refused as too complex, and the API process survives. (Was: refused as "too
+/// large" by `decode_cost`; now: decided by the child's hard memory limit; why: the heuristic was
+/// bypassed twice and is deleted.)
 #[sqlx::test(migrations = "./migrations")]
-async fn memory_heavy_pictures_under_the_pixel_cap_are_refused(pool: PgPool) {
+async fn hostile_pictures_are_processed_or_refused_and_the_api_survives(pool: PgPool) {
     let app = make_app(pool);
     let token = register_token(&app).await;
-    let too_large = "зображення завелике: до 32 мегапікселів";
-    // 16-bit RGBA at 5656 × 5656 (31.99 MP): a 256 MB pixel buffer from a ~100-byte file.
-    let png16 = png_claiming_as(5656, 5656, 16, 6);
-    let (status, v) = send(&app, upload_req(&token, "deep.png", "image/png", &png16)).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(v["error"], too_large, "[SEC] 16-bit RGBA at the pixel cap");
-    // Progressive 4:4:4 JPEG at 6530 × 4900 (32 MP): 96 MB of pixels plus 192 MB of coefficients.
-    let prog = progressive_jpeg_claiming(6530, 4900);
-    let (status, v) = send(&app, upload_req(&token, "prog.jpg", "image/jpeg", &prog)).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(v["error"], too_large, "[SEC] progressive JPEG at the pixel cap");
-    // 8-bit RGBA at 32 MP also needs more than the budget.
+    for (name, ct, data) in [
+        (
+            "prog-decoy.jpg",
+            "image/jpeg",
+            &include_bytes!("fixtures/prog444_32mp_decoy_sof3.jpg")[..],
+        ),
+        (
+            "lossless.webp",
+            "image/webp",
+            &include_bytes!("fixtures/lossless_27mp.webp")[..],
+        ),
+        (
+            "deep.png",
+            "image/png",
+            &include_bytes!("fixtures/png16_rgba_5656.png")[..],
+        ),
+    ] {
+        processed_or_too_complex(&app, &token, name, ct, data).await;
+    }
+    // Animated WebP is always refused (first frame only would silently drop the rest).
+    let anim = include_bytes!("fixtures/animated.webp");
+    assert!(underground_api::uploads::webp_is_animated(anim));
     assert_eq!(
-        process(&png_claiming_as(6530, 4900, 8, 6)).err(),
-        Some(Reject::TooLarge)
+        processed_or_too_complex(&app, &token, "anim.webp", "image/webp", anim).await,
+        StatusCode::UNPROCESSABLE_ENTITY
     );
-    // An 8-bit RGB PNG at 32 MP is within the budget (and then fails on its missing pixel data).
-    assert_eq!(process(&png_claiming(6530, 4900)).err(), Some(Reject::NotImage));
-    // The real progressive fixture itself decodes.
-    assert!(process(include_bytes!("fixtures/progressive_444_16px.jpg")).is_ok());
 }
 
-#[test]
-fn jpeg_coefficient_estimate() {
-    use underground_api::uploads::jpeg_coefficient_bytes;
-    // 4:4:4 progressive: 3 components × blocks × 64 × 2 bytes.
-    assert_eq!(
-        jpeg_coefficient_bytes(&progressive_jpeg_claiming(6530, 4900)),
-        Some(817 * 613 * 3 * 128)
-    );
-    assert_eq!(
-        jpeg_coefficient_bytes(include_bytes!("fixtures/progressive_444_16px.jpg")),
-        Some(2 * 2 * 3 * 128)
-    );
-    assert_eq!(
-        jpeg_coefficient_bytes(&picture(64, 64, ImageFormat::Jpeg)),
-        Some(0),
-        "baseline holds none"
-    );
-    assert_eq!(jpeg_coefficient_bytes(b"\xFF\xD8\xFF"), None);
-    assert_eq!(jpeg_coefficient_bytes(b"not a jpeg"), None);
+/// The proof that the memory limit is in force — Linux only, because macOS does not enforce
+/// RLIMIT_AS (CI is Linux). Each of these needs far more than the child's 192 MiB (measured peaks
+/// in-process: ~307, ~270 and ~311 MiB), so with the limit in place every one is refused as too
+/// complex; without it they would be stored (201).
+#[cfg(target_os = "linux")]
+#[sqlx::test(migrations = "./migrations")]
+async fn the_child_memory_limit_refuses_heavy_decodes(pool: PgPool) {
+    std::env::remove_var("IMAGE_DECODE_MEM_MB");
+    let app = make_app(pool);
+    let token = register_token(&app).await;
+    for (name, ct, data) in [
+        (
+            "prog-decoy.jpg",
+            "image/jpeg",
+            &include_bytes!("fixtures/prog444_32mp_decoy_sof3.jpg")[..],
+        ),
+        (
+            "lossless.webp",
+            "image/webp",
+            &include_bytes!("fixtures/lossless_27mp.webp")[..],
+        ),
+        (
+            "deep.png",
+            "image/png",
+            &include_bytes!("fixtures/png16_rgba_5656.png")[..],
+        ),
+    ] {
+        assert_eq!(
+            processed_or_too_complex(&app, &token, name, ct, data).await,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "[SEC] {name} must hit the child's memory limit"
+        );
+    }
+}
+
+/// Review round 3 (D): a stray 0x00 between JPEG segments is accepted, as every decoder does.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_jpeg_with_a_stray_zero_between_segments_is_accepted(pool: PgPool) {
+    let app = make_app(pool);
+    let token = register_token(&app).await;
+    let jpeg = picture(64, 48, ImageFormat::Jpeg);
+    // After SOI comes the first segment (FF xx len); put a 0x00 after that segment.
+    assert_eq!(&jpeg[0..2], &[0xFF, 0xD8]);
+    let first_len = usize::from(u16::from_be_bytes([jpeg[4], jpeg[5]]));
+    let cut = 4 + first_len;
+    let mut odd = jpeg[..cut].to_vec();
+    odd.push(0x00);
+    odd.extend_from_slice(&jpeg[cut..]);
+    let (status, v) = send(&app, upload_req(&token, "odd.jpg", "image/jpeg", &odd)).await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
 }
 
 /// Peak-memory measurement (TASK-304 review), not part of the suite. Run the test binary under
-/// `/usr/bin/time -l` with `UG_MEASURE_FILE=<picture>` (and `UG_MEASURE_BUDGET=<bytes>` to lift the
-/// decode budget) and read "maximum resident set size".
+/// `/usr/bin/time -l` with `UG_MEASURE_FILE=<picture>` and read "maximum resident set size" (this
+/// decodes IN-process, without the child's limit, to see what a picture really needs).
 #[test]
 #[ignore]
 fn measure_decode_peak() {
     let path = std::env::var("UG_MEASURE_FILE").expect("UG_MEASURE_FILE");
-    let budget = std::env::var("UG_MEASURE_BUDGET")
-        .ok()
-        .and_then(|b| b.parse().ok())
-        .unwrap_or(underground_api::uploads::DECODE_BUDGET);
     let data = std::fs::read(path).unwrap();
-    let out = underground_api::uploads::process_with_budget(&data, budget);
+    let out = process(&data);
     println!("MEASURE result: {:?}", out.map(|p| (p.width, p.height)));
 }

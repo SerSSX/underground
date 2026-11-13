@@ -12,6 +12,8 @@ use underground_api::state::AppState;
 const BOUNDARY: &str = "XTESTBOUNDARY";
 
 fn make_app(pool: PgPool) -> Router {
+    // TASK-304 review: uploads are decoded by a child process — this test build's API binary.
+    std::env::set_var("IMAGE_DECODER_BIN", env!("CARGO_BIN_EXE_underground-api"));
     router(AppState {
         db: pool,
         jwt_secret: "test-secret".into(),

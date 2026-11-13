@@ -71,6 +71,11 @@ services:
       EMAIL_FROM: ${EMAIL_FROM:-}
       # Most account mails per 24 h (Resend's free plan allows 100/day); spent → the API answers 503.
       MAIL_DAILY_BUDGET: ${MAIL_DAILY_BUDGET:-80}
+      # Most account mails one client IP may cause per 24 h.
+      MAIL_DAILY_PER_IP: ${MAIL_DAILY_PER_IP:-10}
+      # Address-space limit (MiB) of the image-decoding child process; with the API's own memory it stays under
+      # this container's 256 MB.
+      IMAGE_DECODE_MEM_MB: ${IMAGE_DECODE_MEM_MB:-192}
     volumes:
       - type: bind
         source: ${DATA_DIR}/uploads

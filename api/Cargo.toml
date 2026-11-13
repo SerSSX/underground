@@ -59,6 +59,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 webp = { version = "0.3", default-features = false }
 # NFC for the event city compare (TASK-303 N2). Already in the tree via sqlx's stringprep; MIT OR Apache-2.0.
 unicode-normalization = "0.1"
+# setrlimit for the image-decoding child process (TASK-304 review). Already in the tree; MIT OR Apache-2.0.
+libc = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -114,3 +114,33 @@ See `deploy/README.md` → "Пошта (Resend)"; the key is set with `deploy/se
 6. Password bounds count characters. 7. The change is one transaction. 8–10: slow-Resend test, comments, redacting
    `Debug`, `grep` exit codes in `set-mail-key.sh`, and the chat follows the newest message on a keyboard change only
    for a reader within 80 px of it.
+
+## Review round 3 (2026-11-13): a structural memory limit instead of the estimate
+
+- The header estimate of item 2 above (`decode_cost`, `jpeg_coefficient_bytes`, the multipliers, `DECODE_BUDGET`) is
+  **deleted**: it was bypassed twice (a decoy marker before a progressive frame; lossless and animated WebP far over
+  their factor) and it refused valid JPEGs (a stray 0x00 between segments). The measurement table above describes
+  the deleted model and is kept as history.
+- Now every upload is decoded and encoded in a child process — the API binary started as
+  `underground-api decode-image` (dispatched in `main` before Tokio starts; single-threaded; no environment, so no
+  secrets; bytes on stdin, a length-prefixed frame on stdout). Limits set between fork and exec: `RLIMIT_AS`
+  `IMAGE_DECODE_MEM_MB` (192 MiB; Linux only — macOS does not enforce it), `RLIMIT_CPU` 20 s, and a 30 s wall-clock
+  timeout after which the API kills it. Any death of the child (allocation failure/abort, SIGXCPU, SIGKILL, a crash)
+  answers 422 «зображення надто складне для обробки — збережіть як JPEG або зменште розмір» (all catalogs). One
+  child at a time (owned permit, held by a task of its own until the child ends). The 32 MP header pixel cap stays as
+  a cheap first gate, now with a true message (the decoder's own size limits are off, so nothing else says "32 MP").
+  Animated WebP is refused with the same "too complex" message.
+- Runtime image `debian:bookworm-slim`: the API runs as `appuser` and may fork/exec its own `/app/underground-api`;
+  lowering its own rlimits needs no privilege.
+- Test changes in this unit (was / now / why): `memory_heavy_pictures_under_the_pixel_cap_are_refused` (was: patched
+  headers refused "too large" by the estimate) → `hostile_pictures_are_processed_or_refused_and_the_api_survives`
+  (real progressive 32 MP JPEG with a decoy SOF3 frame header before its own, lossless 27 MP WebP, 16-bit RGBA 5656² PNG, animated WebP: stored or "too
+  complex", and the next upload answers 201) plus the Linux-only `the_child_memory_limit_refuses_heavy_decodes`
+  (each of the three heavy ones must be "too complex"); why: the estimate is gone. `jpeg_coefficient_estimate`
+  deleted with its function. `one_address_gets_at_most_ten_mails_a_day` → `…five_mails_an_hour` (cap changed).
+  `forgot_is_rate_limited_per_ip` moved from task304_mail to task304_password (mail off; with mail on the tighter
+  per-IP mail cap answers first).
+- Mail (E): `MAIL_DAILY_PER_IP` (10 per 24 h, IP hashed in `mail_sends.ip_hash`, migration 0051 edited — it is on
+  no shared database yet) checked before the lookup for every address → 429; per-address cap now 5 per rolling hour.
+  Residual in docs/decisions.md.
+- Web: the /account password length counts code points (`[...s].length`), as the API does.
