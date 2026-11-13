@@ -113,6 +113,7 @@ export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAd
     returned: tr(lang, "Бронь скасована", "Booking was cancelled"),
     inactive: tr(lang, "Квиток недійсний", "Ticket is not valid"),
     event_cancelled: tr(lang, "Подію скасовано — вхід закрито", "The event is cancelled"),
+    too_early: tr(lang, "Ще рано — вхід ще не відкрито", "Too early — check-in isn't open yet"),
     not_found: tr(lang, "Код не розпізнано або застарів — попросіть оновити QR", "Unknown or expired code — ask the guest to refresh the QR"),
   };
 

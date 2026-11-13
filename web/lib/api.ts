@@ -1,6 +1,6 @@
 import { safeNextFor } from "./safe-next.mjs";
 import { currentLang } from "./i18n-core.mjs";
-import { canonicalServerText, serverText } from "./server-messages.mjs";
+import { canonicalServerText, serverText, isUnknownEnglish, type ServerTextContext } from "./server-messages.mjs";
 import { mapsHref } from "./geo-core.mjs";
 import { shrinkForUpload } from "./image-shrink";
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
@@ -78,8 +78,15 @@ export function isUnauthorized(e: unknown): boolean {
 }
 /** An error for the screen, in the active language: known server texts translate, unknown ones are shown as
  *  the server wrote them (TASK-303 L1). */
-export function errorMessage(e: unknown): string {
-  return serverText(currentLang(), e instanceof Error && e.message ? e.message : "Невідома помилка");
+export function errorMessage(e: unknown, where?: ServerTextContext): string {
+  const lang = currentLang();
+  const raw = e instanceof Error && e.message ? e.message : "Невідома помилка";
+  // A developer's English validation text the table does not know ("x must be …") is no message for a reader of
+  // another language: say what to do instead (TASK-305). English readers still see the server's own words.
+  if (lang !== "en" && e instanceof ApiError && isUnknownEnglish(raw)) {
+    return serverText(lang, e.status === 400 || e.status === 422 ? "Перевірте введені дані й спробуйте ще раз" : `Помилка ${e.status}`);
+  }
+  return serverText(lang, raw, where);
 }
 
 /**
@@ -337,6 +344,14 @@ export interface NotificationDto {
 export async function myNotifications(): Promise<NotificationDto[]> {
   return apiGet<NotificationDto[]>("/api/me/notifications");
 }
+/** Badge counters: unread chat messages and unread alerts (`GET /api/me/unread`). */
+export interface UnreadCounts {
+  messages: number;
+  notifications: number;
+}
+export async function unreadCounts(): Promise<UnreadCounts> {
+  return apiGet<UnreadCounts>("/api/me/unread");
+}
 export async function markNotificationsRead(): Promise<void> {
   await apiSend("POST", "/api/me/notifications/read", undefined);
 }
@@ -373,8 +388,10 @@ export async function payTest(orderId: string): Promise<TicketDto> {
 export async function returnTicket(ticketId: string): Promise<TicketDto> {
   return apiSend<TicketDto>("POST", `/api/tickets/${ticketId}/return`, undefined);
 }
-export async function transferTicket(ticketId: string, email: string): Promise<TicketDto> {
-  return apiSend<TicketDto>("POST", `/api/tickets/${ticketId}/transfer`, { email });
+/** Transfer by email is an offer the recipient accepts (owner 2026-11-14): the API answers 202 `{status:"sent"}`
+ *  for every address. Show it with `serverText(lang, "sent")` («Пропозицію надіслано — …»). */
+export async function transferTicket(ticketId: string, email: string): Promise<{ status: string }> {
+  return apiSend<{ status: string }>("POST", `/api/tickets/${ticketId}/transfer`, { email });
 }
 export async function disputeOrder(orderId: string): Promise<void> {
   await apiSend("POST", `/api/orders/${orderId}/dispute`, undefined);
@@ -620,15 +637,8 @@ export async function syncUserLocale(locale: string): Promise<void> {
     /* ignore: locale sync is non-essential */
   }
 }
-/** An event is over at its end time, or 12 h after the start when no end is set. Until then a guest can
- *  still show the QR and staff can still scan (a concert that started at 19:00 still admits at 19:05). */
-export function isOver(startsAt: string | null | undefined, endsAt?: string | null): boolean {
-  const start = startsAt ? Date.parse(startsAt) : NaN;
-  let end = endsAt ? Date.parse(endsAt) : NaN;
-  // An end at or before the start is bad data: ignore it rather than close the doors early.
-  if (!Number.isFinite(end) || (Number.isFinite(start) && end <= start)) end = Number.isFinite(start) ? start + 12 * 3600_000 : NaN;
-  return Number.isFinite(end) && end < Date.now();
-}
+/** An event is over at its end, or 12 h after the start when no end is set (logic and tests in lib/event-time.mjs). */
+export { isOver } from "./event-time.mjs";
 /** Has it started? (Booking closes at the start; the API refuses after that.) */
 export function hasStarted(startsAt: string | null | undefined): boolean {
   const t = startsAt ? Date.parse(startsAt) : NaN;
@@ -779,6 +789,8 @@ export async function sendMessage(recipientId: string, text: string): Promise<Me
 // ---- organiser: guests, door scan, staff (TASK-302) ----
 /** One attendee of an event: the organiser sees only the name and the number of places (brief 2026-11-11). */
 export interface GuestDto {
+  /** The guest's user id, for «Написати» (TASK-305). Not sent by the API yet: the button shows once it is. */
+  user_id?: string | null;
   name: string;
   places: number;
   checked_in: number;

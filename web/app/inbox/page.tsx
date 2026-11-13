@@ -5,16 +5,22 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getEvent, getToken, errorMessage,
-  isUuid, type NotificationDto, type ConversationDto, type MessageDto,
+  isUuid, type NotificationDto, type ConversationDto, type MessageDto, type EventDto,
 } from "../../lib/api";
+import { createSendQueue } from "../../lib/send-queue.mjs";
+import { unreadChanged } from "../../lib/unread";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import { initials, shortWhen, timeOf } from "../../lib/ui";
 import { isNearBottom } from "../../lib/chat-scroll.mjs";
-import { ChevronLeft, MessageCircle, Send, Bell } from "../components/Icon";
+import { ChevronLeft, MessageCircle, Send, Bell, Calendar } from "../components/Icon";
 import StartChats from "./StartChats";
 
 type Peer = { id: string; name: string; avatar: string | null };
+/** One message waiting to go: who it is for and what it says. */
+type Outgoing = { peerId: string; body: string };
+/** The event a chat was opened from (`about=`), shown as a chip above that conversation's messages. */
+type About = { peerId: string; event: Pick<EventDto, "id" | "title" | "starts_at" | "timezone"> };
 
 function InboxInner() {
   const router = useRouter();
@@ -27,7 +33,11 @@ function InboxInner() {
   const [peer, setPeer] = useState<Peer | null>(null);
   const [msgs, setMsgs] = useState<MessageDto[]>([]);
   const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
+  // The field's text as of the last keystroke or send, read by send(): two submits before React re-renders (a
+  // double tap) must not both see the same text and queue it twice.
+  const textRef = useRef("");
+  useEffect(() => { textRef.current = text; }, [text]);
+  const [about, setAbout] = useState<About | null>(null);
   const [error, setError] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -68,8 +78,10 @@ function InboxInner() {
     if (!isUuid(to)) return; // only a user id, never a path into the API
     if (me && to === me.id) return; // nobody writes to themselves (the API refuses it too)
     if (isUuid(about)) {
-      // Start the message with the event it is about, so the organiser knows the context.
+      // Start the message with the event it is about, so the organiser knows the context, and show that event above
+      // the messages (TASK-305).
       getEvent(about).then((ev) => {
+        setAbout({ peerId: to, event: { id: ev.id, title: ev.title, starts_at: ev.starts_at, timezone: ev.timezone } });
         const start = tf(lang, "Щодо «{title}»: ", "About “{title}”: ", { title: ev.title });
         setText((t) => {
           if (t) return t;
@@ -87,11 +99,19 @@ function InboxInner() {
     setMsgs([]);
     if (!peer) return;
     let stop = false;
-    const pull = () => messageThread(peer.id).then((m) => { if (!stop) setMsgs(m); }).catch(() => {});
+    const pull = () => messageThread(peer.id).then((m) => {
+      if (stop) return;
+      setMsgs(m);
+      // Reading the thread marked these read on the server: the list's count and the nav badges catch up now.
+      if (m.some((x) => !x.read && x.sender_id === peer.id)) {
+        unreadChanged();
+        void loadConvs();
+      }
+    }).catch(() => {});
     void pull();
     const id = setInterval(pull, 8000);
     return () => { stop = true; clearInterval(id); };
-  }, [peer]);
+  }, [peer, loadConvs]);
   // Newest message into view by scrolling the message list itself, never the page: scrollIntoView also scrolled
   // the window, which on a phone pushed the compose bar under the on-screen keyboard (TASK-304).
   const toNewest = useCallback(() => {
@@ -130,28 +150,42 @@ function InboxInner() {
   }, [peer, toNewest]);
 
   useEffect(() => {
-    if (tab === "alerts" && alerts?.some((n) => !n.read)) void markNotificationsRead().catch(() => {});
+    if (tab === "alerts" && alerts?.some((n) => !n.read)) void markNotificationsRead().then(unreadChanged).catch(() => {});
   }, [tab, alerts]);
 
-  async function send() {
-    const body = text.trim();
-    if (!peer || !body || sending) return;
-    setSending(true);
+  // The open conversation, for the send queue's callbacks (they outlive the render that created them).
+  const peerRef = useRef<Peer | null>(null);
+  peerRef.current = peer;
+  // Messages go one at a time and in order: a Send tap while one is in flight is queued and goes right after it,
+  // never dropped and never sent twice (TASK-305 review; lib/send-queue.mjs).
+  const outbox = useRef<ReturnType<typeof createSendQueue<Outgoing, MessageDto>> | null>(null);
+  if (!outbox.current) {
+    outbox.current = createSendQueue<Outgoing, MessageDto>({
+      send: (o) => sendMessage(o.peerId, o.body),
+      onSent: (o, m) => {
+        // Only into the thread it belongs to (the user may have opened another one meanwhile), and once: the
+        // 8-second poll may already have brought it.
+        if (peerRef.current?.id === o.peerId) setMsgs((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+        void loadConvs();
+      },
+      onFailed: (failed, e) => {
+        setError(errorMessage(e));
+        // Give the unsent text back, oldest first, ahead of anything typed since, so nothing is lost.
+        const here = failed.filter((o) => o.peerId === peerRef.current?.id).map((o) => o.body).join(" ");
+        if (here) setText((t) => (t.trim() ? `${here} ${t}` : here));
+      },
+    });
+  }
+
+  function send() {
+    const body = textRef.current.trim();
+    if (!peer || !body) return;
     setError(null);
     // Clear at once, so what the user types while this one is in flight is kept (TASK-304 DEV check).
+    textRef.current = "";
     setText("");
     prefill.current = null;
-    try {
-      const m = await sendMessage(peer.id, body);
-      setMsgs((prev) => [...prev, m]);
-      void loadConvs();
-    } catch (e) {
-      setError(errorMessage(e));
-      // Give the unsent text back unless the user has already typed something new.
-      setText((t) => (t.trim() ? t : body));
-    } finally {
-      setSending(false);
-    }
+    outbox.current?.enqueue({ peerId: peer.id, body });
   }
 
   // Send button and the keyboard's Send key both land here. The field is focused again synchronously, inside the
@@ -161,7 +195,7 @@ function InboxInner() {
   function onCompose(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     input.current?.focus();
-    void send();
+    send();
   }
 
   // Caret to the end of an untouched prefill. Deferred one tick: on a phone the tap places the caret where the finger
@@ -177,13 +211,14 @@ function InboxInner() {
   }
 
   const unreadAlerts = alerts?.filter((n) => !n.read).length ?? 0;
+  const unreadChats = (convs ?? []).reduce((a, c) => a + c.unread, 0);
   const peerIds = new Set((convs ?? []).map((c) => c.peer_id));
 
   return (
     <main className="container">
       <div className="page-head"><h1>{tr(lang, "Повідомлення", "Messages")}</h1></div>
       <div className="tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "chats"} className={tab === "chats" ? "active" : ""} onClick={() => setTab("chats")}><MessageCircle className="ico sm" />{tr(lang, "Чати", "Chats")}</button>
+        <button role="tab" aria-selected={tab === "chats"} className={tab === "chats" ? "active" : ""} onClick={() => setTab("chats")}><MessageCircle className="ico sm" />{tr(lang, "Чати", "Chats")}{unreadChats > 0 && <span className="badge-dot">{unreadChats > 99 ? "99+" : unreadChats}</span>}</button>
         <button role="tab" aria-selected={tab === "alerts"} className={tab === "alerts" ? "active" : ""} onClick={() => setTab("alerts")}><Bell className="ico sm" />{tr(lang, "Сповіщення", "Alerts")}{unreadAlerts > 0 && <span className="badge-dot">{unreadAlerts}</span>}</button>
       </div>
       {error && <div className="alert error" style={{ marginBottom: 12 }}>{error}</div>}
@@ -226,6 +261,13 @@ function InboxInner() {
                       <span className="strong">{peer.name}</span>
                     </Link>
                   </div>
+                  {about && about.peerId === peer.id && (
+                    <Link href={`/events/${about.event.id}`} className="chat-about" aria-label={tf(lang, "Подія: {title}", "Event: {title}", { title: about.event.title })}>
+                      <Calendar className="ico sm" aria-hidden />
+                      <span className="strong chat-about-title">{about.event.title}</span>
+                      {about.event.starts_at && <span className="muted xs">{shortWhen(about.event.starts_at, lang, about.event.timezone)}</span>}
+                    </Link>
+                  )}
                   <div className="chat-msgs" aria-live="polite" ref={list} onScroll={(e) => { const el = e.currentTarget; nearBottom.current = isNearBottom(el.scrollHeight, el.scrollTop, el.clientHeight); }}>
                     {msgs.length === 0 && <p className="muted small" style={{ textAlign: "center", marginTop: 20 }}>{tr(lang, "Напишіть перше повідомлення — організатор побачить його тут.", "Write the first message — the organiser will see it here.")}</p>}
                     {msgs.map((m) => (
@@ -236,7 +278,7 @@ function InboxInner() {
                   </div>
                   <form className="chat-compose" onSubmit={onCompose}>
                     <label className="sr-only" htmlFor="msg">{tr(lang, "Повідомлення", "Message")}</label>
-                    <input id="msg" ref={input} className="input" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} onFocus={onFieldFocus} placeholder={tr(lang, "Повідомлення…", "Message…")} autoComplete="off" enterKeyHint="send" />
+                    <input id="msg" ref={input} className="input" value={text} maxLength={2000} onChange={(e) => { textRef.current = e.target.value; setText(e.target.value); }} onFocus={onFieldFocus} placeholder={tr(lang, "Повідомлення…", "Message…")} autoComplete="off" enterKeyHint="send" />
                     {/* Disabled only while empty: a disabled default button also blocks the keyboard's Send key. */}
                     <button type="submit" className="btn icon" disabled={!text.trim()} aria-label={tr(lang, "Надіслати", "Send")} title={tr(lang, "Надіслати", "Send")}><Send className="ico sm" aria-hidden /></button>
                   </form>

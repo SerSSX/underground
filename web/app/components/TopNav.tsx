@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tp } from "../../lib/i18n";
+import { useUnread } from "../../lib/unread";
 import { useSession } from "../../lib/session";
 import { initials } from "../../lib/ui";
-import { Compass, Ticket, MessageCircle, Plus, User, LayoutGrid, Globe, LogOut } from "./Icon";
+import { Compass, Ticket, MessageCircle, Plus, User, LayoutGrid, Globe, LogOut, Heart } from "./Icon";
 import LanguagePicker from "./LanguagePicker";
 
 /** Desktop top bar (links + create + profile menu) and, under 860 px, the mobile tab bar. */
@@ -18,6 +19,17 @@ export default function TopNav() {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const authed = !!me;
+  const unread = useUnread(me?.id, pathname);
+  const msgs = unread?.messages ?? 0;
+  const alerts = unread?.notifications ?? 0;
+  // Chats/Messages carry the unread message count; with none, a plain dot says an alert is waiting (TASK-305).
+  const badge = msgs > 0 ? (
+    <span className="badge-dot" aria-hidden>{msgs > 99 ? "99+" : msgs}</span>
+  ) : alerts > 0 ? <span className="nav-dot" aria-hidden /> : null;
+  const badgeText = msgs > 0
+    ? tp(lang, msgs, { one: "{n} непрочитане повідомлення", few: "{n} непрочитані повідомлення", many: "{n} непрочитаних повідомлень" }, { one: "{n} unread message", other: "{n} unread messages" })
+    : alerts > 0 ? tr(lang, "є нові сповіщення", "new alerts") : "";
+  const badgeLabel = badgeText ? <span className="sr-only">{` (${badgeText})`}</span> : null;
 
   useEffect(() => setOpen(false), [pathname]);
   useEffect(() => {
@@ -48,7 +60,7 @@ export default function TopNav() {
           <nav className="navlinks" aria-label={tr(lang, "Головне меню", "Main menu")}>
             <Link href="/" className={is("/") ? "active" : ""}>{tr(lang, "Афіша", "Discover")}</Link>
             <Link href={gated("/me/tickets")} className={is("/me/tickets") ? "active" : ""}>{tr(lang, "Квитки", "Tickets")}</Link>
-            <Link href={gated("/inbox")} className={is("/inbox") ? "active" : ""}>{tr(lang, "Повідомлення", "Messages")}</Link>
+            <Link href={gated("/inbox")} className={is("/inbox") ? "active" : ""}>{tr(lang, "Повідомлення", "Messages")}{badge}{badgeLabel}</Link>
             {authed && <Link href="/organizer" className={is("/organizer") ? "active" : ""}>{tr(lang, "Мої події", "My events")}</Link>}
           </nav>
           <div className="topbar-actions">
@@ -69,6 +81,7 @@ export default function TopNav() {
                       <div className="muted xs">{me.email}</div>
                     </div>
                     <Link href="/account"><User className="ico sm" />{tr(lang, "Профіль", "Profile")}</Link>
+                    <Link href="/me/tickets?tab=saved"><Heart className="ico sm" />{tr(lang, "Збережені", "Saved")}</Link>
                     <Link href="/organizer"><LayoutGrid className="ico sm" />{tr(lang, "Мої події", "My events")}</Link>
                     <div className="menu-lang"><Globe className="ico sm" aria-hidden /><LanguagePicker onPicked={() => setOpen(false)} /></div>
                     <button className="danger" onClick={signOut}><LogOut className="ico sm" />{tr(lang, "Вийти", "Log out")}</button>
@@ -89,7 +102,7 @@ export default function TopNav() {
         <Link href="/" className={is("/") ? "active" : ""}><Compass className="ico" />{tr(lang, "Афіша", "Discover")}</Link>
         <Link href={gated("/me/tickets")} className={is("/me/tickets") ? "active" : ""}><Ticket className="ico" />{tr(lang, "Квитки", "Tickets")}</Link>
         <Link href={createHref} aria-label={tr(lang, "Створити подію", "Create event")}><span className="create"><Plus className="ico" /></span></Link>
-        <Link href={gated("/inbox")} className={is("/inbox") ? "active" : ""}><MessageCircle className="ico" />{tr(lang, "Чати", "Chats")}</Link>
+        <Link href={gated("/inbox")} className={is("/inbox") ? "active" : ""}><MessageCircle className="ico" />{tr(lang, "Чати", "Chats")}{badge}{badgeLabel}</Link>
         <Link href={gated("/account")} className={is("/account") || is("/organizer") ? "active" : ""}><User className="ico" />{tr(lang, "Профіль", "Profile")}</Link>
       </nav>
     </>

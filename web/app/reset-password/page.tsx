@@ -61,7 +61,7 @@ function ResetForm() {
     <main className="container narrow">
       <h1 style={{ fontSize: 24 }}>{tr(lang, "Зміна паролю", "Set a new password")}</h1>
       {done ? (
-        <p className="muted">{tr(lang, "Пароль змінено. Перенаправляємо на вхід…", "Password changed. Redirecting to sign in…")}</p>
+        <p className="muted">{tr(lang, "Пароль змінено. Перенаправляємо на вхід…", "Password changed. Redirecting to log in…")}</p>
       ) : (
         <form className="form" onSubmit={submit}>
           <input className="input" type="password" placeholder={tr(lang, "Новий пароль (мін. 8 символів)", "New password (min. 8 characters)")} value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} autoComplete="new-password" />

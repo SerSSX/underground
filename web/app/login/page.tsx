@@ -74,7 +74,7 @@ function LoginForm() {
   return (
     <AuthCard
       title={tr(lang, "З поверненням", "Welcome back")}
-      subtitle={tr(lang, "Увійдіть, щоб бронювати місця й створювати події.", "Sign in to book places and create events.")}
+      subtitle={tr(lang, "Увійдіть, щоб бронювати місця й створювати події.", "Log in to book places and create events.")}
       footer={<>{tr(lang, "Ще немає акаунта?", "No account yet?")} <Link className="link" href={`/register?next=${encodeURIComponent(next)}`}>{tr(lang, "Зареєструватися", "Sign up")}</Link></>}
     >
       {mail && (
@@ -98,7 +98,7 @@ function LoginForm() {
               <button type="button" className="btn quiet icon sm" style={{ position: "absolute", right: 6, top: 6 }} onClick={() => setShow((s) => !s)} aria-label={show ? tr(lang, "Сховати пароль", "Hide password") : tr(lang, "Показати пароль", "Show password")} aria-pressed={show}><Eye className="ico sm" /></button>
             </div>
           </div>
-          <button className="btn block lg" disabled={busy || !email.trim() || !password}>{busy ? tr(lang, "Входимо…", "Signing in…") : tr(lang, "Увійти", "Sign in")}</button>
+          <button className="btn block lg" disabled={busy || !email.trim() || !password}>{busy ? tr(lang, "Входимо…", "Logging in…") : tr(lang, "Увійти", "Log in")}</button>
         </form>
       ) : !codeSent ? (
         <form className="form" onSubmit={sendCode}>
@@ -116,7 +116,7 @@ function LoginForm() {
             <label htmlFor="code">{tr(lang, "Код з листа", "Code from the email")}</label>
             <input id="code" className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} required style={{ letterSpacing: "0.4em", fontSize: 22, textAlign: "center" }} />
           </div>
-          <button className="btn block lg" disabled={busy || code.length !== 6}>{tr(lang, "Увійти", "Sign in")}</button>
+          <button className="btn block lg" disabled={busy || code.length !== 6}>{tr(lang, "Увійти", "Log in")}</button>
           <button type="button" className="btn quiet block" onClick={() => { setCodeSent(false); setCode(""); }}>{tr(lang, "Інша адреса", "Different email")}</button>
         </form>
       )}

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getEvent, getProfile, getToken, isOver, mySaves, myTickets, type EventDto } from "../../lib/api";
+import { LIVE_TICKET_STATUSES } from "../../lib/event-time.mjs";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { initials } from "../../lib/ui";
 import { MessageCircle } from "../components/Icon";
@@ -20,7 +21,7 @@ type Candidate = { organizerId: string; eventId: string; title: string; from: "t
 async function candidates(): Promise<Candidate[]> {
   const [tickets, saves] = await Promise.all([myTickets().catch(() => []), mySaves().catch(() => [] as EventDto[])]);
   const live = tickets
-    .filter((t) => (t.status === "active" || t.status === "pending_claim") && !isOver(t.event_starts_at, t.event_ends_at))
+    .filter((t) => LIVE_TICKET_STATUSES.includes(t.status) && !isOver(t.event_starts_at, t.event_ends_at))
     .sort((a, b) => (a.event_starts_at ?? "9").localeCompare(b.event_starts_at ?? "9"));
   const ticketEventIds = [...new Set(live.map((t) => t.event_id))].slice(0, MAX_EVENTS);
   // Tickets do not carry the organiser, so each event is read once.

@@ -218,7 +218,7 @@ export async function extract() {
 
   const { CATEGORY_LABELS } = await import(pathToFileURL(join(WEB, "lib", "categories.mjs")).href);
   for (const [uk, en] of Object.values(CATEGORY_LABELS)) add(uk, en, "lib/categories.mjs");
-  const { SERVER_MESSAGES, SERVER_PATTERNS, SERVER_CODES } = await import(pathToFileURL(join(WEB, "lib", "server-messages.mjs")).href);
+  const { SERVER_MESSAGES, SERVER_PATTERNS, SERVER_CODES, SERVER_REWRITES } = await import(pathToFileURL(join(WEB, "lib", "server-messages.mjs")).href);
   for (const [uk, en] of Object.entries(SERVER_MESSAGES)) add(uk, en, "lib/server-messages.mjs");
   for (const p of SERVER_PATTERNS) {
     if (phs(p.uk) !== phs(p.en) || phs(p.uk) !== [...p.vars].sort().join(",")) errors.push(`lib/server-messages.mjs: pattern "${p.uk}" placeholders do not match its vars`);
@@ -226,6 +226,11 @@ export async function extract() {
   }
   for (const [code, uk] of Object.entries(SERVER_CODES)) {
     if (uk !== null && !Object.prototype.hasOwnProperty.call(SERVER_MESSAGES, uk)) errors.push(`lib/server-messages.mjs: code "${code}" maps to "${uk}", which SERVER_MESSAGES does not translate`);
+  }
+  for (const [where, table] of Object.entries(SERVER_REWRITES ?? {})) {
+    for (const [from, to] of Object.entries(table)) {
+      if (!Object.prototype.hasOwnProperty.call(SERVER_MESSAGES, to)) errors.push(`lib/server-messages.mjs: rewrite "${where}" of "${from}" gives "${to}", which SERVER_MESSAGES does not translate`);
+    }
   }
   return { source, errors, warnings, dynamic, calls };
 }

@@ -191,3 +191,33 @@ test("the catalog check catches what it promises to", () => {
   assert.equal(bad({ "{n} місце": { one: "{n} {x}", other: "{n} lugares" } }, "es").length, 1, "invented placeholder");
   assert.ok(checkCatalogs({ source, catalogs: { pl: {} } }).errors.some((e) => e.includes("missing")), "missing fails without allowMissing");
 });
+
+test("TASK-305: rate-limit wording, the sign-up variant, the early-scan pattern and unknown English", async () => {
+  const { serverText, isUnknownEnglish } = await import("./server-messages.mjs");
+  assert.equal(serverText("uk", "забагато спроб, спробуйте пізніше"), "Забагато спроб. Спробуйте трохи пізніше.");
+  assert.equal(serverText("uk", "забагато спроб, спробуйте пізніше", "signup"), "Забагато спроб з вашої мережі. Спробуйте за годину.");
+  assert.equal(serverText("en", "забагато спроб, спробуйте пізніше", "signup"), "Too many attempts from your network. Please try again in an hour.");
+  assert.notEqual(serverText("de", "забагато спроб, спробуйте пізніше", "signup"), "Забагато спроб з вашої мережі. Спробуйте за годину.", "translated");
+  assert.equal(serverText("uk", "Ще рано: подія починається 14.11.2026 о 19:00"), "Ще рано: подія починається 14.11.2026 о 19:00");
+  assert.equal(serverText("en", "Ще рано: подія починається 01.07.2030 о 20:00"), "Too early: the event starts on 01.07.2030 at 20:00", "the API's own format");
+  assert.equal(serverText("en", "Ще рано: подія починається завтра."), "Too early: the event starts завтра", "any other form passes through");
+  assert.equal(serverText("uk", "title: не більше 140 символів"), "Текст задовгий: не більше 140 символів", "no English field name");
+  const iso = serverText("en", "Ще рано: подія починається 2026-11-14T17:00:00Z");
+  assert.match(iso, /^Too early: the event starts \S/);
+  assert.doesNotMatch(iso, /2026-11-14T/, "an ISO date is shown as a date");
+  assert.equal(serverText("uk", "sent"), "Пропозицію надіслано — квиток перейде, коли одержувач прийме");
+  assert.equal(serverText("uk", "reason is required (max 200 chars)"), "Опишіть причину скарги (до 200 символів)");
+  assert.equal(isUnknownEnglish("lat and lng go together"), true);
+  assert.equal(isUnknownEnglish("invalid email"), false, "mapped code");
+  assert.equal(isUnknownEnglish("квитки закінчились"), false, "Ukrainian");
+  assert.equal(isUnknownEnglish("Помилка 502"), false);
+  assert.equal(isUnknownEnglish("Error 502"), true);
+});
+
+test("TASK-305: common categories are labelled, and an unknown one is shown capitalised, not as a raw key", async () => {
+  const { CATEGORY_LABELS, categoryFallback } = await import("./categories.mjs");
+  for (const k of ["music", "art", "comedy", "kids", "tech", "food", "film", "literature", "sport"]) assert.ok(CATEGORY_LABELS[k], k);
+  assert.equal(categoryFallback("live coding"), "Live coding");
+  assert.equal(categoryFallback("  ёлка  "), "Ёлка");
+  assert.equal(categoryFallback(""), "");
+});

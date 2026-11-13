@@ -73,7 +73,7 @@ export default function EditEventPage() {
           // An emptied end field must remove the stored end (null alone would keep the old one).
           const clear = !f.ends_at_local && !!event.ends_at;
           await updateEvent(eventId, { ...body, ...(clear ? { clear_ends_at: true, ends_at: null } : {}), ...(draft && !f.is_draft ? { status: "published" } : {}) });
-          router.push(`/organizer/${eventId}`);
+          router.push(`/organizer/${eventId}?saved=1`); // the manage page confirms with a «Збережено» toast
         }}
       />
     </main>

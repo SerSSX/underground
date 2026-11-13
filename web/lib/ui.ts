@@ -2,7 +2,7 @@
 // dates, initials. Pure functions, no network. Words and dates go through lib/i18n-core.mjs and
 // lib/dates.mjs (TASK-303 L1: 10 languages).
 import { tr, tp, type Lang } from "./i18n-core.mjs";
-import { CATEGORY_LABELS } from "./categories.mjs";
+import { CATEGORY_LABELS, categoryFallback } from "./categories.mjs";
 import { zonedParts, zoneLabel } from "./dates.mjs";
 
 export { dateBadge, shortWhen, longDate, timeOf } from "./dates.mjs";
@@ -12,7 +12,7 @@ export function categoryLabel(cat: string | null | undefined, lang: Lang): strin
   const key = cat.trim().toLowerCase();
   const l = Object.prototype.hasOwnProperty.call(CATEGORY_LABELS, key) ? CATEGORY_LABELS[key] : undefined;
   // i18n-dynamic: these keys reach locales/_source.json from lib/categories.mjs.
-  return l ? tr(lang, l[0], l[1]) : cat;
+  return l ? tr(lang, l[0], l[1]) : categoryFallback(cat);
 }
 
 /** The handful shown as quick chips on the home page; everything else is behind "Усі категорії". */

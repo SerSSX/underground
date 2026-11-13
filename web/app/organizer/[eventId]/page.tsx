@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   myEvents, myStaffEvents, eventGuests, inviteStaff, updateEvent, cancelEvent, getToken, errorMessage, isOver,
-  listStaff, revokeStaffInvite, removeStaff,
+  listStaff, revokeStaffInvite, removeStaff, isUuid,
   type EventDto, type GuestDto, type StaffList,
 } from "../../../lib/api";
 import { useLang, tr, tf, tp } from "../../../lib/i18n";
@@ -15,7 +15,7 @@ import Modal from "../../components/Modal";
 import Poster from "../../components/Poster";
 import Scanner from "../../components/Scanner";
 import { Toast, useToast } from "../../components/Toast";
-import { Users, ScanLine, UserPlus, Pencil, Share2, ExternalLink, Search, ChevronLeft, Copy, Lock, X, Download } from "../../components/Icon";
+import { Users, ScanLine, UserPlus, Pencil, Share2, ExternalLink, Search, ChevronLeft, Copy, Lock, X, Download, MessageCircle } from "../../components/Icon";
 import { toCsv } from "../../../lib/csv.mjs";
 
 type Tab = "guests" | "scan" | "staff";
@@ -38,6 +38,16 @@ function ManageInner() {
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [toast, showToast] = useToast();
+
+  // Back from the edit form with ?saved=1: confirm once, then drop the flag so a refresh does not repeat it.
+  useEffect(() => {
+    if (params.get("saved") !== "1") return;
+    showToast(tr(lang, "Збережено", "Saved"));
+    const keep = new URLSearchParams(params.toString());
+    keep.delete("saved");
+    const q = keep.toString();
+    router.replace(`/organizer/${eventId}${q ? `?${q}` : ""}`);
+  }, [params, eventId, router, lang, showToast]);
 
   useEffect(() => {
     if (!getToken()) {
@@ -234,11 +244,17 @@ function ManageInner() {
               </div>
             </div>
             {shown.map((g, i) => (
-              <div key={`${g.name}-${i}`} className="guest">
+              <div key={g.user_id ?? `${g.name}-${i}`} className="guest">
                 <span className="avatar sm">{initials(g.name)}</span>
                 <span className="grow strong">{g.name}</span>
                 <span className="badge">{placesLabel(g.places, lang)}</span>
                 {g.checked_in > 0 && <span className="badge ok">{g.checked_in === g.places ? tr(lang, "прийшли", "in") : tf(lang, "прийшли {n}", "{n} in", { n: g.checked_in })}</span>}
+                {/* A message to the guest about this event. The name is never a link: guests have no public page here. */}
+                {isUuid(g.user_id) && g.user_id !== me?.id && (
+                  <Link className="btn quiet sm" href={`/inbox?to=${g.user_id}&about=${event.id}`} aria-label={tf(lang, "Написати: {name}", "Message {name}", { name: g.name })}>
+                    <MessageCircle className="ico sm" aria-hidden /><span className="hide-mobile">{tr(lang, "Написати", "Message")}</span>
+                  </Link>
+                )}
               </div>
             ))}
           </div>

@@ -19,4 +19,13 @@ export const CATEGORY_LABELS = {
   charity: ["Благодійність", "Charity"], family: ["Для родини", "Family"], "food & drink": ["Їжа й напої", "Food & drink"],
   tasting: ["Дегустація", "Tasting"], "board games": ["Настільні ігри", "Board games"], quiz: ["Квіз", "Quiz"],
   market: ["Маркет", "Market"], gaming: ["Ігри", "Gaming"], spiritual: ["Духовне", "Spiritual"], other: ["Інше", "Other"],
+  // TASK-305: broad words events are often stored under (seed data, the Android app, imports).
+  music: ["Музика", "Music"], art: ["Мистецтво", "Art"], comedy: ["Комедія", "Comedy"], kids: ["Для дітей", "Kids"],
+  tech: ["Технології", "Tech"], food: ["Їжа", "Food"], film: ["Фільми", "Film"],
 };
+
+/** A category nobody has labelled yet, shown as a word rather than a raw key: "live coding" → "Live coding". */
+export function categoryFallback(cat) {
+  const t = String(cat ?? "").trim().replace(/\s+/g, " ");
+  return t ? t.charAt(0).toLocaleUpperCase() + t.slice(1) : "";
+}

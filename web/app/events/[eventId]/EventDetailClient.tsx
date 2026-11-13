@@ -54,6 +54,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
   const [reviewText, setReviewText] = useState("");
   const [reportOpen, setReportOpen] = useState<{ type: "event" | "review"; id: string } | null>(null);
   const [reportReason, setReportReason] = useState("");
+  const [peopleOpen, setPeopleOpen] = useState(false);
   const [toast, showToast] = useToast();
 
   function load() {
@@ -184,6 +185,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
       "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Underground//UA", "BEGIN:VEVENT",
       `UID:${event.id}@underground`, `SUMMARY:${esc(event.title)}`,
       event.starts_at ? `DTSTART:${dt(event.starts_at)}` : "",
+      event.ends_at ? `DTEND:${dt(event.ends_at)}` : "",
       `LOCATION:${esc([event.venue_address, event.city].filter(Boolean).join(", "))}`,
       `URL:${window.location.href}`,
       "END:VEVENT", "END:VCALENDAR",
@@ -223,6 +225,20 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
     }
   }
 
+  // The end, when the organiser gave one after the start: "Кінець о 23:00", or with its date when it is another day.
+  const endsAt = event.ends_at && event.starts_at && Date.parse(event.ends_at) > Date.parse(event.starts_at) ? event.ends_at : null;
+  const endsSameDay = !!endsAt && longDate(endsAt, lang, event.timezone) === longDate(event.starts_at, lang, event.timezone);
+  const endLabel = !endsAt ? null : endsSameDay
+    ? tf(lang, "Кінець о {time}", "Ends at {time}", { time: timeOf(endsAt, event.timezone) })
+    : tf(lang, "Кінець: {date} о {time}", "Ends {date} at {time}", { date: longDate(endsAt, lang, event.timezone), time: timeOf(endsAt, event.timezone) });
+  // Friends (mutual follows) the API names for this event: going first, then interested.
+  const friends = social ? [
+    ...social.friends_going.map((u) => ({ ...u, going: true })),
+    ...social.friends_interested.filter((u) => !social.friends_going.some((g) => g.id === u.id)).map((u) => ({ ...u, going: false })),
+  ] : [];
+
+  const goingText = social ? `${tp(lang, social.going_count, { one: "{n} піде", few: "{n} підуть", many: "{n} підуть" }, { one: "{n} going", other: "{n} going" })} · ${tp(lang, social.interested_count, { one: "{n} цікавиться", few: "{n} цікавляться", many: "{n} цікавляться" }, { one: "{n} interested", other: "{n} interested" })}` : "";
+
   const priceLabel = free ? tr(lang, "Безкоштовно", "Free") : fmtPrice(event.price, event.currency);
   const leftLabel = left <= 0
     ? tr(lang, "Місць немає", "Full")
@@ -261,7 +277,11 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
             {event.starts_at && (
               <div className="info-item">
                 <span className="ib"><Calendar className="ico" /></span>
-                <div><div className="t">{longDate(event.starts_at, lang, event.timezone)}</div><div className="s">{tr(lang, "Початок о", "Starts at")} {timeOf(event.starts_at, event.timezone)}</div></div>
+                <div>
+                  <div className="t">{longDate(event.starts_at, lang, event.timezone)}</div>
+                  <div className="s">{tr(lang, "Початок о", "Starts at")} {timeOf(event.starts_at, event.timezone)}</div>
+                  {endLabel && <div className="s">{endLabel}</div>}
+                </div>
               </div>
             )}
             {(event.venue_address || event.city) && (
@@ -282,9 +302,18 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
               <div className="info-item">
                 <span className="ib"><Users className="ico" /></span>
                 <div>
-                  <div className="t">{`${tp(lang, social.going_count, { one: "{n} піде", few: "{n} підуть", many: "{n} підуть" }, { one: "{n} going", other: "{n} going" })} · ${tp(lang, social.interested_count, { one: "{n} цікавиться", few: "{n} цікавляться", many: "{n} цікавляться" }, { one: "{n} interested", other: "{n} interested" })}`}</div>
-                  {[...social.friends_going, ...social.friends_interested].length > 0 && (
-                    <div className="s">{tr(lang, "Серед них: ", "Including: ")}{Array.from(new Set([...social.friends_going, ...social.friends_interested].map((u) => u.name))).slice(0, 3).join(", ")}</div>
+                  {/* Only friends (mutual follows) are named by the API; with any, the counts open their list. */}
+                  {friends.length > 0 ? (
+                    <button type="button" className="t link-btn" aria-haspopup="dialog" onClick={() => setPeopleOpen(true)}>{goingText}</button>
+                  ) : (
+                    <div className="t">{goingText}</div>
+                  )}
+                  {friends.length > 0 && (
+                    <div className="s">
+                      {tr(lang, "Серед них: ", "Including: ")}
+                      {friends.slice(0, 3).map((u, i) => <span key={u.id}>{i > 0 && ", "}<Link className="link" href={`/u/${u.id}`}>{u.name}</Link></span>)}
+                      {friends.length > 3 && <> · <button type="button" className="link-btn link" onClick={() => setPeopleOpen(true)}>{tr(lang, "усі", "all")}</button></>}
+                    </div>
                   )}
                 </div>
               </div>
@@ -374,7 +403,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
             <span className="free">{priceLabel}</span>
             <button className={`round-btn ${saved ? "on" : ""}`} style={{ background: "var(--surface-2)" }} aria-pressed={saved} aria-label={tr(lang, "Зберегти", "Save")} onClick={toggleSave}><Heart className="ico sm" /></button>
           </div>
-          {event.starts_at && <div className="when" style={{ marginTop: 10 }}>{longDate(event.starts_at, lang, event.timezone)} · {timeOf(event.starts_at, event.timezone)}</div>}
+          {event.starts_at && <div className="when" style={{ marginTop: 10 }}>{longDate(event.starts_at, lang, event.timezone)} · {timeOf(event.starts_at, event.timezone)}{endsSameDay && endsAt ? `–${timeOf(endsAt, event.timezone)}` : ""}</div>}
           <div className="muted small" style={{ marginTop: 2 }}>{[event.venue_address, event.city].filter(Boolean).join(", ")}</div>
           <hr />
           <div className="row spread small" style={{ marginBottom: 14 }}>
@@ -438,12 +467,27 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
         </Modal>
       )}
 
+      {peopleOpen && friends.length > 0 && (
+        <Modal title={tr(lang, "Друзі на цій події", "Friends at this event")} onClose={() => setPeopleOpen(false)}>
+          <div className="stack">
+            <p className="muted small">{tr(lang, "Тут лише ті, з ким ви підписані одне на одного. Інших гостей не показуємо.", "Only people you follow and who follow you back. Other guests stay private.")}</p>
+            {friends.map((u) => (
+              <Link key={u.id} href={`/u/${u.id}`} className="chat-item" style={{ borderRadius: 12 }}>
+                <span className="avatar sm">{u.avatar_url ? <img src={u.avatar_url} alt="" /> : initials(u.name)}</span>
+                <span className="grow strong">{u.name}</span>
+                <span className={`badge ${u.going ? "ok" : ""}`}>{u.going ? tr(lang, "піде", "going") : tr(lang, "цікавиться", "interested")}</span>
+              </Link>
+            ))}
+          </div>
+        </Modal>
+      )}
+
       {reportOpen && (
         <Modal title={reportOpen.type === "review" ? tr(lang, "Скарга на відгук", "Report review") : tr(lang, "Скарга на подію", "Report event")} onClose={() => setReportOpen(null)}>
           <form className="form" onSubmit={(e) => { e.preventDefault(); submitReport(); }}>
             <div className="field">
               <label htmlFor="reason">{tr(lang, "Що не так?", "What's wrong?")}</label>
-              <textarea id="reason" className="input" rows={3} value={reportReason} onChange={(e) => setReportReason(e.target.value)} placeholder={tr(lang, "Спам, шахрайство, образливий зміст…", "Spam, fraud, offensive content…")} required />
+              <textarea id="reason" className="input" rows={3} maxLength={200} value={reportReason} onChange={(e) => setReportReason(e.target.value)} placeholder={tr(lang, "Спам, шахрайство, образливий зміст…", "Spam, fraud, offensive content…")} required />
             </div>
             <button className="btn block" disabled={!reportReason.trim() || busy}>{tr(lang, "Надіслати скаргу", "Send report")}</button>
           </form>

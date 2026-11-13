@@ -42,7 +42,7 @@ function RegisterForm() {
       router.push(next === "/" ? `/onboarding?next=${encodeURIComponent(next)}` : next);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) setExists(true);
-      else setError(errorMessage(err));
+      else setError(errorMessage(err, "signup")); // a 429 here is the hourly sign-up cap: «…Спробуйте за годину.»
       setBusy(false);
     }
   }
@@ -52,7 +52,7 @@ function RegisterForm() {
     <AuthCard
       title={tr(lang, "Створіть акаунт", "Create your account")}
       subtitle={tr(lang, "Бронюйте місця безкоштовно й публікуйте власні події.", "Book free places and publish your own events.")}
-      footer={<>{tr(lang, "Уже є акаунт?", "Already have an account?")} <Link className="link" href={`/login?next=${encodeURIComponent(next)}`}>{tr(lang, "Увійти", "Sign in")}</Link></>}
+      footer={<>{tr(lang, "Уже є акаунт?", "Already have an account?")} <Link className="link" href={`/login?next=${encodeURIComponent(next)}`}>{tr(lang, "Увійти", "Log in")}</Link></>}
     >
       <form className="form" onSubmit={submit}>
         <div className="field">

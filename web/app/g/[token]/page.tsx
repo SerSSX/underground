@@ -121,7 +121,7 @@ export default function ClaimGiftPage() {
         </button>
       ) : !mail ? (
         <div className="stack" style={{ marginTop: 16 }}>
-          <Link className="btn block lg" href={`/login?next=${encodeURIComponent(`/g/${token}`)}`}>{tr(lang, "Увійти й забрати місце", "Sign in to claim")}</Link>
+          <Link className="btn block lg" href={`/login?next=${encodeURIComponent(`/g/${token}`)}`}>{tr(lang, "Увійти й забрати місце", "Log in to claim")}</Link>
           <Link className="btn ghost block" href={`/register?next=${encodeURIComponent(`/g/${token}`)}`}>{tr(lang, "Створити акаунт", "Create an account")}</Link>
         </div>
       ) : !codeSent ? (

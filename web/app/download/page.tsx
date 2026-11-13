@@ -48,7 +48,7 @@ export default function AppPage() {
             <ol className="stack" style={{ paddingLeft: 20, margin: 0 }}>
               <li>{tr(lang, "Натисніть «Завантажити APK» на телефоні з Android.", "Tap Download APK on your Android phone.")}</li>
               <li>{tr(lang, "Відкрийте завантажений файл. Якщо телефон спитає — дозвольте встановлення з цього джерела (браузера).", "Open the downloaded file. If asked, allow installs from this source (your browser).")}</li>
-              <li>{tr(lang, "Натисніть «Встановити» й увійдіть тим самим акаунтом, що й на сайті.", "Tap Install and sign in with the same account as on the site.")}</li>
+              <li>{tr(lang, "Натисніть «Встановити» й увійдіть тим самим акаунтом, що й на сайті.", "Tap Install and log in with the same account as on the site.")}</li>
             </ol>
             <div className="alert" style={{ marginTop: 16 }}><ShieldIcon className="ico" />{tr(lang, "Файл завантажується лише з нашого сервера. Google Play поки немає — коли зʼявиться, оновлення прийдуть звідти.", "The file comes only from our server. There is no Google Play listing yet.")}</div>
             {rel.sha256 && <p className="subtle xs" style={{ marginTop: 10, wordBreak: "break-all" }}>SHA-256: {rel.sha256}</p>}

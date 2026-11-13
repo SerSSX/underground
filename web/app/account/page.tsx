@@ -11,7 +11,7 @@ import CityInput from "../components/CityInput";
 import Modal from "../components/Modal";
 import LanguagePicker from "../components/LanguagePicker";
 import { Toast, useToast } from "../components/Toast";
-import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight, KeyRound, Eye } from "../components/Icon";
+import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight, KeyRound, Eye, Heart } from "../components/Icon";
 
 export default function AccountPage() {
   const router = useRouter();
@@ -129,6 +129,7 @@ export default function AccountPage() {
 
       <div className="stack" style={{ marginTop: 16 }}>
         <Link href="/me/tickets" className="card tight row gap"><Ticket className="ico" /><span className="grow strong">{tr(lang, "Мої квитки", "My tickets")}</span><ChevronRight className="ico sm subtle" /></Link>
+        <Link href="/me/tickets?tab=saved" className="card tight row gap"><Heart className="ico" /><span className="grow strong">{tr(lang, "Збережені", "Saved")}</span><ChevronRight className="ico sm subtle" /></Link>
         <Link href="/organizer" className="card tight row gap"><LayoutGrid className="ico" /><span className="grow strong">{tr(lang, "Мої події", "My events")}</span><ChevronRight className="ico sm subtle" /></Link>
         <Link href={`/u/${me.id}`} className="card tight row gap"><Eye className="ico" /><span className="grow strong">{tr(lang, "Як мене бачать інші", "How others see me")}</span><ChevronRight className="ico sm subtle" /></Link>
       </div>
@@ -180,7 +181,7 @@ export default function AccountPage() {
         <p className="muted small" style={{ marginBottom: 14 }}>
           {hasPassword
             ? tr(lang, "Після зміни пароля інші пристрої вийдуть з акаунта.", "Changing the password signs out your other devices.")
-            : tr(lang, "Ви входите кодом з пошти. Задайте пароль, щоб входити й ним.", "You sign in with an email code. Set a password to sign in with it too.")}
+            : tr(lang, "Ви входите кодом з пошти. Задайте пароль, щоб входити й ним.", "You log in with an email code. Set a password to log in with it too.")}
         </p>
         <form className="form" style={{ maxWidth: 360 }} onSubmit={(e) => { e.preventDefault(); void savePassword(); }}>
           {/* Lets password managers file the new password under the right account. */}
@@ -233,7 +234,7 @@ export default function AccountPage() {
               </div>
             )}
             <button type="button" className="btn quiet sm" style={{ alignSelf: "flex-start", marginLeft: -12 }} onClick={() => { setNoPw((v) => !v); setProof(""); }}>
-              {noPw ? tr(lang, "У мене є пароль", "I have a password") : tr(lang, "Я входжу без пароля", "I sign in without a password")}
+              {noPw ? tr(lang, "У мене є пароль", "I have a password") : tr(lang, "Я входжу без пароля", "I log in without a password")}
             </button>
             {error && <div className="alert error">{error}</div>}
             <button className="btn danger block" disabled={busy === "delete" || (noPw ? proof !== "DELETE" : !proof)}>{tr(lang, "Видалити назавжди", "Delete forever")}</button>

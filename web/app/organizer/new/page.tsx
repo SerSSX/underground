@@ -64,7 +64,9 @@ export default function NewEventPage() {
           )}
           <div className="row gap" style={{ marginTop: 22, justifyContent: "center" }}>
             {!draft && <Link className="btn" href={`/events/${created.id}`}><ExternalLink className="ico sm" />{tr(lang, "Відкрити подію", "Open event")}</Link>}
-            <Link className="btn ghost" href={`/organizer/${created.id}`}><Users className="ico sm" />{tr(lang, "Керувати", "Manage")}</Link>
+            {/* A plain link: the address bar already shows this URL (replaceState above), and a client-side navigation
+                to the current URL is not guaranteed to swap the page; a full load always does. */}
+            <a className="btn ghost" href={`/organizer/${created.id}`}><Users className="ico sm" />{tr(lang, "Керувати", "Manage")}</a>
           </div>
         </div>
         <Toast msg={toast} />
@@ -90,6 +92,9 @@ export default function NewEventPage() {
           const zone = f.timezone ?? tz;
           const ev = await createEvent({ ...toEventInput(f, toIso(f.starts_at_local, zone), zone), timezone: zone, status: f.is_draft ? "draft" : "published" });
           setCreated(ev);
+          // The address bar now names the new event's manage page: a refresh (or Back and Forward) opens that page
+          // instead of an empty form that would create the event a second time (TASK-305).
+          window.history.replaceState(null, "", `/organizer/${ev.id}`);
           window.scrollTo({ top: 0 });
         }}
       />}

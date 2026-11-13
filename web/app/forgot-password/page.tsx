@@ -58,7 +58,7 @@ export default function ForgotPasswordPage() {
         </>
       )}
       <p className="muted" style={{ marginTop: 14 }}>
-        <Link className="link" href="/login">{tr(lang, "← Назад до входу", "← Back to sign in")}</Link>
+        <Link className="link" href="/login">{tr(lang, "← Назад до входу", "← Back to log in")}</Link>
       </p>
     </main>
   );
