@@ -43,18 +43,22 @@ const MAX_FIELD_CHARS: usize = 200;
 const RESULTS: usize = 8;
 const UNAVAILABLE: &str = "пошук адрес тимчасово недоступний";
 /// Cache key format version: bumped whenever the cached shape or the upstream query changes.
-const KEY_VERSION: &str = "v2";
-const CITY_TAGS: [&str; 5] = [
+/// v3 (2026-11-13): city mode also asks for `place:province`, so cached city answers from before
+/// (Tokyo came back without Tokyo) are not served again.
+const KEY_VERSION: &str = "v3";
+const CITY_TAGS: [&str; 6] = [
     "place:city",
     "place:town",
     "place:village",
     "place:hamlet",
-    // Only for the allow-listed states below; every other state is dropped.
+    // Both only for the allow-listed city-states below; every other state or province is dropped.
     "place:state",
+    "place:province",
 ];
-/// OSM objects tagged `place=state` that people know as a city (OSM type, OSM id). Tokyo-to is
-/// a prefecture-level metropolis with no `place=city` object of its own. Singapore and Hong Kong
-/// are `place=city` already (checked live 2026-11-13); Macau is not checked.
+/// OSM objects tagged `place=state` or `place=province` that people know as a city (OSM type, OSM
+/// id). Tokyo-to is a prefecture-level metropolis with no `place=city` object of its own, and Photon
+/// tags it `place=province` (checked live 2026-11-13). Singapore and Hong Kong are `place=city`
+/// already (checked live 2026-11-13); Macau is not checked.
 const CITY_STATES: [(&str, i64); 1] = [("R", 1_543_125)];
 
 /// Where the geocoder lives. Production reads `GEOCODER_URL` once; tests inject a local stub
@@ -565,7 +569,7 @@ fn clean(s: &str) -> String {
 
 fn kind_of(p: &Value, osm_type: Option<&str>, osm_id: Option<i64>) -> &'static str {
     let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("");
-    let allow_listed_state = s("osm_value") == "state"
+    let allow_listed_state = matches!(s("osm_value"), "state" | "province")
         && CITY_STATES
             .iter()
             .any(|(t, id)| Some(*t) == osm_type && Some(*id) == osm_id);
@@ -779,7 +783,8 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .collect();
         assert_eq!(langs, ["en"], "[SEC] no parameter smuggled through q");
-        assert_eq!(pairs.iter().filter(|(k, _)| k == "osm_tag").count(), 5);
+        // 6 since 2026-11-13: place:province added for Tokyo-to (was 5).
+        assert_eq!(pairs.iter().filter(|(k, _)| k == "osm_tag").count(), 6);
     }
 
     #[test]
@@ -866,6 +871,14 @@ mod tests {
         assert_eq!(places[0].kind, "city");
         assert_eq!(places[0].city.as_deref(), Some("東京都"));
         assert_eq!(places[1].kind, "place", "an ordinary state is not a city");
+        // Photon tags Tokyo-to `place=province` (live, 2026-11-13): the same allow-list applies.
+        let mut tokyo = state(1_543_125, "東京都");
+        tokyo["properties"]["osm_value"] = json!("province");
+        let mut other = state(3_795_658, "Hokkaido");
+        other["properties"]["osm_value"] = json!("province");
+        let places = normalise(&json!({"features": [tokyo, other]}), true).unwrap();
+        assert_eq!(places[0].kind, "city", "the allow-listed province is a city");
+        assert_eq!(places[1].kind, "place", "any other province is not");
     }
 
     fn city(cc: &str, lat: f64, lng: f64) -> GeoPlace {

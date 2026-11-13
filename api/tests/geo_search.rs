@@ -67,8 +67,9 @@ fn photon_answer(lang: &str, city_mode: bool) -> Value {
     porto["state"] = json!("Porto");
     let mut odessa = place_props("city", "Odessa", "US", "United States");
     odessa["state"] = json!("Texas");
+    // Live Photon tags Tokyo-to `place=province` (checked 2026-11-13), not `state`.
     let tokyo = place_props(
-        "state",
+        "province",
         if en { "Tokyo" } else { "東京都" },
         "JP",
         if en { "Japan" } else { "日本" },
@@ -81,6 +82,13 @@ fn photon_answer(lang: &str, city_mode: bool) -> Value {
             place_props("state", "California", "US", "United States"),
             -119.27,
             37.27,
+        ),
+        // A province that is not allow-listed: never a city.
+        feature(
+            ("R", 3_795_658),
+            place_props("province", "Hokkaido", "JP", "Japan"),
+            142.79,
+            43.45,
         ),
         feature(("R", 115_232), odessa, -102.3676, 31.8457),
     ];
@@ -294,7 +302,8 @@ async fn user_text_reaches_the_upstream_as_one_parameter(pool: PgPool) {
             "place:town",
             "place:village",
             "place:hamlet",
-            "place:state"
+            "place:state",
+            "place:province"
         ]
     );
 
@@ -348,6 +357,10 @@ async fn allow_listed_states_are_cities_with_default_names(pool: PgPool) {
     assert!(
         places.iter().all(|p| p["name"] != "California"),
         "an ordinary state is dropped"
+    );
+    assert!(
+        places.iter().all(|p| p["name"] != "Hokkaido"),
+        "a province that is not allow-listed is dropped"
     );
     assert!(places.iter().all(|p| p["kind"] == "city"));
 
