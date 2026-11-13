@@ -5,11 +5,17 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import EventCard, { EventCardSkeleton } from "./components/EventCard";
 import { getEvents, discoverSections, mySaves, saveEvent, unsaveEvent, getToken, errorMessage, logTelemetry, type EventDto, type DiscoverSection } from "../lib/api";
-import { useLang, tr, tf, serverText } from "../lib/i18n";
+import { useLang, tr, tf, tp, serverText } from "../lib/i18n";
 import { categoryLabel, inWindow, TOP_CATEGORIES, type When } from "../lib/ui";
-import { Search, MapPin, Plus, Compass } from "./components/Icon";
+import { Search, MapPin, Plus, Compass, LocateFixed, X } from "./components/Icon";
+import CityInput from "./components/CityInput";
+import { reversePlace } from "../lib/geo";
+import { cityName, distanceKm, inCity, parseStoredCity, sortByDistance, storeCity, type ChosenCity, type Point } from "../lib/geo-core.mjs";
 
 const CITY_KEY = "ug_city";
+/** A city that has events: its name, with an event's point so other spellings of it match too. */
+const pointOf = (name: string, e: EventDto): ChosenCity => ({ name, ...(e.lat != null && e.lng != null ? { lat: e.lat, lng: e.lng } : {}) });
+type NearState = "idle" | "locating" | "denied" | "unavailable" | "timeout" | "unsupported" | "unnamed";
 
 export default function HomeClient() {
   const { lang } = useLang();
@@ -18,13 +24,21 @@ export default function HomeClient() {
   const [sections, setSections] = useState<DiscoverSection[]>([]);
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const [q, setQ] = useState("");
-  const [city, setCity] = useState("");
+  // The city filter: chosen from worldwide suggestions, typed, or "near me" (TASK-303 G2).
+  const [city, setCity] = useState<ChosenCity | null>(null);
+  const [cityText, setCityText] = useState("");
+  // The visitor's own position, in memory only (never stored or sent unrounded), for distances.
+  const [me, setMe] = useState<Point | null>(null);
+  const [near, setNear] = useState<NearState>("idle");
   const [when, setWhen] = useState<When>("all");
   const [cat, setCat] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    try { setCity(localStorage.getItem(CITY_KEY) ?? ""); } catch { /* storage blocked */ }
+    try {
+      const stored = parseStoredCity(localStorage.getItem(CITY_KEY));
+      if (stored) { setCity(stored); setCityText(stored.name); }
+    } catch { /* storage blocked */ }
     getEvents().then(setEvents).catch((e) => { setError(errorMessage(e)); setEvents([]); });
     discoverSections()
       .then((secs) => {
@@ -35,9 +49,49 @@ export default function HomeClient() {
     if (getToken()) mySaves().then((l) => setSaved(new Set(l.map((e) => e.id)))).catch(() => {});
   }, []);
 
-  function chooseCity(c: string) {
+  function chooseCity(c: ChosenCity | null) {
     setCity(c);
-    try { if (c) localStorage.setItem(CITY_KEY, c); else localStorage.removeItem(CITY_KEY); } catch { /* ignore */ }
+    setCityText(c?.name ?? "");
+    if (!c?.near) setMe(null);
+    try { if (c) localStorage.setItem(CITY_KEY, storeCity(c)); else localStorage.removeItem(CITY_KEY); } catch { /* ignore */ }
+  }
+
+  function typeCity(text: string) {
+    setCityText(text);
+    // Cleared → all cities; a name that has events applies at once; any other name on Enter (commitCity).
+    // Filtering on every keystroke would flash "no events in Por" while typing "Porto".
+    const name = text.replace(/\s+/g, " ").trim();
+    if (!name) return chooseCity(null);
+    const known = cities.find(([c]) => c.trim().toLowerCase() === name.toLowerCase());
+    if (known) chooseCity(pointOf(known[0], known[1].e));
+  }
+
+  function commitCity() {
+    const name = cityText.replace(/\s+/g, " ").trim();
+    if (name && name.toLowerCase() !== city?.name.toLowerCase()) chooseCity({ name });
+  }
+
+  /** "Near me": only on this click; the position is named by the API (sent rounded to ~1 km). */
+  function nearMe() {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return setNear("unsupported");
+    setNear("locating");
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const here = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        try {
+          const place = await reversePlace(here.lat, here.lng, lang);
+          const name = cityName(place) || place?.name || "";
+          if (!place || !name) return setNear("unnamed");
+          chooseCity({ name, lat: here.lat, lng: here.lng, country_code: place.country_code ?? undefined, near: true });
+          setMe(here);
+          setNear("idle");
+        } catch {
+          setNear("unnamed");
+        }
+      },
+      (err) => setNear(err.code === err.PERMISSION_DENIED ? "denied" : err.code === err.TIMEOUT ? "timeout" : "unavailable"),
+      { timeout: 10_000, maximumAge: 300_000, enableHighAccuracy: false },
+    );
   }
 
   function toggleSave(id: string) {
@@ -51,10 +105,11 @@ export default function HomeClient() {
     (now ? saveEvent(id) : unsaveEvent(id)).catch(() => flip(!now));
   }
 
+  // Cities that have events, busiest first: offered on an empty city field.
   const cities = useMemo(() => {
-    const count = new Map<string, number>();
-    for (const e of events ?? []) if (e.city) count.set(e.city, (count.get(e.city) ?? 0) + 1);
-    return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([c]) => c);
+    const count = new Map<string, { n: number; e: EventDto }>();
+    for (const e of events ?? []) if (e.city) count.set(e.city, { n: (count.get(e.city)?.n ?? 0) + 1, e });
+    return [...count.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 8);
   }, [events]);
 
   const categories = useMemo(() => {
@@ -64,47 +119,50 @@ export default function HomeClient() {
     return [...top, ...rest];
   }, [events, lang]);
 
-  // A remembered city with no events right now would filter to nothing while the select shows "all".
-  useEffect(() => { if (city && events && !cities.includes(city)) chooseCity(""); }, [city, cities, events]);
+  // Distances: from the visitor after "near me", else from the remembered near-me point.
+  const origin: Point | null = me ?? (city?.near && city.lat !== undefined && city.lng !== undefined ? { lat: city.lat, lng: city.lng } : null);
+  const byDistance = (list: EventDto[]) => (origin ? sortByDistance(list, origin) : list);
 
   const filtering = !!q.trim() || !!cat || when !== "all";
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return (events ?? []).filter((e) => {
-      if (city && e.city !== city) return false;
+    return byDistance((events ?? []).filter((e) => {
+      if (!inCity(e, city)) return false;
       if (cat && e.category.trim().toLowerCase() !== cat) return false;
       if (!inWindow(e.starts_at, when, new Date(), e.timezone)) return false;
       if (needle && !`${e.title} ${e.description ?? ""} ${e.venue_address ?? ""}`.toLowerCase().includes(needle)) return false;
       return true;
-    });
-  }, [events, q, city, cat, when]);
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, q, city, cat, when, me]);
+  const cityHasEvents = !city || (events ?? []).some((e) => inCity(e, city));
 
   // When a date window is empty, offer the next events that match everything else.
   const nearest = useMemo(() => {
     if (when === "all") return [];
     const needle = q.trim().toLowerCase();
     return (events ?? [])
-      .filter((e) => (!city || e.city === city) && (!cat || e.category.trim().toLowerCase() === cat))
+      .filter((e) => inCity(e, city) && (!cat || e.category.trim().toLowerCase() === cat))
       .filter((e) => !needle || `${e.title} ${e.description ?? ""} ${e.venue_address ?? ""}`.toLowerCase().includes(needle))
       .filter((e) => e.starts_at && Date.parse(e.starts_at) > Date.now())
       .slice(0, 4);
   }, [events, when, city, cat, q]);
 
   const card = (e: EventDto, i: number) => (
-    <EventCard key={e.id} event={e} saved={saved.has(e.id)} onToggleSave={toggleSave} eager={i < 4} />
+    <EventCard key={e.id} event={e} saved={saved.has(e.id)} onToggleSave={toggleSave} eager={i < 4} distanceKm={origin ? distanceKm(e, origin) : null} />
   );
   const WHEN: [When, string][] = [
     ["all", tr(lang, "Усі дати", "Any date")], ["today", tr(lang, "Сьогодні", "Today")], ["tomorrow", tr(lang, "Завтра", "Tomorrow")],
     ["weekend", tr(lang, "Вихідні", "Weekend")], ["week", tr(lang, "Найближчі 7 днів", "Next 7 days")],
   ];
   const sectionsForCity = sections
-    .map((s) => ({ ...s, events: city ? s.events.filter((e) => e.city === city) : s.events }))
+    .map((s) => ({ ...s, events: s.events.filter((e) => inCity(e, city)) }))
     .filter((s) => s.events.length > 0);
 
   return (
     <main className="container">
       <section className="hero-search">
-        <h1>{tr(lang, "Куди піти ", "Where to go ")}<em>{tr(lang, "сьогодні?", "tonight?")}</em></h1>
+        <h1><em>{tr(lang, "Куди піти сьогодні?", "Where to go tonight?")}</em></h1>
         <p>{tr(lang, "Концерти, вечірки, лекції й зустрічі поруч. Бронюй місця безкоштовно — квиток з QR одразу в телефоні.", "Concerts, parties, talks and meetups near you. Book free places — a QR ticket lands on your phone at once.")}</p>
         <div className="searchbar" role="search">
           <label className="input-icon">
@@ -112,14 +170,42 @@ export default function HomeClient() {
             <Search className="ico" />
             <input className="input" type="search" placeholder={tr(lang, "Назва, місце або виконавець", "Title, venue or artist")} value={q} onChange={(e) => setQ(e.target.value)} />
           </label>
-          <label className="input-icon city">
-            <span className="sr-only">{tr(lang, "Місто", "City")}</span>
+          <div className="input-icon city">
             <MapPin className="ico" />
-            <select className="input" value={city} onChange={(e) => chooseCity(e.target.value)}>
-              <option value="">{tr(lang, "Усі міста", "All cities")}</option>
-              {cities.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </label>
+            <CityInput
+              value={cityText}
+              onChange={typeCity}
+              onPick={(p, name) => chooseCity({ name, lat: p.lat, lng: p.lng, country_code: p.country_code ?? undefined })}
+              placeholder={tr(lang, "Усі міста", "All cities")}
+              ariaLabel={tr(lang, "Місто", "City")}
+              popEnd
+              onEnter={commitCity}
+              extra={cities.map(([name, { n, e }]) => ({
+                key: name,
+                primary: name,
+                secondary: tp(lang, n, { one: "{n} подія", few: "{n} події", many: "{n} подій" }, { one: "{n} event", other: "{n} events" }),
+                onSelect: () => chooseCity(pointOf(name, e)),
+              }))}
+            />
+          </div>
+        </div>
+        <div className="row gap wrap near-row">
+          <button type="button" className="btn quiet sm" onClick={nearMe} disabled={near === "locating"} aria-busy={near === "locating"}>
+            <LocateFixed className="ico sm" />{near === "locating" ? tr(lang, "Визначаємо місце…", "Finding you…") : tr(lang, "Поруч зі мною", "Near me")}
+          </button>
+          {city && (
+            <button type="button" className="btn quiet sm" onClick={() => chooseCity(null)}>
+              <X className="ico sm" />{tr(lang, "Усі міста", "All cities")}
+            </button>
+          )}
+          <span className="msg" role="status">
+            {near === "denied" ? tr(lang, "Доступ до геопозиції заборонено — оберіть місто вручну.", "Location access is blocked — pick a city instead.")
+              : near === "timeout" ? tr(lang, "Не вдалося визначити місце вчасно — спробуйте ще раз або оберіть місто.", "Finding your location took too long — try again or pick a city.")
+              : near === "unavailable" ? tr(lang, "Не вдалося визначити місце — оберіть місто вручну.", "Couldn't find your location — pick a city instead.")
+              : near === "unsupported" ? tr(lang, "Цей браузер не визначає місце — оберіть місто вручну.", "This browser can't share a location — pick a city instead.")
+              : near === "unnamed" ? tr(lang, "Не вдалося назвати місто за геопозицією — оберіть його вручну.", "Couldn't name the city at your location — pick it instead.")
+              : null}
+          </span>
         </div>
         <div className="filter-row">
           <div className="chips scroll" role="group" aria-label={tr(lang, "Коли", "When")}>
@@ -149,11 +235,21 @@ export default function HomeClient() {
 
       <section className="section">
         <div className="section-head">
-          <h2>{filtering ? tr(lang, "Знайдено", "Results") : city ? tf(lang, "Усі події · {city}", "All events · {city}", { city }) : tr(lang, "Усі події", "All events")}</h2>
+          <h2>{filtering ? tr(lang, "Знайдено", "Results") : city ? tf(lang, "Усі події · {city}", "All events · {city}", { city: city.name }) : tr(lang, "Усі події", "All events")}</h2>
           {events && <span className="muted small">{shown.length}</span>}
         </div>
         {events === null ? (
           <div className="grid">{Array.from({ length: 8 }, (_, i) => <EventCardSkeleton key={i} />)}</div>
+        ) : city && !cityHasEvents ? (
+          <div className="empty">
+            <div className="ei"><MapPin className="ico lg" /></div>
+            <h3>{tf(lang, "У місті {city} ще немає подій", "No events in {city} yet", { city: city.name })}</h3>
+            <p>{tr(lang, "Створіть першу — її побачать усі, хто шукає це місто.", "Create the first one — everyone looking at this city will see it.")}</p>
+            <div className="row gap" style={{ justifyContent: "center" }}>
+              <button className="btn ghost" onClick={() => chooseCity(null)}>{tr(lang, "Усі міста", "All cities")}</button>
+              <Link className="btn" href={`/organizer/new?city=${encodeURIComponent(city.name)}`}><Plus className="ico sm" />{tr(lang, "Створити першу подію", "Create the first event")}</Link>
+            </div>
+          </div>
         ) : shown.length === 0 && when !== "all" && nearest.length > 0 ? (
           <>
             <div className="alert" style={{ marginBottom: 16 }}>{tr(lang, "На ці дати подій немає. Ось найближчі:", "Nothing on those dates. The nearest ones:")}</div>
@@ -165,7 +261,7 @@ export default function HomeClient() {
             <h3>{tr(lang, "Нічого не знайшли", "Nothing found")}</h3>
             <p>{tr(lang, "Спробуйте інші дати чи категорію — або створіть свою подію, і її побачать інші.", "Try other dates or a category — or create your own event for others to find.")}</p>
             <div className="row gap" style={{ justifyContent: "center" }}>
-              {(filtering || city) && <button className="btn ghost" onClick={() => { setQ(""); setCat(""); setWhen("all"); chooseCity(""); }}>{tr(lang, "Скинути фільтри", "Reset filters")}</button>}
+              {(filtering || city) && <button className="btn ghost" onClick={() => { setQ(""); setCat(""); setWhen("all"); chooseCity(null); }}>{tr(lang, "Скинути фільтри", "Reset filters")}</button>}
               <Link className="btn" href="/organizer/new"><Plus className="ico sm" />{tr(lang, "Створити подію", "Create event")}</Link>
             </div>
           </div>

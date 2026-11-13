@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   getEvent, getEventReviews, postReview, reserveTickets, saveEvent, unsaveEvent, mySaves, eventSocial,
-  similarEvents, createReport, getProfile, myTickets, patchMe, logTelemetry, getToken, isPast, isOver, hasStarted, mapsUrl,
+  similarEvents, createReport, getProfile, myTickets, patchMe, logTelemetry, getToken, isPast, isOver, hasStarted, searchCities,
   errorMessage, fmtPrice, safeHref,
   type EventDto, type EventReviews, type EventSocial, type PublicProfile,
 } from "../../../lib/api";
@@ -13,6 +13,7 @@ import { FREE_ONLY, MAX_PLACES } from "../../../lib/flags";
 import { useLang, tr, tf, tp } from "../../../lib/i18n";
 import { useSession } from "../../../lib/session";
 import { categoryLabel, longDate, timeOf, initials } from "../../../lib/ui";
+import { hasPoint, mapsHref, type Point } from "../../../lib/geo-core.mjs";
 import EventCard from "../../components/EventCard";
 import Modal from "../../components/Modal";
 import Poster from "../../components/Poster";
@@ -80,6 +81,23 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
   useEffect(() => {
     if (event?.organizer_id) getProfile(event.organizer_id).then(setOrganizer).catch(() => {});
   }, [event?.organizer_id]);
+  // "Open in Google Maps" pins the event's own point. A typed address got only its city's centre from the
+  // gazetteer, so compare with it first; until then (or if the lookup fails) the address query is used.
+  const [cityCenter, setCityCenter] = useState<Point | null | undefined>(undefined);
+  const placeCity = event?.city?.trim() ?? "";
+  const needCenter = !!event && hasPoint(event) && !!event.venue_address?.trim() && placeCity.length >= 2;
+  useEffect(() => {
+    setCityCenter(undefined);
+    if (!needCenter) return;
+    const ctl = new AbortController();
+    searchCities(placeCity, ctl.signal)
+      .then((list) => {
+        const hit = list.find((c) => c.name.toLowerCase() === placeCity.toLowerCase());
+        setCityCenter(hit ? { lat: hit.lat, lng: hit.lng } : null);
+      })
+      .catch(() => { /* keep the address query */ });
+    return () => ctl.abort();
+  }, [needCenter, placeCity]);
 
   if (!event) {
     return (
@@ -93,7 +111,7 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
   const past = isPast(event.starts_at);
   const over = isOver(event.starts_at, event.ends_at);
   const started = hasStarted(event.starts_at);
-  const maps = mapsUrl(event.venue_address, event.city);
+  const maps = safeHref(mapsHref(event, cityCenter));
   const ageMin = event.age_rating ? parseInt(event.age_rating, 10) : 0;
   const left = event.tickets_left;
   const isOwner = !!me && me.id === event.organizer_id;
@@ -248,10 +266,12 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
                 <span className="ib"><MapPin className="ico" /></span>
                 <div>
                   <div className="t">{event.venue_address ?? event.city}</div>
-                  <div className="s">
-                    {event.city}
-                    {maps && <> · <a className="link" href={maps} target="_blank" rel="noreferrer">{tr(lang, "Маршрут", "Directions")} <Navigation className="ico sm" style={{ verticalAlign: -3 }} /></a></>}
-                  </div>
+                  {event.venue_address && event.city && <div className="s">{event.city}</div>}
+                  {maps && (
+                    <a className="btn secondary sm" style={{ marginTop: 8 }} href={maps} target="_blank" rel="noreferrer">
+                      <Navigation className="ico sm" />{tr(lang, "Відкрити в Google Картах", "Open in Google Maps")}
+                    </a>
+                  )}
                 </div>
               </div>
             )}

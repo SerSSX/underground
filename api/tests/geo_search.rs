@@ -598,3 +598,87 @@ async fn event_place_fields_are_validated(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "empty strings mean not given");
 }
+
+// ---------------------------------------------------------------- zone endpoint (TASK-303 G2)
+
+/// `GET /api/geo/timezone` answers the zone an event created at that point (with no zone of its
+/// own) is stored with — one rule, so the web converts times in the zone the event gets.
+#[sqlx::test(migrations = "./migrations")]
+async fn timezone_endpoint_matches_the_event_zone(pool: PgPool) {
+    let (app, stub) = app_with(pool.clone(), Mode::Ok).await;
+    let token = user(&pool, "o@x.co").await;
+    let cases = [
+        ("50.4501", "30.5234", "UA", "Europe/Kyiv"),
+        ("35.6762", "139.6503", "jp", "Asia/Tokyo"),
+        // Multi-zone countries: the nearest reference city's zone.
+        ("33.4484", "-112.074", "US", "America/Phoenix"),
+        ("39.7392", "-104.9903", "US", "America/Denver"),
+        ("40.7128", "-74.006", "US", "America/New_York"),
+        ("-31.95", "115.86", "AU", "Australia/Perth"),
+        // No country: the nearest gazetteer city with a zone (Lisbon is seeded).
+        ("38.75", "-9.2", "", "Europe/Lisbon"),
+        // Nothing to go on (mid-Pacific, no country): the default an event gets.
+        ("-30.0", "-140.0", "", "Europe/Kyiv"),
+    ];
+    for (i, (lat, lng, cc, want)) in cases.iter().enumerate() {
+        let ip = format!("203.0.113.{}", 50 + i);
+        let (status, body) = get(
+            &app,
+            &format!("/api/geo/timezone?lat={lat}&lng={lng}&country_code={cc}"),
+            &ip,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{lat},{lng}: {body}");
+        assert_eq!(body["timezone"], *want, "{lat},{lng} {cc}");
+        let mut place = json!({"lat": lat.parse::<f64>().unwrap(), "lng": lng.parse::<f64>().unwrap()});
+        if !cc.is_empty() {
+            place["country_code"] = json!(cc);
+        }
+        let (status, ev) = create(&app, &token, place).await;
+        assert_eq!(status, StatusCode::CREATED, "{ev}");
+        assert_eq!(
+            ev["timezone"], body["timezone"],
+            "the event at {lat},{lng} gets the same zone"
+        );
+    }
+    assert!(stub.calls().is_empty(), "the zone never needs the upstream geocoder");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn timezone_endpoint_validates_and_shares_the_geo_rate_limit(pool: PgPool) {
+    let (app, _stub) = app_with(pool, Mode::Ok).await;
+    let bad = [
+        "/api/geo/timezone",
+        "/api/geo/timezone?lat=50",
+        "/api/geo/timezone?lng=30",
+        "/api/geo/timezone?lat=91&lng=30",
+        "/api/geo/timezone?lat=50&lng=180.1",
+        "/api/geo/timezone?lat=NaN&lng=30",
+        "/api/geo/timezone?lat=abc&lng=30",
+        "/api/geo/timezone?lat=50&lng=30&country_code=UKR",
+        "/api/geo/timezone?lat=50&lng=30&country_code=U1",
+        "/api/geo/timezone?lat=50&lng=30&country_code=%D0%A3%D0%90",
+    ];
+    for path in bad {
+        let (status, body) = get(&app, path, "203.0.113.2").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}: {body}");
+    }
+    // One bucket with search and reverse: 60 a minute per client IP in all.
+    for i in 0..59 {
+        let (status, _) = get(
+            &app,
+            "/api/geo/timezone?lat=50.45&lng=30.52&country_code=ua",
+            "198.51.100.20",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "request {i}");
+    }
+    let (status, _) = get(&app, "/api/geo/search?q=porto", "198.51.100.20").await;
+    assert_eq!(status, StatusCode::OK, "the 60th request");
+    let (status, _) = get(&app, "/api/geo/timezone?lat=50.45&lng=30.52", "198.51.100.20").await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "[SEC] the 61st request in a minute is refused"
+    );
+}

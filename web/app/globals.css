@@ -434,3 +434,20 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 .lang-select select.input { min-height: 40px; padding-top: 6px; padding-bottom: 6px; font-size: 14px; }
 .menu-lang { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }
 .menu-lang .lang-select { flex: 1; min-width: 0; }
+
+/* Place suggestions (TASK-303 G2) */
+.suggest { position: relative; min-width: 0; }
+.suggest > .input { width: 100%; }
+.suggest-pop { position: absolute; left: 0; right: 0; top: calc(100% + 6px); min-width: min(300px, calc(100vw - 32px)); z-index: 60; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow-3); padding: 6px; }
+.suggest-pop.end { left: auto; }
+.suggest-pop ul { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; }
+/* The field's icon sits before the (positioned) suggestion wrapper: keep it painted on top. */
+.input-icon > .ico { z-index: 1; }
+.suggest-opt { display: flex; flex-direction: column; gap: 2px; padding: 9px 12px; border-radius: var(--r-sm); cursor: pointer; }
+.suggest-opt[aria-selected="true"] { background: var(--surface-3); }
+.suggest-opt .p { color: var(--text); font-size: 14.5px; }
+.suggest-opt .s { color: var(--muted); font-size: 12.5px; }
+.suggest-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; padding: 8px 12px 4px; font-size: 12px; color: var(--muted-2); }
+.suggest-foot a { color: var(--muted); text-decoration: underline; }
+.near-row { margin-top: 10px; }
+.near-row .msg { font-size: 13px; color: var(--muted); }

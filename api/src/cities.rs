@@ -109,6 +109,31 @@ pub async fn locate(db: &PgPool, input: &PlaceInput<'_>) -> Result<Located, sqlx
     })
 }
 
+/// The zone an event gets when nothing else is known (the launch market).
+pub const DEFAULT_TIMEZONE: &str = "Europe/Kyiv";
+
+/// The zone an event is stored with: the organiser's explicit zone, else the place's, else the
+/// default. The one rule `POST /api/events` and `GET /api/geo/timezone` share (TASK-303 G2).
+pub fn event_zone(explicit: Option<&str>, located: Option<String>) -> String {
+    explicit
+        .map(str::trim)
+        .filter(|z| !z.is_empty())
+        .map(String::from)
+        .or(located)
+        .unwrap_or_else(|| DEFAULT_TIMEZONE.to_string())
+}
+
+/// The zone a new event at this point (and country) gets when it sends no zone: the same
+/// [`locate`] + [`event_zone`] path as `POST /api/events` with no city text.
+pub async fn zone_for_point(db: &PgPool, point: (f64, f64), country_code: Option<&str>) -> Result<String, sqlx::Error> {
+    let place = PlaceInput {
+        point: Some(point),
+        country_code,
+        ..PlaceInput::default()
+    };
+    Ok(event_zone(None, locate(db, &place).await?.timezone))
+}
+
 /// The zone at a point: from the country when known, else from the nearest gazetteer city
 /// with a zone (within 300 km), else `None`.
 pub async fn zone_at(

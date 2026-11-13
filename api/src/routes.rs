@@ -27,6 +27,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/cities", get(cities::search))
         .route("/api/geo/search", get(geo::search))
         .route("/api/geo/reverse", get(geo::reverse))
+        .route("/api/geo/timezone", get(geo::timezone))
         .route("/api/me/saves", get(discover::my_saves))
         .route(
             "/api/events/:id/save",

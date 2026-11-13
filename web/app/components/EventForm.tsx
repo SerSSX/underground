@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import CityInput from "./CityInput";
+import AddressInput from "./AddressInput";
 import EventCard from "./EventCard";
 import { AGE_RATINGS, EVENT_CATEGORIES, uploadImage, errorMessage, toIso, tzOffsetMs, searchCities, type EventInput, type EventDto } from "../../lib/api";
 import { FREE_ONLY } from "../../lib/flags";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { categoryLabel, countryTz, tzLabel } from "../../lib/ui";
+import { isZone, zoneFor } from "../../lib/geo";
+import { addressLabel, cityName, CITY_RADIUS_KM, hasPoint, haversineKm, type GeoPlace, type Point } from "../../lib/geo-core.mjs";
 import { ImageIcon, X, ChevronDown } from "./Icon";
 
 export interface EventFormInitial {
@@ -25,12 +28,17 @@ export interface EventFormInitial {
   links: string;
   is_draft: boolean;
   age_rating: string;
-  /** IANA zone of the event's city (from the city's country); null until known. */
+  /** IANA zone of the event's place; undefined = not known, the `tz` prop applies. */
   timezone?: string | null;
+  /** The picked address's point and country (TASK-303 G2); null when the address was typed. */
+  lat?: number | null;
+  lng?: number | null;
+  country?: string | null;
+  country_code?: string | null;
 }
 
 export const EMPTY_EVENT: EventFormInitial = {
-  title: "", description: "", category: "Concert", city: "Київ", venue_address: "",
+  title: "", description: "", category: "Concert", city: "", venue_address: "",
   starts_at_local: "", ends_at_local: "", price: "", tickets_total: "50", is_free: true, poster_url: null, video_url: "", links: "",
   is_draft: false, age_rating: "",
 };
@@ -82,25 +90,98 @@ export default function EventForm({
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
   const [more, setMore] = useState(!!(initial.video_url || initial.links));
-  // A new event runs on its city clock: look up the city's country and its zone (the browser zone, passed in
-  // as tz, is only the fallback). Editing keeps the event's stored zone.
+  // The event runs on its place's clock (TASK-303 G2). A picked point asks the API for the zone an event there
+  // gets (GET /api/geo/timezone, the same rule as create); a typed city falls back to our gazetteer by name;
+  // nothing known → the `tz` prop (the browser's zone when creating, the stored zone when editing). The one
+  // `zone` below converts the times AND is sent as the event's zone, so the stored instant and zone agree.
+  const [cityPoint, setCityPoint] = useState<Point | null>(hasPoint(initial) ? { lat: initial.lat as number, lng: initial.lng as number } : null);
+  // A new object per keystroke, so the lookup below always re-runs (and always clears zonePending).
+  const [typedCity, setTypedCity] = useState<{ text: string } | null>(!editing && initial.city.trim() ? { text: initial.city } : null);
+  const [zonePending, setZonePending] = useState(!editing && !!initial.city.trim());
+  const zoneSeq = useRef(0);
+
+  async function settleZone(place: { point?: Point | null; cc?: string | null; city: string }) {
+    const seq = ++zoneSeq.current;
+    setZonePending(true);
+    let zone: string | null = null;
+    let center: Point | null = null;
+    // A hung request must not keep the submit button disabled: give up after 6 s and use the fallback.
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 6000);
+    if (place.point) {
+      try { zone = await zoneFor(place.point.lat, place.point.lng, place.cc, ctl.signal); } catch { /* the city name below */ }
+    }
+    const city = place.city.trim();
+    if (!zone && city.length >= 2) {
+      try {
+        const hit = (await searchCities(city, ctl.signal)).find((c) => c.name.toLowerCase() === city.toLowerCase());
+        if (hit) {
+          zone = (hit.timezone && isZone(hit.timezone) ? hit.timezone : null) ?? countryTz(hit.country);
+          center = { lat: hit.lat, lng: hit.lng };
+        }
+      } catch { /* lookup failed: the fallback zone */ }
+    }
+    clearTimeout(timer);
+    if (seq !== zoneSeq.current) return; // a newer place won
+    setF((prev) => ({ ...prev, timezone: zone ?? undefined }));
+    if (center && !place.point) setCityPoint(center);
+    setZonePending(false);
+  }
+
+  // A typed city: look it up once the typing pauses.
   useEffect(() => {
-    if (editing) return;
-    // Forget the previous city's zone at once: until the lookup answers, the browser zone applies.
-    setF((prev) => (prev.timezone === undefined ? prev : { ...prev, timezone: undefined }));
-    const city = f.city.trim();
-    if (city.length < 2) return;
-    let live = true;
-    const t = setTimeout(() => {
-      searchCities(city).then((list) => {
-        const hit = list.find((c) => c.name.toLowerCase() === city.toLowerCase()) ?? null;
-        const z = hit ? countryTz(hit.country) : null;
-        if (live) setF((prev) => ({ ...prev, timezone: z }));
-      }).catch(() => { /* lookup failed: keep the browser zone */ });
-    }, 350);
-    return () => { live = false; clearTimeout(t); };
-  }, [f.city, editing]);
-  const zone = (editing ? tz : f.timezone ?? tz) ?? null;
+    if (typedCity === null) return;
+    const t = setTimeout(() => void settleZone({ city: typedCity.text }), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typedCity]);
+
+  /** Forget the previous place's zone at once: until the new one is known, the fallback applies. */
+  function placeChanging() {
+    zoneSeq.current++;
+    setZonePending(true);
+    setF((prev) => ({ ...prev, timezone: undefined }));
+  }
+
+  function typeCity(text: string) {
+    placeChanging();
+    // The picked point and country described the previous place.
+    setF((prev) => ({ ...prev, city: text, lat: null, lng: null, country: null, country_code: null }));
+    setCityPoint(null);
+    setTypedCity({ text });
+  }
+
+  function pickCity(p: GeoPlace, name: string) {
+    placeChanging();
+    setTypedCity(null);
+    // An address picked earlier stays only if it lies in this city.
+    setF((prev) => {
+      const keep = hasPoint(prev) && haversineKm(prev.lat as number, prev.lng as number, p.lat, p.lng) <= CITY_RADIUS_KM;
+      return { ...prev, city: name, country: p.country, country_code: p.country_code, ...(keep ? {} : { lat: null, lng: null }) };
+    });
+    setCityPoint({ lat: p.lat, lng: p.lng });
+    void settleZone({ point: { lat: p.lat, lng: p.lng }, cc: p.country_code, city: name });
+  }
+
+  function typeAddress(text: string) {
+    // The pin belonged to the picked suggestion; edited text may name another place. City and zone stay.
+    setF((prev) => ({ ...prev, venue_address: text, lat: null, lng: null }));
+  }
+
+  function pickAddress(p: GeoPlace) {
+    placeChanging();
+    setTypedCity(null);
+    const name = cityName(p);
+    const city = name || f.city;
+    setF((prev) => ({
+      ...prev, venue_address: addressLabel(p), city, lat: p.lat, lng: p.lng,
+      country: p.country ?? prev.country ?? null, country_code: p.country_code ?? prev.country_code ?? null,
+    }));
+    setCityPoint({ lat: p.lat, lng: p.lng });
+    void settleZone({ point: { lat: p.lat, lng: p.lng }, cc: p.country_code, city });
+  }
+
+  const zone = f.timezone ?? tz ?? null;
 
   function set<K extends keyof EventFormInitial>(key: K, value: EventFormInitial[K]) {
     setF((prev) => ({ ...prev, [key]: value }));
@@ -142,6 +223,7 @@ export default function EventForm({
     setError(null);
     if (!f.title.trim()) return setError(problems.title);
     if (invalid && !asDraft) return setError(tr(lang, "Заповніть позначені поля", "Fill in the highlighted fields"));
+    if (zonePending) return;
     setBusy(true);
     try {
       await onSubmit({ ...f, is_draft: asDraft, timezone: zone });
@@ -201,12 +283,13 @@ export default function EventForm({
             <div className="grid-2">
               <div className="field">
                 <label htmlFor="ev-city">{tr(lang, "Місто", "City")}</label>
-                <CityInput id="ev-city" value={f.city} onChange={(v) => set("city", v)} />
+                <CityInput id="ev-city" value={f.city} onChange={typeCity} onPick={pickCity} ariaInvalid={!!show("city")} />
                 {show("city") && <span className="err">{show("city")}</span>}
               </div>
               <div className="field">
                 <label htmlFor="ev-addr">{tr(lang, "Адреса або місце", "Address or venue")}</label>
-                <input id="ev-addr" className="input" value={f.venue_address} maxLength={200} onChange={(e) => set("venue_address", e.target.value)} placeholder={tr(lang, "Бар «Пульт», вул. Нижній Вал 21", "Venue, street and number")} />
+                <AddressInput id="ev-addr" value={f.venue_address} onChange={typeAddress} onPick={pickAddress} bias={cityPoint} />
+                <span className="hint">{hasPoint(f) ? tr(lang, "Місце позначено на мапі.", "The place is pinned on the map.") : tr(lang, "Оберіть підказку — і гості знайдуть місце на мапі.", "Pick a suggestion so guests find the place on the map.")}</span>
               </div>
             </div>
           </Section>
@@ -280,8 +363,8 @@ export default function EventForm({
 
       {error && <div className="alert error" style={{ marginTop: 16 }}>{error}</div>}
       <div className="row gap wrap" style={{ marginTop: 20, justifyContent: "flex-end" }}>
-        {allowDraft && <button type="button" className="btn ghost lg" disabled={busy || uploading} onClick={(e) => submit(e, true)}>{tr(lang, "Зберегти чернетку", "Save draft")}</button>}
-        <button className="btn lg primary-glow" disabled={busy || uploading}>{busy ? tr(lang, "Зберігаємо…", "Saving…") : submitLabel}</button>
+        {allowDraft && <button type="button" className="btn ghost lg" disabled={busy || uploading || zonePending} onClick={(e) => submit(e, true)}>{tr(lang, "Зберегти чернетку", "Save draft")}</button>}
+        <button className="btn lg primary-glow" disabled={busy || uploading || zonePending}>{busy ? tr(lang, "Зберігаємо…", "Saving…") : submitLabel}</button>
       </div>
     </form>
   );
@@ -304,5 +387,10 @@ export function toEventInput(f: EventFormInitial, startsAtIso: string | null, tz
     video_url: f.video_url.trim() || null,
     links: f.links.split(",").map((s) => s.trim()).filter(Boolean),
     age_rating: f.age_rating || null,
+    // Both coordinates or neither (the API refuses half a point).
+    lat: hasPoint(f) ? f.lat : null,
+    lng: hasPoint(f) ? f.lng : null,
+    country: f.country?.trim() || null,
+    country_code: f.country_code && /^[A-Za-z]{2}$/.test(f.country_code) ? f.country_code.toUpperCase() : null,
   };
 }

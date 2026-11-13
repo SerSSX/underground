@@ -48,6 +48,10 @@ export default function EditEventPage() {
     links: event.links.join(", "),
     is_draft: event.status === "draft",
     age_rating: event.age_rating ?? "",
+    lat: event.lat ?? null,
+    lng: event.lng ?? null,
+    country: event.country ?? null,
+    country_code: event.country_code ?? null,
   };
   const draft = event.status === "draft";
 
@@ -63,7 +67,9 @@ export default function EditEventPage() {
         allowDraft={draft}
         onSubmit={async (f) => {
           // tickets_total and cost_type are fixed after creation; send only what the API updates.
-          const { tickets_total: _t, cost_type: _c, ...body } = toEventInput(f, toIso(f.starts_at_local, event.timezone), event.timezone);
+          // The form's zone (the stored one, or the new place's) converts the times and is stored with them.
+          const zone = f.timezone ?? event.timezone ?? null;
+          const { tickets_total: _t, cost_type: _c, ...body } = { ...toEventInput(f, toIso(f.starts_at_local, zone), zone), timezone: zone };
           // An emptied end field must remove the stored end (null alone would keep the old one).
           const clear = !f.ends_at_local && !!event.ends_at;
           await updateEvent(eventId, { ...body, ...(clear ? { clear_ends_at: true, ends_at: null } : {}), ...(draft && !f.is_draft ? { status: "published" } : {}) });

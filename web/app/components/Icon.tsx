@@ -4,5 +4,5 @@ export {
   ScanLine, Users, Pencil, ChevronLeft, ChevronRight, ChevronDown, X, Check, Clock, Minus, QrCode,
   Download, Smartphone, LogOut, Globe, Settings, Bell, Send, Camera, Navigation, Sparkles, ArrowRight,
   Copy, Trash2, Eye, UserPlus, Image as ImageIcon, Compass, AlertTriangle, Info, Lock, ExternalLink,
-  CircleCheck, CircleX, Gift, LayoutGrid, Keyboard,
+  CircleCheck, CircleX, Gift, LayoutGrid, Keyboard, LocateFixed,
 } from "lucide-react";

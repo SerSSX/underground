@@ -112,9 +112,9 @@ One JSON object; keys are the exact Ukrainian source strings from `locales/_sour
 - Notifications, emails and push texts — the API's uk/en only; other languages get English.
 - Server texts not in `lib/server-messages.mjs` (any new API message, admin-only messages, most English validation
   codes) show as the server wrote them. User content (titles, names, "Гість") is never translated.
-- Default city "Київ" in the event form and onboarding (G2 replaces it with city search).
+- ~~Default city "Київ" in the event form and onboarding~~ — removed in G2 (city search, no default).
 - Numbers are plain (`1000`, not `1 000`/`1,000`); times are always 24-hour.
-- The home hero is two fragments ("Куди піти " + "сьогодні?") — translators must keep the split.
+- ~~The home hero is two fragments~~ — one sentence since G2 ("Куди піти сьогодні?"), the whole line accented.
 - Not checked in a real browser in this unit (no server run): hydration switch, picker on a phone, catalog chunks.
 
 ## G1 notes (api/, 2026-11-13)
@@ -158,3 +158,51 @@ Decisions taken here (orchestrator to confirm):
 - Currency default prefers `country_code` (`currency::for_country_code`): geocoder country names come in many languages.
 - Production needs egress from the API container to `photon.komoot.io:443`; attribution "© OpenStreetMap
   contributors" belongs in the web UI (G2).
+
+## G2 notes (web + one API endpoint, 2026-11-13)
+
+Built: worldwide city search, "near me", address suggestions in the event form, the event's zone from its place,
+"Open in Google Maps" from coordinates, the hero as one sentence. 19 new catalog keys (553 in all), translated into
+all 8 catalogs; `node scripts/i18n-check.mjs` reports no missing key.
+
+API — `GET /api/geo/timezone?lat=&lng=&country_code=XX` → `200 {"timezone":"Area/City"}`:
+- `lat`+`lng` required (±90/±180, finite), `country_code` optional (2 letters, any case); bad input 422; the same
+  per-IP bucket as search/reverse (`GEO_LIMIT_PER_MIN`, 60/min → 429). No upstream call.
+- The answer is the zone `POST /api/events` stores for that point with no `timezone` and no city text: both go through
+  `cities::locate` + `cities::event_zone` (explicit zone, else the place's, else `Europe/Kyiv`);
+  `cities::zone_for_point` is the endpoint's path. Tests: `timezone_endpoint_matches_the_event_zone` (Kyiv, Tokyo,
+  Phoenix, Denver, New York, Perth, a point with no country near Lisbon, a mid-ocean point → default; each compared
+  with an event created at that point), `timezone_endpoint_validates_and_shares_the_geo_rate_limit`.
+
+Zone contract (web): the event form computes ONE `zone` — the picked point's zone from `/api/geo/timezone`; else the
+typed city's gazetteer zone (`/api/cities`, `timezone` or the country's); else the browser zone when creating / the
+stored zone when editing — and uses it both for `toIso` and as the `timezone` sent on create AND on edit, so the stored
+instant and the stored zone always agree. Submit is disabled while the zone for a new place is being looked up (6 s cap).
+
+Web:
+- `lib/geo-core.mjs` (pure, `lib/geo.test.mjs`): labels, `inCity` (same name, or within 30 km when both have points —
+  names differ across languages, "Kyiv"/"Київ"), distances and sorting, `mapsHref`, remembered city, re-check of
+  every geocoder answer (`sanitizePlace`: point in range, strings or null, control characters out, kind and code
+  checked). `lib/geo.ts`: `searchPlaces`, `reversePlace`, `zoneFor` (UI language sent as `lang`; the API maps it).
+- `PlaceSuggest` (ARIA combobox, 300 ms debounce, AbortController, keyboard, "© OpenStreetMap contributors" link under
+  geocoder suggestions); `CityInput` (kind=city, "City, Region, Country") on home, event form, onboarding, account;
+  `AddressInput` (kind=address, biased to the city's point).
+- Home: the city field searches worldwide; an empty field offers the cities that have events. A typed name that has
+  events applies at once, any other on Enter. "Near me" asks for the position only on click (denied / timeout /
+  unavailable / unsupported / unnamed each get a short message), names the city through `/api/geo/reverse` (sent
+  rounded to ~1 km), filters within 30 km and sorts and labels cards "~n km". The remembered city is JSON in
+  `localStorage.ug_city` (old plain names still read); a near-me point is stored at ~1 km. An empty city shows
+  "No events in {city} yet" with "Create the first event" → `/organizer/new?city=…` (prefilled).
+- Event form: no default city. Picking an address fills venue (name + street + number, no city/region/country — they
+  have their own fields), city, lat/lng, country, code. Editing the address text drops the pin; editing the city text
+  drops pin, country and code. The edit page re-sends the stored point, so an unrelated edit keeps the pin.
+- Event page: "Open in Google Maps" button under the address: coordinates when the event has its own point, the
+  address + city query otherwise — including when its point is only its city's gazetteer centre (a typed address,
+  or every event created before G2) and it has an address: the page compares with `/api/cities` first.
+
+Not done / limits:
+- Not run in a real browser in this unit (no dev stack started): the popup position in the home search bar, the
+  geolocation prompt and the real Photon answers are unverified.
+- On home, a city picked from search filters by name or 30 km; distances are shown only after "near me".
+- `/api/cities` matches city names exactly (case-insensitive); a typed city spelled differently from the gazetteer
+  falls back to the browser zone, as before.

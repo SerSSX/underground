@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CityInput from "../components/CityInput";
+import { parseStoredCity } from "../../lib/geo-core.mjs";
 import { EVENT_CATEGORIES, putPrefs, getPrefs, getToken, errorMessage, safeNext } from "../../lib/api";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { categoryLabel } from "../../lib/ui";
@@ -13,9 +14,14 @@ function OnboardingInner() {
   const { lang } = useLang();
   const next = safeNext(useSearchParams().get("next"));
   const [selected, setSelected] = useState<string[]>([]);
-  const [city, setCity] = useState("Київ");
+  const [city, setCity] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Start from the city chosen on the home page, if any (no fixed default: the app is worldwide).
+    try { setCity((c) => c || (parseStoredCity(localStorage.getItem("ug_city"))?.name ?? "")); } catch { /* storage blocked */ }
+  }, []);
 
   useEffect(() => {
     if (!getToken()) {

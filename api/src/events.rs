@@ -108,9 +108,6 @@ pub fn free_events_only_from_env() -> bool {
         .unwrap_or(true)
 }
 
-/// Default timezone for events whose organizer doesn't specify one (launch market).
-const DEFAULT_TIMEZONE: &str = "Europe/Kyiv";
-
 /// Validate an optional IANA timezone name against the `chrono-tz` database (BR-020).
 fn validate_timezone(timezone: Option<&str>) -> Result<(), AppError> {
     if let Some(t) = timezone.filter(|s| !s.is_empty()) {
@@ -255,10 +252,7 @@ pub async fn insert_event(db: &PgPool, organizer_id: Uuid, req: &CreateEventReq)
     let currency = non_empty(req.currency.as_deref())
         .or_else(|| geo.country_code.as_deref().and_then(crate::currency::for_country_code))
         .unwrap_or_else(|| crate::currency::for_country(geo.country.as_deref()));
-    let timezone = non_empty(req.timezone.as_deref())
-        .map(String::from)
-        .or(geo.timezone)
-        .unwrap_or_else(|| DEFAULT_TIMEZONE.to_string());
+    let timezone = crate::cities::event_zone(req.timezone.as_deref(), geo.timezone);
     let sql = format!(
         "INSERT INTO events (organizer_id, title, description, category, city, venue_address, \
             starts_at, ends_at, price, currency, tickets_total, tickets_left, cost_type, status, \

@@ -1,6 +1,7 @@
 import { safeNextFor } from "./safe-next.mjs";
 import { currentLang, serverLocale } from "./i18n-core.mjs";
 import { canonicalServerText, serverText } from "./server-messages.mjs";
+import { mapsHref } from "./geo-core.mjs";
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const TOKEN_KEY = "ug_web_token";
 
@@ -48,8 +49,8 @@ async function check(res: Response): Promise<Response> {
   // shows it in the reader's language.
   throw new ApiError(res.status, canonicalServerText(body?.error) ?? fallback);
 }
-export async function apiGet<T>(path: string): Promise<T> {
-  return (await (await check(await fetch(`${BASE}${path}`, { headers: authHeaders() }))).json()) as T;
+export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return (await (await check(await fetch(`${BASE}${path}`, { headers: authHeaders(), signal }))).json()) as T;
 }
 export async function apiSend<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await check(
@@ -142,6 +143,8 @@ export interface EventDto {
   sales_closed: boolean;
   age_rating?: string | null;
   country?: string | null;
+  /** ISO 3166-1 alpha-2 of the event's place (TASK-303 G1). */
+  country_code?: string | null;
   lat?: number | null;
   lng?: number | null;
   // Discovery-only (present on /api/discover responses).
@@ -156,9 +159,13 @@ export interface CityDto {
   country: string;
   lat: number;
   lng: number;
+  country_code?: string | null;
+  /** IANA zone (TASK-303 G1); null on rows the API cannot place. */
+  timezone?: string | null;
 }
-export async function searchCities(q: string): Promise<CityDto[]> {
-  return apiGet<CityDto[]>(`/api/cities?q=${encodeURIComponent(q)}`);
+/** Our city gazetteer by name prefix (not the geocoder): what the API itself knows about a city. */
+export async function searchCities(q: string, signal?: AbortSignal): Promise<CityDto[]> {
+  return apiGet<CityDto[]>(`/api/cities?q=${encodeURIComponent(q)}`, signal);
 }
 
 export interface UserBrief {
@@ -430,6 +437,11 @@ export interface EventInput {
   age_rating?: string | null;
   /** IANA zone the times are local to (default on the API: Europe/Kyiv). */
   timezone?: string | null;
+  /** The chosen address's point and country (TASK-303 G2): both coordinates or neither. */
+  lat?: number | null;
+  lng?: number | null;
+  country?: string | null;
+  country_code?: string | null;
   /** Update only: true removes the end time (sent when the organiser empties the field). */
   clear_ends_at?: boolean;
 }
@@ -533,9 +545,9 @@ export function tzOffsetMs(at: number, tz: string): number {
 export function browserTz(): string | null {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
 }
+/** Google Maps search for an address and city (no point known). With a point: lib/geo-core.mjs mapsHref. */
 export function mapsUrl(address: string | null, city: string | null): string | null {
-  const q = [address, city].filter(Boolean).join(", ");
-  return q ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}` : null;
+  return mapsHref({ venue_address: address, city }, null);
 }
 // Display symbol per ISO currency (mirrors the backend currency map). Falls back to the code.
 const CURRENCY_SYMBOLS: Record<string, string> = {

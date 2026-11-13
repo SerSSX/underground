@@ -196,6 +196,44 @@ pub async fn reverse(
     Ok(Json(cached_or_fetch(&st.db, &cfg, &key, url).await?))
 }
 
+#[derive(Deserialize)]
+pub struct TimezoneParams {
+    pub lat: Option<String>,
+    pub lng: Option<String>,
+    pub country_code: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct TimezoneAnswer {
+    pub timezone: String,
+}
+
+/// `GET /api/geo/timezone?lat=&lng=&country_code=XX` (TASK-303 G2) — the zone a new event at this
+/// point gets, so the form converts its wall-clock times in the zone the event is stored with.
+/// Same rule as `POST /api/events` without a zone ([`crate::cities::zone_for_point`]); no upstream
+/// call, same per-client bucket as search and reverse.
+pub async fn timezone(
+    State(st): State<AppState>,
+    ip: ClientIp,
+    Query(p): Query<TimezoneParams>,
+) -> Result<Json<TimezoneAnswer>, AppError> {
+    let point = parse_point(p.lat.as_deref(), p.lng.as_deref())?
+        .ok_or_else(|| AppError::Validation("lat and lng are required".into()))?;
+    let cc = parse_country_code(p.country_code.as_deref())?;
+    hit_client(&st.db, &ip).await?;
+    let timezone = crate::cities::zone_for_point(&st.db, point, cc.as_deref()).await?;
+    Ok(Json(TimezoneAnswer { timezone }))
+}
+
+/// ISO 3166-1 alpha-2 in any case, upper-cased; empty means "not given".
+fn parse_country_code(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(c) if c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()) => Ok(Some(c.to_ascii_uppercase())),
+        Some(_) => Err(AppError::Validation("country_code must be two letters".into())),
+    }
+}
+
 async fn hit_client(db: &PgPool, ip: &ClientIp) -> Result<(), AppError> {
     let max = ratelimit::env_limit("GEO_LIMIT_PER_MIN", 60);
     ratelimit::hit(db, &format!("geo-ip:{}", ip.0), max, 60).await

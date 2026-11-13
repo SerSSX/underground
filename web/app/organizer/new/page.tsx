@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import EventForm, { EMPTY_EVENT, toEventInput } from "../../components/EventForm";
+import EventForm, { EMPTY_EVENT, toEventInput, type EventFormInitial } from "../../components/EventForm";
 import { createEvent, getToken, toIso, browserTz, type EventDto } from "../../../lib/api";
 import { useLang, tr, tf } from "../../../lib/i18n";
 import { Toast, useToast } from "../../components/Toast";
@@ -15,7 +15,13 @@ export default function NewEventPage() {
   const [created, setCreated] = useState<EventDto | null>(null);
   const [toast, showToast] = useToast();
   const [tz, setTz] = useState<string | null>(null);
-  useEffect(() => setTz(browserTz()), []);
+  // "Create the first event in {city}" from the home page arrives as ?city=; read once on the client.
+  const [initial, setInitial] = useState<EventFormInitial | null>(null);
+  useEffect(() => {
+    setTz(browserTz());
+    const city = (new URLSearchParams(window.location.search).get("city") ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
+    setInitial({ ...EMPTY_EVENT, city });
+  }, []);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login?next=/organizer/new");
@@ -64,8 +70,8 @@ export default function NewEventPage() {
           <p className="muted">{tr(lang, "Кілька хвилин — і подія в афіші. Вхід для гостей безкоштовний.", "A few minutes and it's live. Entry is free for guests.")}</p>
         </div>
       </div>
-      <EventForm
-        initial={EMPTY_EVENT}
+      {!initial ? <div className="skeleton" style={{ height: 320 }} /> : <EventForm
+        initial={initial}
         tz={tz}
         submitLabel={tr(lang, "Опублікувати", "Publish")}
         allowDraft
@@ -75,7 +81,7 @@ export default function NewEventPage() {
           setCreated(ev);
           window.scrollTo({ top: 0 });
         }}
-      />
+      />}
     </main>
   );
 }

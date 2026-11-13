@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { fmtPrice, type EventDto } from "../../lib/api";
 import { FREE_ONLY } from "../../lib/flags";
-import { useLang, tr, tp } from "../../lib/i18n";
+import { useLang, tr, tf, tp } from "../../lib/i18n";
+import { kmShown } from "../../lib/geo-core.mjs";
 import { categoryLabel, dateBadge, timeOf } from "../../lib/ui";
 import Poster from "./Poster";
 import { Heart, MapPin } from "./Icon";
@@ -13,18 +14,22 @@ export default function EventCard({
   saved = false,
   onToggleSave,
   eager = false,
+  distanceKm = null,
 }: {
   event: EventDto;
   saved?: boolean;
   /** Absent → no heart (e.g. similar events). Signed-out callers pass a function that sends to login. */
   onToggleSave?: (id: string) => void;
   eager?: boolean;
+  /** Distance from the visitor ("near me"), shown as "~3 km". */
+  distanceKm?: number | null;
 }) {
   const { lang } = useLang();
   const free = FREE_ONLY || event.cost_type.toLowerCase() === "free";
   const badge = dateBadge(event.starts_at, lang, event.timezone);
   const left = event.tickets_left;
-  const place = [timeOf(event.starts_at, event.timezone), event.venue_address ? event.venue_address.split(",")[0] : null, event.city]
+  const away = distanceKm != null && Number.isFinite(distanceKm) ? tf(lang, "~{n} км", "~{n} km", { n: kmShown(distanceKm) }) : null;
+  const place = [timeOf(event.starts_at, event.timezone), event.venue_address ? event.venue_address.split(",")[0] : null, event.city, away]
     .filter(Boolean)
     .join(" · ");
 
