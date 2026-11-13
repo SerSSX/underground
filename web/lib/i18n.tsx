@@ -1,35 +1,98 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { syncUserLocale } from "./api";
+// React side of i18n (TASK-303 L1): the active language, its catalog, <html lang>. The lookup functions
+// live in lib/i18n-core.mjs (pure, shared with server code and node:test) and are re-exported here so
+// pages keep importing { useLang, tr } from one place.
 
-export type Lang = "uk" | "en";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { syncUserLocale } from "./api";
+import {
+  DEFAULT_LANG, hasCatalog, isLang, pickLang, serverLocale, setCatalog, setCurrentLang,
+  type CatalogLang, type Lang,
+} from "./i18n-core.mjs";
+import { isoDateLabel } from "./dates.mjs";
+
+export { LANGS, ENDONYMS, isLang, tr, tf, tp } from "./i18n-core.mjs";
+export type { Lang, PluralForms, Catalog } from "./i18n-core.mjs";
+export { serverText } from "./server-messages.mjs";
+
 const KEY = "ug_lang";
 
+/** One loader per catalog: each is its own chunk, so a visitor downloads only the language they read. */
+const LOADERS: Record<CatalogLang, () => Promise<{ default: unknown }>> = {
+  es: () => import("../locales/es.json"),
+  pt: () => import("../locales/pt.json"),
+  fr: () => import("../locales/fr.json"),
+  de: () => import("../locales/de.json"),
+  it: () => import("../locales/it.json"),
+  pl: () => import("../locales/pl.json"),
+  tr: () => import("../locales/tr.json"),
+  ja: () => import("../locales/ja.json"),
+};
+
+async function ensureCatalog(l: Lang): Promise<void> {
+  if (l === "uk" || l === "en" || hasCatalog(l)) return;
+  try {
+    setCatalog(l, (await LOADERS[l]()).default);
+  } catch {
+    // Chunk failed to load (offline, new deploy): register an empty catalog, so text falls back to English.
+    setCatalog(l, {});
+  }
+}
+
+function readStored(): Lang | null {
+  try {
+    const v = window.localStorage.getItem(KEY);
+    return isLang(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+function store(l: Lang) {
+  try { window.localStorage.setItem(KEY, l); } catch { /* private mode: the choice lasts for this page */ }
+}
+
+/** The stored language, else the browser's (first visit). Client only. */
 export function getLang(): Lang {
-  if (typeof window === "undefined") return "uk";
-  return window.localStorage.getItem(KEY) === "en" ? "en" : "uk";
+  if (typeof window === "undefined") return DEFAULT_LANG;
+  return readStored() ?? pickLang(navigator.languages?.length ? navigator.languages : [navigator.language]);
 }
 
 const LangContext = createContext<{ lang: Lang; setLang: (l: Lang) => void }>({
-  lang: "uk",
+  lang: DEFAULT_LANG,
   setLang: () => {},
 });
 
 export function LangProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>("uk");
-  useEffect(() => {
-    const l = getLang();
+  // The server renders Ukrainian; after hydration the stored or browser language takes over.
+  const [lang, setLangState] = useState<Lang>(DEFAULT_LANG);
+  // Only the latest request applies: picking es then de quickly must not end on es when es loads last.
+  const latest = useRef(0);
+
+  const apply = useCallback(async (l: Lang) => {
+    const req = ++latest.current;
+    await ensureCatalog(l);
+    if (req !== latest.current) return;
+    setCurrentLang(l);
     setLangState(l);
     document.documentElement.lang = l;
   }, []);
-  function setLang(l: Lang) {
-    setLangState(l);
-    window.localStorage.setItem(KEY, l);
-    document.documentElement.lang = l;
+
+  useEffect(() => {
+    const stored = readStored();
+    const l = getLang();
+    if (!stored) store(l); // first visit: remember what the browser asked for
+    void apply(l);
+  }, [apply]);
+
+  const setLang = useCallback((l: Lang) => {
+    if (!isLang(l)) return;
+    store(l);
+    void apply(l);
     // Best-effort: persist to backend prefs so server notifications match the UI language.
-    void syncUserLocale(l);
-  }
+    void syncUserLocale(serverLocale(l));
+  }, [apply]);
+
   return <LangContext.Provider value={{ lang, setLang }}>{children}</LangContext.Provider>;
 }
 
@@ -37,36 +100,7 @@ export function useLang() {
   return useContext(LangContext);
 }
 
-/** Pick one of a Ukrainian / English pair by the active language. Co-located i18n:
- *  components keep their own strings, e.g. `tr(lang, "Афіша", "Discover")`. */
-export function tr(lang: Lang, uk: string, en: string): string {
-  return lang === "en" ? en : uk;
-}
-
-const MONTHS: Record<Lang, string[]> = {
-  uk: ["січ", "лют", "бер", "кві", "тра", "чер", "лип", "сер", "вер", "жов", "лис", "гру"],
-  en: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
-};
-
-/** Locale-aware date: "15 чер · 19:00" / "15 Jun · 19:00". */
+/** A calendar date as written in an ISO string: "15 черв · 19:00" / "15 Jun · 19:00" / "6月15日 · 19:00". */
 export function fmtDateL(iso: string | null, lang: Lang): string {
-  if (!iso || iso.length < 10) return "";
-  const m = Number(iso.slice(5, 7));
-  const d = Number(iso.slice(8, 10));
-  const day = iso.length >= 16 ? ` · ${iso.slice(11, 16)}` : "";
-  return `${d} ${MONTHS[lang][m - 1] ?? ""}${day}`;
-}
-
-/** A compact UA/EN toggle for the nav. */
-export function LanguageSwitcher() {
-  const { lang, setLang } = useLang();
-  return (
-    <button
-      className="btn ghost sm"
-      title="Language / Мова"
-      onClick={() => setLang(lang === "uk" ? "en" : "uk")}
-    >
-      {lang === "uk" ? "EN" : "UA"}
-    </button>
-  );
+  return isoDateLabel(iso, lang);
 }

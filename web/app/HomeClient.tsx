@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import EventCard, { EventCardSkeleton } from "./components/EventCard";
 import { getEvents, discoverSections, mySaves, saveEvent, unsaveEvent, getToken, errorMessage, logTelemetry, type EventDto, type DiscoverSection } from "../lib/api";
-import { useLang, tr } from "../lib/i18n";
+import { useLang, tr, tf, serverText } from "../lib/i18n";
 import { categoryLabel, inWindow, TOP_CATEGORIES, type When } from "../lib/ui";
 import { Search, MapPin, Plus, Compass } from "./components/Icon";
 
@@ -93,9 +93,9 @@ export default function HomeClient() {
   const card = (e: EventDto, i: number) => (
     <EventCard key={e.id} event={e} saved={saved.has(e.id)} onToggleSave={toggleSave} eager={i < 4} />
   );
-  const WHEN: [When, string, string][] = [
-    ["all", "Усі дати", "Any date"], ["today", "Сьогодні", "Today"], ["tomorrow", "Завтра", "Tomorrow"],
-    ["weekend", "Вихідні", "Weekend"], ["week", "Найближчі 7 днів", "Next 7 days"],
+  const WHEN: [When, string][] = [
+    ["all", tr(lang, "Усі дати", "Any date")], ["today", tr(lang, "Сьогодні", "Today")], ["tomorrow", tr(lang, "Завтра", "Tomorrow")],
+    ["weekend", tr(lang, "Вихідні", "Weekend")], ["week", tr(lang, "Найближчі 7 днів", "Next 7 days")],
   ];
   const sectionsForCity = sections
     .map((s) => ({ ...s, events: city ? s.events.filter((e) => e.city === city) : s.events }))
@@ -123,8 +123,8 @@ export default function HomeClient() {
         </div>
         <div className="filter-row">
           <div className="chips scroll" role="group" aria-label={tr(lang, "Коли", "When")}>
-            {WHEN.map(([k, uk, en]) => (
-              <button key={k} className={`chip ${when === k ? "active" : ""}`} aria-pressed={when === k} onClick={() => setWhen(k)}>{tr(lang, uk, en)}</button>
+            {WHEN.map(([k, label]) => (
+              <button key={k} className={`chip ${when === k ? "active" : ""}`} aria-pressed={when === k} onClick={() => setWhen(k)}>{label}</button>
             ))}
           </div>
         </div>
@@ -142,14 +142,14 @@ export default function HomeClient() {
 
       {!filtering && sectionsForCity.map((sec) => (
         <section key={sec.key} className="section">
-          <div className="section-head"><h2>{sec.title}</h2></div>
+          <div className="section-head"><h2>{serverText(lang, sec.title)}</h2></div>
           <div className="hscroll">{sec.events.map(card)}</div>
         </section>
       ))}
 
       <section className="section">
         <div className="section-head">
-          <h2>{filtering ? tr(lang, "Знайдено", "Results") : city ? tr(lang, `Усі події · ${city}`, `All events · ${city}`) : tr(lang, "Усі події", "All events")}</h2>
+          <h2>{filtering ? tr(lang, "Знайдено", "Results") : city ? tf(lang, "Усі події · {city}", "All events · {city}", { city }) : tr(lang, "Усі події", "All events")}</h2>
           {events && <span className="muted small">{shown.length}</span>}
         </div>
         {events === null ? (

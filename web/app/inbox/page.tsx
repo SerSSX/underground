@@ -7,7 +7,7 @@ import {
   myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getEvent, getToken, errorMessage,
   type NotificationDto, type ConversationDto, type MessageDto,
 } from "../../lib/api";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import { initials, shortWhen, timeOf } from "../../lib/ui";
 import { ChevronLeft, MessageCircle, Send, Bell } from "../components/Icon";
@@ -51,7 +51,7 @@ function InboxInner() {
     const about = params.get("about");
     if (about && /^[0-9a-f-]{36}$/i.test(about)) {
       // Start the message with the event it is about, so the organiser knows the context.
-      getEvent(about).then((ev) => setText((t) => t || tr(lang, `Щодо «${ev.title}»: `, `About “${ev.title}”: `))).catch(() => {});
+      getEvent(about).then((ev) => setText((t) => t || tf(lang, "Щодо «{title}»: ", "About “{title}”: ", { title: ev.title }))).catch(() => {});
     }
     const c = convs.find((x) => x.peer_id === to);
     if (c) setPeer({ id: c.peer_id, name: c.peer_name, avatar: c.peer_avatar });

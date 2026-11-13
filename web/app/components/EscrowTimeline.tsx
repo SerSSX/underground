@@ -18,13 +18,13 @@ export default function EscrowTimeline({ status }: { status: string | null }) {
   const reached =
     status === "held" ? 0 : status === "clearing" ? 1 : status === "cleared" || status === "paid_out" ? 2 : 0;
 
-  const note: Record<string, { uk: string; en: string; tone: string }> = {
-    held: { uk: "Кошти захищені в ескроу до завершення події.", en: "Funds are protected in escrow until the event ends.", tone: "var(--muted)" },
-    clearing: { uk: "Подія відбулась — кошти очищуються перед виплатою.", en: "Event is over — funds are clearing before payout.", tone: "var(--muted)" },
-    cleared: { uk: "Кошти готові до виплати організатору.", en: "Funds are cleared for the organizer payout.", tone: "var(--ok-fg, #5fd08a)" },
-    paid_out: { uk: "Виплачено організатору.", en: "Paid out to the organizer.", tone: "var(--ok-fg, #5fd08a)" },
-    frozen: { uk: "⏳ Спір на розгляді — кошти заморожено до рішення модерації.", en: "⏳ Dispute under review — funds frozen pending moderation.", tone: "var(--warn-fg, #e6b860)" },
-    refunded: { uk: "↩ Кошти повернено покупцю.", en: "↩ Refunded to the buyer.", tone: "var(--danger-fg, #f0816a)" },
+  const note: Record<string, { text: string; tone: string }> = {
+    held: { text: tr(lang, "Кошти захищені в ескроу до завершення події.", "Funds are protected in escrow until the event ends."), tone: "var(--muted)" },
+    clearing: { text: tr(lang, "Подія відбулась — кошти очищуються перед виплатою.", "Event is over — funds are clearing before payout."), tone: "var(--muted)" },
+    cleared: { text: tr(lang, "Кошти готові до виплати організатору.", "Funds are cleared for the organizer payout."), tone: "var(--ok-fg, #5fd08a)" },
+    paid_out: { text: tr(lang, "Виплачено організатору.", "Paid out to the organizer."), tone: "var(--ok-fg, #5fd08a)" },
+    frozen: { text: tr(lang, "⏳ Спір на розгляді — кошти заморожено до рішення модерації.", "⏳ Dispute under review — funds frozen pending moderation."), tone: "var(--warn-fg, #e6b860)" },
+    refunded: { text: tr(lang, "↩ Кошти повернено покупцю.", "↩ Refunded to the buyer."), tone: "var(--danger-fg, #f0816a)" },
   };
   const n = note[status];
   const disputed = status === "frozen" || status === "refunded";
@@ -49,7 +49,7 @@ export default function EscrowTimeline({ status }: { status: string | null }) {
           ))}
         </div>
       )}
-      {n && <div style={{ fontSize: 12, color: n.tone }}>{tr(lang, n.uk, n.en)}</div>}
+      {n && <div style={{ fontSize: 12, color: n.tone }}>{n.text}</div>}
     </div>
   );
 }

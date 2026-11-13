@@ -5,7 +5,7 @@ import CityInput from "./CityInput";
 import EventCard from "./EventCard";
 import { AGE_RATINGS, EVENT_CATEGORIES, uploadImage, errorMessage, toIso, tzOffsetMs, searchCities, type EventInput, type EventDto } from "../../lib/api";
 import { FREE_ONLY } from "../../lib/flags";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tf } from "../../lib/i18n";
 import { categoryLabel, countryTz, tzLabel } from "../../lib/ui";
 import { ImageIcon, X, ChevronDown } from "./Icon";
 
@@ -131,7 +131,7 @@ export default function EventForm({
     end: endIso && startIso && Date.parse(endIso) <= Date.parse(startIso) ? tr(lang, "Кінець має бути після початку", "The end must be after the start") : null,
     city: !f.city.trim() ? tr(lang, "Вкажіть місто", "Enter a city") : null,
     seats: editing ? null : !Number.isInteger(seats) || seats < Math.max(1, minSeats) || seats > 100000
-      ? minSeats > 1 ? tr(lang, `Не менше ${minSeats} — стільки вже заброньовано`, `At least ${minSeats} — already booked`) : tr(lang, "Від 1 до 100 000 місць", "1 to 100,000 places")
+      ? minSeats > 1 ? tf(lang, "Не менше {n} — стільки вже заброньовано", "At least {n} — already booked", { n: minSeats }) : tr(lang, "Від 1 до 100 000 місць", "1 to 100,000 places")
       : null,
   };
   const invalid = Object.values(problems).some(Boolean);
@@ -188,7 +188,7 @@ export default function EventForm({
           <Section title={tr(lang, "Коли й де", "When and where")}>
             <div className="grid-2">
             <div className="field">
-              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{zone ? <span className="subtle" style={{ fontWeight: 500 }}> · {tzLabel(zone)}</span> : null}</label>
+              <label htmlFor="ev-date">{tr(lang, "Початок", "Starts")}{zone ? <span className="subtle" style={{ fontWeight: 500 }}> · {tzLabel(zone, lang)}</span> : null}</label>
               <input id="ev-date" className="input" type="datetime-local" value={f.starts_at_local} onChange={(e) => set("starts_at_local", e.target.value)} aria-invalid={!!show("date")} />
               {show("date") && <span className="err">{show("date")}</span>}
             </div>

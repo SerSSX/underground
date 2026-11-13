@@ -3,12 +3,19 @@
 import Link from "next/link";
 import EventCard from "./EventCard";
 import type { EventDto } from "../../lib/api";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tf } from "../../lib/i18n";
+import { categoryLabel } from "../../lib/ui";
 import { Compass } from "./Icon";
 
-/** The event grid used by the search-engine landing pages (/city/…, /c/…). */
-export default function Listing({ title, subtitle, events }: { title: string; subtitle: string; events: EventDto[] }) {
+/** The event grid used by the search-engine landing pages (/city/…, /c/…). The heading is worded here, in the
+ *  reader's language (the server renders it in Ukrainian, then hydration switches it). */
+export default function Listing({ category, city, events }: { category?: string; city?: string; events: EventDto[] }) {
   const { lang } = useLang();
+  const label = category ? categoryLabel(category, lang) : "";
+  const title = category ? label : tf(lang, "Події: {city}", "Events: {city}", { city });
+  const subtitle = category
+    ? tf(lang, "Події категорії «{category}» поруч. Бронюйте місця безкоштовно.", "{category} events near you. Book your places for free.", { category: label })
+    : tf(lang, "Концерти, вечірки, лекції й зустрічі в місті {city}. Вхід вільний — бронюйте місця онлайн.", "Concerts, parties, talks and meetups in {city}. Free entry — book your places online.", { city });
   return (
     <main className="container">
       <div className="page-head">

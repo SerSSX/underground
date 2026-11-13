@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { fmtPrice, type EventDto } from "../../lib/api";
 import { FREE_ONLY } from "../../lib/flags";
-import { useLang, tr } from "../../lib/i18n";
-import { categoryLabel, dateBadge, timeOf, plural } from "../../lib/ui";
+import { useLang, tr, tp } from "../../lib/i18n";
+import { categoryLabel, dateBadge, timeOf } from "../../lib/ui";
 import Poster from "./Poster";
 import { Heart, MapPin } from "./Icon";
 
@@ -66,10 +66,10 @@ export default function EventCard({
           )}
           {left > 0 && left <= 10 ? (
             <span className="xs" style={{ color: "var(--warn-fg)" }}>
-              {tr(lang, `лишилось ${left} ${plural(left, ["місце", "місця", "місць"])}`, `${left} left`)}
+              {tp(lang, left, { one: "лишилось {n} місце", few: "лишилось {n} місця", many: "лишилось {n} місць" }, { one: "{n} left", other: "{n} left" })}
             </span>
           ) : !!event.saves_count && event.saves_count > 0 ? (
-            <span className="xs subtle">{tr(lang, `${event.saves_count} цікавляться`, `${event.saves_count} interested`)}</span>
+            <span className="xs subtle">{tp(lang, event.saves_count, { one: "{n} цікавиться", few: "{n} цікавляться", many: "{n} цікавляться" }, { one: "{n} interested", other: "{n} interested" })}</span>
           ) : null}
         </div>
       </Link>

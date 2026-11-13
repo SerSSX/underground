@@ -37,7 +37,7 @@ export default async function CityPage({ params }: { params: Promise<{ city: str
   return (
     <>
       {events.length > 0 && <JsonLd data={itemListJsonLd(events)} />}
-      <Listing title={`Події: ${city}`} subtitle={`Концерти, вечірки, лекції й зустрічі в місті ${city}. Вхід вільний — бронюйте місця онлайн.`} events={events} />
+      <Listing city={city} events={events} />
     </>
   );
 }

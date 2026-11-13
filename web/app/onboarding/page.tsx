@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CityInput from "../components/CityInput";
 import { EVENT_CATEGORIES, putPrefs, getPrefs, getToken, errorMessage, safeNext } from "../../lib/api";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tf } from "../../lib/i18n";
 import { categoryLabel } from "../../lib/ui";
 import { Check } from "../components/Icon";
 
@@ -84,7 +84,7 @@ function OnboardingInner() {
 
         {error && <div className="alert error" style={{ marginTop: 14 }}>{error}</div>}
         <div className="row gap wrap" style={{ marginTop: 24 }}>
-          <button className="btn lg" onClick={finish} disabled={busy}>{busy ? "…" : selected.length ? tr(lang, `Готово · ${selected.length}`, `Done · ${selected.length}`) : tr(lang, "Готово", "Done")}</button>
+          <button className="btn lg" onClick={finish} disabled={busy}>{busy ? "…" : selected.length ? tf(lang, "Готово · {n}", "Done · {n}", { n: selected.length }) : tr(lang, "Готово", "Done")}</button>
           <button className="btn quiet" onClick={skip} disabled={busy}>{tr(lang, "Пропустити", "Skip")}</button>
         </div>
       </div>

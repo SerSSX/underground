@@ -9,12 +9,13 @@ import { useSession } from "../../lib/session";
 import { categoryLabel, initials } from "../../lib/ui";
 import CityInput from "../components/CityInput";
 import Modal from "../components/Modal";
+import LanguagePicker from "../components/LanguagePicker";
 import { Toast, useToast } from "../components/Toast";
 import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight } from "../components/Icon";
 
 export default function AccountPage() {
   const router = useRouter();
-  const { lang, setLang } = useLang();
+  const { lang } = useLang();
   const { logout, refresh } = useSession();
   const [me, setMe] = useState<UserDto | null>(null);
   const [name, setName] = useState("");
@@ -139,10 +140,7 @@ export default function AccountPage() {
       <section className="card section">
         <div className="row spread wrap" style={{ gap: 12 }}>
           <div className="row gap"><Globe className="ico" /><span className="strong">{tr(lang, "Мова інтерфейсу", "Language")}</span></div>
-          <div className="seg">
-            <button className={lang === "uk" ? "active" : ""} onClick={() => setLang("uk")}>Українська</button>
-            <button className={lang === "en" ? "active" : ""} onClick={() => setLang("en")}>English</button>
-          </div>
+          <LanguagePicker />
         </div>
       </section>
 

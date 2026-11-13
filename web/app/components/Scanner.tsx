@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { scanTicket, errorMessage, type ScanResult } from "../../lib/api";
-import { useLang, tr } from "../../lib/i18n";
-import { placesLabel } from "../../lib/ui";
+import { useLang, tr, tf, tp } from "../../lib/i18n";
 import { Camera, CircleCheck, CircleX, Keyboard } from "./Icon";
 
 type BarcodeDetectorLike = { detect: (src: CanvasImageSource) => Promise<{ rawValue: string }[]> };
@@ -108,13 +107,13 @@ export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAd
     }
   }
 
-  const REASON: Record<string, [string, string]> = {
-    already_used: ["Цей квиток уже пройшов", "Already checked in"],
-    wrong_event: ["Квиток на іншу подію", "Ticket for another event"],
-    returned: ["Бронь скасована", "Booking was cancelled"],
-    inactive: ["Квиток недійсний", "Ticket is not valid"],
-    event_cancelled: ["Подію скасовано — вхід закрито", "The event is cancelled"],
-    not_found: ["Код не розпізнано або застарів — попросіть оновити QR", "Unknown or expired code — ask the guest to refresh the QR"],
+  const REASON: Record<string, string> = {
+    already_used: tr(lang, "Цей квиток уже пройшов", "Already checked in"),
+    wrong_event: tr(lang, "Квиток на іншу подію", "Ticket for another event"),
+    returned: tr(lang, "Бронь скасована", "Booking was cancelled"),
+    inactive: tr(lang, "Квиток недійсний", "Ticket is not valid"),
+    event_cancelled: tr(lang, "Подію скасовано — вхід закрито", "The event is cancelled"),
+    not_found: tr(lang, "Код не розпізнано або застарів — попросіть оновити QR", "Unknown or expired code — ask the guest to refresh the QR"),
   };
 
   return (
@@ -135,15 +134,15 @@ export default function Scanner({ eventId, onAdmitted }: { eventId: string; onAd
             <div className="big">{result.valid ? tr(lang, "Проходьте!", "Welcome in!") : tr(lang, "Не пропускати", "Do not admit")}</div>
             {result.holder_name && <div style={{ fontSize: 20, fontWeight: 700 }}>{result.holder_name}</div>}
             {result.valid && result.places != null && result.places > 1 && (
-              <div>{tr(lang, `${placesLabel(result.places, lang)} у броні · пройшли ${result.checked_in ?? 1}`, `${result.places} places booked · ${result.checked_in ?? 1} in`)}</div>
+              <div>{tp(lang, result.places, { one: "{n} місце у броні · пройшли {inside}", few: "{n} місця у броні · пройшли {inside}", many: "{n} місць у броні · пройшли {inside}" }, { one: "{n} place booked · {inside} in", other: "{n} places booked · {inside} in" }, { inside: result.checked_in ?? 1 })}</div>
             )}
-            {!result.valid && <div>{REASON[result.reason] ? tr(lang, ...REASON[result.reason]) : result.event_title}</div>}
+            {!result.valid && <div>{Object.prototype.hasOwnProperty.call(REASON, result.reason ?? "") ? REASON[result.reason as string] : result.event_title}</div>}
           </div>
         )}
       </div>
       {camError && <div className="alert warn">{camError}</div>}
       <div className="row spread">
-        <span className="muted small">{tr(lang, `Пропущено за цю сесію: ${count}`, `Admitted this session: ${count}`)}</span>
+        <span className="muted small">{tf(lang, "Пропущено за цю сесію: {n}", "Admitted this session: {n}", { n: count })}</span>
         {on && <button className="btn ghost sm" onClick={stop}>{tr(lang, "Вимкнути камеру", "Stop camera")}</button>}
       </div>
       <form className="row gap" onSubmit={(e) => { e.preventDefault(); if (manual.trim()) { void verdict(manual.trim()); setManual(""); } }}>

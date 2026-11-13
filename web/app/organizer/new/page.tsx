@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import EventForm, { EMPTY_EVENT, toEventInput } from "../../components/EventForm";
 import { createEvent, getToken, toIso, browserTz, type EventDto } from "../../../lib/api";
-import { useLang, tr } from "../../../lib/i18n";
+import { useLang, tr, tf } from "../../../lib/i18n";
 import { Toast, useToast } from "../../components/Toast";
 import { CircleCheck, Copy, ExternalLink, Users } from "../../components/Icon";
 
@@ -23,7 +23,7 @@ export default function NewEventPage() {
 
   if (created) {
     const link = `${window.location.origin}/events/${created.id}`;
-    const msg = tr(lang, `Приходь на «${created.title}»`, `Come to “${created.title}”`);
+    const msg = tf(lang, "Приходь на «{title}»", "Come to “{title}”", { title: created.title });
     const draft = created.status === "draft";
     return (
       <main className="container tight">

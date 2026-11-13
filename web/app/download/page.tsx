@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { getAndroidRelease, type AndroidRelease } from "../../lib/app";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tf } from "../../lib/i18n";
 import { Download, Smartphone, ShieldIcon, Compass } from "./icons";
 
 /** Download page for the Android app served from our own server (no Google Play yet). */
@@ -20,7 +20,7 @@ export default function AppPage() {
     QRCode.toDataURL(`${window.location.origin}/download`, { margin: 0, width: 360, color: { dark: "#08090d", light: "#ffffff" } }).then(setQr).catch(() => {});
   }, []);
 
-  const mb = rel?.size_bytes ? `${(rel.size_bytes / 1024 / 1024).toFixed(1)} МБ` : null;
+  const mb = rel?.size_bytes ? tf(lang, "{size} МБ", "{size} MB", { size: (rel.size_bytes / 1024 / 1024).toFixed(1) }) : null;
 
   return (
     <main className="container narrow">

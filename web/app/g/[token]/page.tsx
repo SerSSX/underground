@@ -15,13 +15,12 @@ import {
   getToken,
   setToken,
   errorMessage,
-  fmtDate,
   type GiftPreviewDto,
 } from "../../../lib/api";
 import { EMAIL_CODE_LOGIN } from "../../../lib/flags";
 import { shortWhen } from "../../../lib/ui";
 import { Gift } from "../../components/Icon";
-import { useLang, tr } from "../../../lib/i18n";
+import { useLang, tr, tf } from "../../../lib/i18n";
 
 export default function ClaimGiftPage() {
   const { lang } = useLang();
@@ -104,7 +103,7 @@ export default function ClaimGiftPage() {
     <main className="container tight" style={{ textAlign: "center" }}>
       <div className="empty" style={{ border: 0, padding: "12px 0 0" }}><span className="ei"><Gift className="ico lg" /></span></div>
       <h1 style={{ fontSize: 26, marginTop: 4 }}>
-        {tr(lang, `${preview.from_name} передає вам місце`, `${preview.from_name} is giving you a place`)}
+        {tf(lang, "{name} передає вам місце", "{name} is giving you a place", { name: preview.from_name })}
       </h1>
       <div style={card}>
         <div style={{ fontWeight: 500 }}>{preview.event_title}</div>

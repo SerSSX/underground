@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { login, requestEmailCode, verifyEmailCode, setToken, errorMessage, isUnauthorized, safeNext } from "../../lib/api";
 import { EMAIL_CODE_LOGIN } from "../../lib/flags";
-import { useLang, tr } from "../../lib/i18n";
+import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import AuthCard from "../components/AuthCard";
 import { Eye } from "../components/Icon";
@@ -98,7 +98,7 @@ function LoginForm() {
         </form>
       ) : (
         <form className="form" onSubmit={submitCode}>
-          <div className="alert ok">{tr(lang, `Код надіслано на ${email}`, `Code sent to ${email}`)}</div>
+          <div className="alert ok">{tf(lang, "Код надіслано на {email}", "Code sent to {email}", { email })}</div>
           <div className="field">
             <label htmlFor="code">{tr(lang, "Код з листа", "Code from the email")}</label>
             <input id="code" className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} required style={{ letterSpacing: "0.4em", fontSize: 22, textAlign: "center" }} />

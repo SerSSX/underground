@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { myEvents, myStaffEvents, organizerStats, getToken, errorMessage, isOver, type EventDto, type OrganizerStats } from "../../lib/api";
-import { useLang, tr } from "../../lib/i18n";
-import { shortWhen, plural } from "../../lib/ui";
+import { useLang, tr, tp } from "../../lib/i18n";
+import { shortWhen } from "../../lib/ui";
 import Poster from "../components/Poster";
 import { Toast, useToast } from "../components/Toast";
 import { Plus, ScanLine, Users, Pencil, Share2, CalendarPlus } from "../components/Icon";
@@ -94,8 +94,8 @@ export default function OrganizerPage() {
       )}
 
       <div className="tabs" role="tablist">
-        {([["upcoming", "Майбутні", "Upcoming"], ["past", "Минулі", "Past"], ["drafts", "Чернетки", "Drafts"]] as [Tab, string, string][]).map(([k, uk, en]) => (
-          <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{tr(lang, uk, en)} <span className="count">{groups[k].length}</span></button>
+        {([["upcoming", tr(lang, "Майбутні", "Upcoming")], ["past", tr(lang, "Минулі", "Past")], ["drafts", tr(lang, "Чернетки", "Drafts")]] as [Tab, string][]).map(([k, label]) => (
+          <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{label} <span className="count">{groups[k].length}</span></button>
         ))}
       </div>
 
@@ -127,7 +127,7 @@ export default function OrganizerPage() {
                     <div style={{ marginTop: 10, maxWidth: 360 }}>
                       <div className={`progress ${pct >= 90 ? "warn" : ""}`}><i style={{ width: `${pct}%` }} /></div>
                       <div className="subtle xs" style={{ marginTop: 4 }}>
-                        {tr(lang, `Заброньовано ${booked} з ${total} ${plural(total, ["місця", "місць", "місць"])}`, `${booked} of ${total} places booked`)}
+                        {tp(lang, total, { one: "Заброньовано {booked} з {n} місця", few: "Заброньовано {booked} з {n} місць", many: "Заброньовано {booked} з {n} місць" }, { one: "{booked} of {n} place booked", other: "{booked} of {n} places booked" }, { booked })}
                       </div>
                     </div>
                   )}

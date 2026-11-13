@@ -5,7 +5,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
 import { myTickets, returnTicket, giftTicket, revokeGift, ticketQr, getToken, errorMessage, mapsUrl, isOver, type TicketDto } from "../../../lib/api";
-import { useLang, tr } from "../../../lib/i18n";
+import { useLang, tr, tf, tp } from "../../../lib/i18n";
 import { longDate, timeOf, placesLabel, shortWhen } from "../../../lib/ui";
 import Modal from "../../components/Modal";
 import Poster from "../../components/Poster";
@@ -94,7 +94,7 @@ function TicketsInner() {
       const toCancel = cancelFor.tickets.filter((t) => t.status === "active").slice(0, cancelN);
       for (const t of toCancel) await returnTicket(t.id);
       await load();
-      showToast(tr(lang, `Скасовано: ${placesLabel(toCancel.length, lang)}`, `Cancelled ${toCancel.length}`));
+      showToast(tp(lang, toCancel.length, { one: "Скасовано: {n} місце", few: "Скасовано: {n} місця", many: "Скасовано: {n} місць" }, { one: "Cancelled {n}", other: "Cancelled {n}" }));
       setCancelFor(null);
     } catch (e) {
       setError(errorMessage(e));
@@ -188,8 +188,8 @@ function TicketsInner() {
                   <div className="muted small">{[g.venue, g.city].filter(Boolean).join(", ")}</div>
                   <div className="row gap wrap" style={{ marginTop: 8 }}>
                     {act.length > 0 && <span className="badge ok">{placesLabel(act.length, lang)}</span>}
-                    {used.length > 0 && <span className="badge">{tr(lang, `пройшли: ${used.length}`, `checked in: ${used.length}`)}</span>}
-                    {pending.length > 0 && <span className="badge warn">{tr(lang, `передається: ${pending.length}`, `being transferred: ${pending.length}`)}</span>}
+                    {used.length > 0 && <span className="badge">{tf(lang, "пройшли: {n}", "checked in: {n}", { n: used.length })}</span>}
+                    {pending.length > 0 && <span className="badge warn">{tf(lang, "передається: {n}", "being transferred: {n}", { n: pending.length })}</span>}
                   </div>
                 </div>
                 <div className="actions row gap wrap" style={{ justifyContent: "flex-end" }}>
@@ -224,7 +224,7 @@ function TicketsInner() {
               {active.length > 1 && (
                 <div className="row gap">
                   <button className="btn ghost icon sm" disabled={qrIdx === 0} onClick={() => setQrIdx((i) => i - 1)} aria-label={tr(lang, "Попереднє місце", "Previous place")}><ChevronLeft className="ico sm" /></button>
-                  <span className="strong">{tr(lang, `Місце ${qrIdx + 1} з ${active.length}`, `Place ${qrIdx + 1} of ${active.length}`)}</span>
+                  <span className="strong">{tf(lang, "Місце {i} з {total}", "Place {i} of {total}", { i: qrIdx + 1, total: active.length })}</span>
                   <button className="btn ghost icon sm" disabled={qrIdx >= active.length - 1} onClick={() => setQrIdx((i) => i + 1)} aria-label={tr(lang, "Наступне місце", "Next place")}><ChevronRight className="ico sm" /></button>
                 </div>
               )}
@@ -251,7 +251,7 @@ function TicketsInner() {
             {error && <div className="alert error">{error}</div>}
             <div className="row gap">
               <button className="btn ghost grow" disabled={busy} onClick={() => setCancelFor(null)}>{tr(lang, "Залишити", "Keep")}</button>
-              <button className="btn danger grow" disabled={busy} onClick={doCancel}>{busy ? "…" : tr(lang, `Скасувати ${placesLabel(cancelN, lang)}`, `Cancel ${cancelN}`)}</button>
+              <button className="btn danger grow" disabled={busy} onClick={doCancel}>{busy ? "…" : tp(lang, cancelN, { one: "Скасувати {n} місце", few: "Скасувати {n} місця", many: "Скасувати {n} місць" }, { one: "Cancel {n}", other: "Cancel {n}" })}</button>
             </div>
           </div>
         </Modal>

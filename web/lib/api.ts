@@ -1,4 +1,6 @@
 import { safeNextFor } from "./safe-next.mjs";
+import { currentLang, serverLocale } from "./i18n-core.mjs";
+import { canonicalServerText, serverText } from "./server-messages.mjs";
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const TOKEN_KEY = "ug_web_token";
 
@@ -41,10 +43,10 @@ async function check(res: Response): Promise<Response> {
   if (res.ok) return res;
   const body = (await res.json().catch(() => null)) as { error?: string } | null;
   const fallback = res.status === 401 ? "Потрібен вхід" : res.status === 403 ? "Недостатньо прав" : `Помилка ${res.status}`;
-  // The API's generic auth errors are English codes ("unauthorized", "forbidden"); show those in Ukrainian.
-  // Specific messages (validation, "увійдіть ще раз…") come through as written.
-  const text = body?.error && !/^(unauthorized|forbidden)$/i.test(body.error) ? body.error : fallback;
-  throw new ApiError(res.status, text);
+  // The message keeps the Ukrainian source text: the API's English codes ("unauthorized", "email taken") are
+  // mapped to it (lib/server-messages.mjs), its Ukrainian messages come through as written. errorMessage()
+  // shows it in the reader's language.
+  throw new ApiError(res.status, canonicalServerText(body?.error) ?? fallback);
 }
 export async function apiGet<T>(path: string): Promise<T> {
   return (await (await check(await fetch(`${BASE}${path}`, { headers: authHeaders() }))).json()) as T;
@@ -69,8 +71,10 @@ export async function uploadImage(file: File): Promise<string> {
 export function isUnauthorized(e: unknown): boolean {
   return e instanceof ApiError && e.status === 401;
 }
+/** An error for the screen, in the active language: known server texts translate, unknown ones are shown as
+ *  the server wrote them (TASK-303 L1). */
 export function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : "Невідома помилка";
+  return serverText(currentLang(), e instanceof Error && e.message ? e.message : "Невідома помилка");
 }
 
 /**
@@ -382,7 +386,9 @@ export async function getPrefs(): Promise<Prefs> {
   return apiGet<Prefs>("/api/me/prefs");
 }
 export async function putPrefs(categories: string[], city: string | null): Promise<Prefs> {
-  return apiSend<Prefs>("PUT", "/api/me/prefs", { categories, city });
+  // The API replaces the whole prefs row and reads a missing locale as "uk": send the current one, or saving
+  // interests would switch an English reader's notifications to Ukrainian.
+  return apiSend<Prefs>("PUT", "/api/me/prefs", { categories, city, locale: serverLocale(currentLang()) });
 }
 
 // ---- organizer cabinet ----
@@ -530,14 +536,6 @@ export function browserTz(): string | null {
 export function mapsUrl(address: string | null, city: string | null): string | null {
   const q = [address, city].filter(Boolean).join(", ");
   return q ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}` : null;
-}
-const MONTHS = ["січ", "лют", "бер", "кві", "тра", "чер", "лип", "сер", "вер", "жов", "лис", "гру"];
-export function fmtDate(iso: string | null): string {
-  if (!iso || iso.length < 10) return "";
-  const m = Number(iso.slice(5, 7));
-  const d = Number(iso.slice(8, 10));
-  const day = iso.length >= 16 ? ` · ${iso.slice(11, 16)}` : "";
-  return `${d} ${MONTHS[m - 1] ?? ""}${day}`;
 }
 // Display symbol per ISO currency (mirrors the backend currency map). Falls back to the code.
 const CURRENCY_SYMBOLS: Record<string, string> = {

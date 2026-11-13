@@ -38,7 +38,7 @@ export default async function CategoryPage({ params }: { params: Promise<{ categ
   return (
     <>
       {events.length > 0 && <JsonLd data={itemListJsonLd(events)} />}
-      <Listing title={categoryLabel(cat, "uk")} subtitle={`Події категорії «${categoryLabel(cat, "uk")}» поруч. Бронюйте місця безкоштовно.`} events={events} />
+      <Listing category={cat} events={events} />
     </>
   );
 }

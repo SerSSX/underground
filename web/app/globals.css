@@ -423,3 +423,14 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 @media (max-width: 960px) { .form-layout, .form-layout.narrow-aside { grid-template-columns: 1fr; } .form-preview { display: none !important; } }
 @media (max-width: 860px) { .hide-mobile { display: none !important; } }
 @media (max-width: 960px) { body:has(.mobile-cta) .footer { padding-bottom: calc(var(--tabbar-h) + 110px + env(safe-area-inset-bottom)) !important; } }
+
+/* ---------- language picker (TASK-303 L1) ---------- */
+.lang-pick { position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 10px; border-radius: var(--r-pill); color: var(--muted); font-size: 13px; font-weight: 650; letter-spacing: .02em; }
+.lang-pick:hover, .lang-pick:focus-within { color: var(--text); background: var(--neutral-bg); }
+.lang-pick:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The real control, invisible over the label: the native picker opens on click or tap; 16px keeps iOS from zooming. */
+.lang-pick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; border: 0; }
+.lang-select { display: inline-block; min-width: 180px; }
+.lang-select select.input { min-height: 40px; padding-top: 6px; padding-bottom: 6px; font-size: 14px; }
+.menu-lang { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }
+.menu-lang .lang-select { flex: 1; min-width: 0; }

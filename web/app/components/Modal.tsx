@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "./Icon";
+import { useLang, tr } from "../../lib/i18n";
 
 // Accessible dialog: focus moves in on open, Escape / scrim click close, role=dialog + aria-modal.
 // Under 560 px it renders as a bottom sheet (globals.css).
 export default function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const { lang } = useLang();
   const ref = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
@@ -38,7 +40,7 @@ export default function Modal({ title, onClose, children }: { title: string; onC
       <div className="modal" ref={ref} role="dialog" aria-modal aria-label={title} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
-          <button className="btn quiet icon sm" onClick={onClose} aria-label="Закрити"><X className="ico" /></button>
+          <button className="btn quiet icon sm" onClick={onClose} aria-label={tr(lang, "Закрити", "Close")}><X className="ico" /></button>
         </div>
         {children}
       </div>

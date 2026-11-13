@@ -8,9 +8,9 @@ import {
   listStaff, revokeStaffInvite, removeStaff,
   type EventDto, type GuestDto, type StaffList,
 } from "../../../lib/api";
-import { useLang, tr } from "../../../lib/i18n";
+import { useLang, tr, tf, tp } from "../../../lib/i18n";
 import { useSession } from "../../../lib/session";
-import { shortWhen, initials, placesLabel, plural } from "../../../lib/ui";
+import { shortWhen, initials, placesLabel } from "../../../lib/ui";
 import Modal from "../../components/Modal";
 import Poster from "../../components/Poster";
 import Scanner from "../../components/Scanner";
@@ -189,8 +189,8 @@ function ManageInner() {
           <div className="muted small" style={{ marginTop: 4 }}>{shortWhen(event.starts_at, lang, event.timezone)}{event.city ? ` · ${event.city}` : ""}</div>
           {owner && (
             <div className="row gap wrap" style={{ marginTop: 8 }}>
-              <span className="badge accent">{tr(lang, `Заброньовано ${booked}${total ? ` з ${total}` : ""}`, `${booked}${total ? ` of ${total}` : ""} booked`)}</span>
-              <span className="badge ok">{tr(lang, `Прийшли ${totals.inside}`, `${totals.inside} checked in`)}</span>
+              <span className="badge accent">{(total ? tf(lang, "Заброньовано {booked} з {total}", "{booked} of {total} booked", { booked, total }) : tf(lang, "Заброньовано {booked}", "{booked} booked", { booked }))}</span>
+              <span className="badge ok">{tf(lang, "Прийшли {n}", "{n} checked in", { n: totals.inside })}</span>
               {event.sales_closed && <span className="badge warn">{tr(lang, "Бронювання закрите", "Booking closed")}</span>}
             </div>
           )}
@@ -223,7 +223,7 @@ function ManageInner() {
         ) : (
           <div className="card" style={{ padding: 16 }}>
             <div className="row spread wrap" style={{ gap: 12, marginBottom: 6 }}>
-              <span className="muted small">{tr(lang, `${totals.people} ${plural(totals.people, ["гість", "гості", "гостей"])} · ${placesLabel(totals.places, lang)}`, `${totals.people} guests · ${totals.places} places`)}</span>
+              <span className="muted small">{`${tp(lang, totals.people, { one: "{n} гість", few: "{n} гості", many: "{n} гостей" }, { one: "{n} guest", other: "{n} guests" })} · ${placesLabel(totals.places, lang)}`}</span>
               <div className="row gap wrap">
               <button className="btn ghost sm" onClick={exportCsv}><Download className="ico sm" />CSV</button>
               <label className="input-icon" style={{ minWidth: 220 }}>
@@ -238,7 +238,7 @@ function ManageInner() {
                 <span className="avatar sm">{initials(g.name)}</span>
                 <span className="grow strong">{g.name}</span>
                 <span className="badge">{placesLabel(g.places, lang)}</span>
-                {g.checked_in > 0 && <span className="badge ok">{g.checked_in === g.places ? tr(lang, "прийшли", "in") : tr(lang, `прийшли ${g.checked_in}`, `${g.checked_in} in`)}</span>}
+                {g.checked_in > 0 && <span className="badge ok">{g.checked_in === g.places ? tr(lang, "прийшли", "in") : tf(lang, "прийшли {n}", "{n} in", { n: g.checked_in })}</span>}
               </div>
             ))}
           </div>
@@ -272,7 +272,7 @@ function ManageInner() {
                   <span className="avatar sm">{initials(m.name)}</span>
                   <span className="grow strong">{m.name}</span>
                   <span className="badge ok">{tr(lang, "сканує", "scanner")}</span>
-                  <button className="btn quiet sm" disabled={busy} onClick={() => dropStaff(m.user_id)} aria-label={tr(lang, `Забрати доступ у ${m.name}`, `Remove ${m.name}`)}><X className="ico sm" /></button>
+                  <button className="btn quiet sm" disabled={busy} onClick={() => dropStaff(m.user_id)} aria-label={tf(lang, "Забрати доступ у {name}", "Remove {name}", { name: m.name })}><X className="ico sm" /></button>
                 </div>
               ))}
               {staff.invites.filter((i) => i.status === "pending").map((i) => (
