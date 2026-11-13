@@ -63,3 +63,17 @@ as the mail residual; closed by a CAPTCHA (Turnstile) on sign-up.
 Owner's answer (verbatim): «Так, як з поштою (Recommended)».
 Consequence: Turnstile goes on sign-up as well as the code-request and forgot-password forms, before Underground's
 first prod release.
+
+## 2026-11-13 — TASK-305: transfer refusal no longer reveals age (existing test change, owner approval §5)
+
+`api/tests/age_gating.rs:157` — was: a transfer to an under-age recipient expects the specific 409 «отримувач не
+відповідає віковому обмеженню події»; now: it expects the shared transfer refusal (same answer as an unknown
+recipient), the transfer is still refused; why: the specific message told the sender the recipient is a minor
+(security review TASK-305 F2).
+Owner's answer (verbatim): «Так, погоджую (Recommended)».
+
+## 2026-11-13 — TASK-305: reviews only from guests (orchestrator reading, reversible)
+
+Security review F9: an organiser could review their own event and anyone could review an event they never booked.
+Reading taken: a review needs a ticket (any non-cancelled place) for that event, and the organiser cannot review
+their own event; reviews of cancelled events do not count. Easy to relax if the owner wants open reviews.
