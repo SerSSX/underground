@@ -42,6 +42,7 @@
   "Змінити фото": "Change photo",
   "Мої квитки": "My tickets",
   "Мої події": "My events",
+  "Як мене бачать інші": "How others see me",
   "Особисті дані": "Personal details",
   "Імʼя": "Name",
   "Організатор бачить лише ваше імʼя і кількість місць.": "Organisers see only your name and number of places.",
@@ -294,6 +295,11 @@
   "Отримати код на email": "Email me a code",
   "Акаунт створиться автоматично.": "An account is created automatically.",
   "Код з email": "Code from email",
+  "Профіль: {name}": "Profile: {name}",
+  "Квиток: {title}": "Ticket: {title}",
+  "Збережено: {title}": "Saved: {title}",
+  "Почати розмову": "Start a conversation",
+  "Організатори подій, на які ви йдете або які зберегли.": "Organisers of events you're going to or have saved.",
   "Щодо «{title}»: ": "About “{title}”: ",
   "Сповіщення": "Alerts",
   "Поки без розмов": "No conversations yet",
@@ -488,6 +494,25 @@
   "Ви зможете лише перевіряти QR гостей на вході цієї події. Доступу до редагування чи списку гостей не буде.": "You'll only be able to check guests' QR codes at the door of this event — no editing, no guest list.",
   "Прийняти запрошення": "Accept invite",
   "Не зараз": "Not now",
+  "Такого профілю немає": "Profile not found",
+  "Можливо, посилання застаріло або акаунт видалено.": "The link may be out of date, or the account was deleted.",
+  "{n} підписник": {
+    "one": "{n} follower",
+    "other": "{n} followers"
+  },
+  "{n} відгук": {
+    "one": "{n} review",
+    "other": "{n} reviews"
+  },
+  "Це ваш профіль": "This is your profile",
+  "Ви підписані": "Following",
+  "Підписатися": "Follow",
+  "Найближчі події": "Upcoming events",
+  "Найближчих подій немає.": "No upcoming events.",
+  "Минула подія: {n}": {
+    "one": "Past event: {n}",
+    "other": "Past events: {n}"
+  },
   "{n} місце": {
     "one": "{n} place",
     "other": "{n} places"

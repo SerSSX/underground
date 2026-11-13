@@ -11,7 +11,7 @@ import CityInput from "../components/CityInput";
 import Modal from "../components/Modal";
 import LanguagePicker from "../components/LanguagePicker";
 import { Toast, useToast } from "../components/Toast";
-import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight, KeyRound } from "../components/Icon";
+import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight, KeyRound, Eye } from "../components/Icon";
 
 export default function AccountPage() {
   const router = useRouter();
@@ -130,6 +130,7 @@ export default function AccountPage() {
       <div className="stack" style={{ marginTop: 16 }}>
         <Link href="/me/tickets" className="card tight row gap"><Ticket className="ico" /><span className="grow strong">{tr(lang, "Мої квитки", "My tickets")}</span><ChevronRight className="ico sm subtle" /></Link>
         <Link href="/organizer" className="card tight row gap"><LayoutGrid className="ico" /><span className="grow strong">{tr(lang, "Мої події", "My events")}</span><ChevronRight className="ico sm subtle" /></Link>
+        <Link href={`/u/${me.id}`} className="card tight row gap"><Eye className="ico" /><span className="grow strong">{tr(lang, "Як мене бачать інші", "How others see me")}</span><ChevronRight className="ico sm subtle" /></Link>
       </div>
 
       {error && <div className="alert error" style={{ marginTop: 16 }}>{error}</div>}

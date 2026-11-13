@@ -316,14 +316,17 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
             <section className="section card">
               <div className="muted xs strong" style={{ textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>{tr(lang, "Організатор", "Organiser")}</div>
               <div className="organizer-card">
-                <span className="avatar lg">{organizer.avatar_url ? <img src={organizer.avatar_url} alt="" /> : initials(organizer.name)}</span>
-                <div className="grow">
-                  <div className="strong">{organizer.name}{organizer.verified && <CircleCheck className="ico sm" style={{ color: "var(--accent-fg)", marginLeft: 6, verticalAlign: -3 }} aria-label={tr(lang, "перевірений", "verified")} />}</div>
-                  <div className="muted small">
-                    {tp(lang, organizer.events_count, { one: "{n} подія", few: "{n} події", many: "{n} подій" }, { one: "{n} event", other: "{n} events" })}
-                    {organizer.rating_avg != null && <> · ★ {organizer.rating_avg.toFixed(1)}</>}
-                  </div>
-                </div>
+                {/* The organiser's public page (TASK-305): photo and name together are one link. */}
+                <Link href={`/u/${organizer.id}`} className="organizer-link grow">
+                  <span className="avatar lg">{organizer.avatar_url ? <img src={organizer.avatar_url} alt="" /> : initials(organizer.name)}</span>
+                  <span className="grow" style={{ minWidth: 0 }}>
+                    <span className="strong" style={{ display: "block" }}>{organizer.name}{organizer.verified && <CircleCheck className="ico sm" style={{ color: "var(--accent-fg)", marginLeft: 6, verticalAlign: -3 }} aria-label={tr(lang, "перевірений", "verified")} />}</span>
+                    <span className="muted small" style={{ display: "block" }}>
+                      {tp(lang, organizer.events_count, { one: "{n} подія", few: "{n} події", many: "{n} подій" }, { one: "{n} event", other: "{n} events" })}
+                      {organizer.rating_avg != null && <> · ★ {organizer.rating_avg.toFixed(1)}</>}
+                    </span>
+                  </span>
+                </Link>
                 {!isOwner && (
                   <Link className="btn secondary sm" href={me ? `/inbox?to=${organizer.id}&about=${eventId}` : `/login?next=${encodeURIComponent(`/inbox?to=${organizer.id}&about=${eventId}`)}`}>
                     <MessageCircle className="ico sm" />{tr(lang, "Написати", "Message")}

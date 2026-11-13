@@ -4,6 +4,7 @@ import type { Metadata, Viewport } from "next";
 import { Onest } from "next/font/google";
 import TopNav from "./components/TopNav";
 import Footer from "./components/Footer";
+import NoZoom from "./components/NoZoom";
 import { LangProvider } from "../lib/i18n";
 import { SessionProvider } from "../lib/session";
 
@@ -28,8 +29,9 @@ export const metadata: Metadata = {
 };
 
 // Owner's request (TASK-304): on phones the page keeps its size, no pinch or double-tap zoom. Known cost: people
-// with low vision cannot zoom in (WCAG 1.4.4); iOS Safari ignores user-scalable=no and still allows pinch. Fields
-// are 16 px on phones (globals.css), so iOS no longer zooms in when one is focused.
+// with low vision cannot zoom in (WCAG 1.4.4); iOS Safari ignores user-scalable=no and still allows pinch, so
+// <NoZoom /> blocks the pinch by script (TASK-305). Fields are 16 px on phones (globals.css), so iOS no longer zooms
+// in when one is focused.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
@@ -45,6 +47,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <LangProvider>
           <SessionProvider>
+            <NoZoom />
             <TopNav />
             {children}
             <Footer />

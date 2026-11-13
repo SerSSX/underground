@@ -613,5 +613,30 @@
   "пошта тимчасово недоступна, спробуйте пізніше": "e-posta geçici olarak kullanılamıyor, daha sonra tekrar dene",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "görsel işlenemeyecek kadar karmaşık — JPEG olarak kaydet ya da küçült",
   "забагато завантажень одночасно, спробуйте за хвилину": "aynı anda çok fazla yükleme var, bir dakika sonra tekrar dene",
-  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "yükleme çok uzun sürüyor — bağlantını kontrol edip tekrar dene"
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "yükleme çok uzun sürüyor — bağlantını kontrol edip tekrar dene",
+  "Як мене бачать інші": "Başkaları beni nasıl görüyor",
+  "Профіль: {name}": "Profil: {name}",
+  "Квиток: {title}": "Bilet: {title}",
+  "Збережено: {title}": "Kaydedildi: {title}",
+  "Почати розмову": "Sohbet başlat",
+  "Організатори подій, на які ви йдете або які зберегли.": "Katılacağın veya kaydettiğin etkinliklerin organizatörleri.",
+  "Такого профілю немає": "Profil bulunamadı",
+  "Можливо, посилання застаріло або акаунт видалено.": "Bağlantının süresi dolmuş ya da hesap silinmiş olabilir.",
+  "{n} підписник": {
+    "one": "{n} takipçi",
+    "other": "{n} takipçi"
+  },
+  "{n} відгук": {
+    "one": "{n} yorum",
+    "other": "{n} yorum"
+  },
+  "Це ваш профіль": "Bu senin profilin",
+  "Ви підписані": "Takip ediliyor",
+  "Підписатися": "Takip et",
+  "Найближчі події": "Yaklaşan etkinlikler",
+  "Найближчих подій немає.": "Yaklaşan etkinlik yok.",
+  "Минула подія: {n}": {
+    "one": "Geçmiş etkinlik: {n}",
+    "other": "Geçmiş etkinlikler: {n}"
+  }
 }

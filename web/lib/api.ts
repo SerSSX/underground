@@ -708,19 +708,44 @@ export const EVENT_CATEGORIES = [
 ];
 
 // ---- public profiles ----
+/** A user id as the API issues it (UUID). Ids from a URL are checked with this before they go into an API path,
+ *  so a crafted `/u/..%2Fadmin` can never reach another endpoint with the visitor's token. */
+export function isUuid(id: string | null | undefined): id is string {
+  return !!id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
+/** `GET /api/users/:id`: public fields only, no email (api/src/social.rs). */
 export interface PublicProfile {
   id: string;
   name: string;
+  role?: string;
   avatar_url: string | null;
   bio: string | null;
   is_organizer: boolean;
   verified: boolean;
+  followers_count?: number;
+  following_count?: number;
   events_count: number;
   rating_avg: number | null;
   rating_count: number;
+  /** Whether the signed-in caller follows this user; false for anonymous callers. */
+  is_following?: boolean;
+}
+function userPath(id: string, rest = ""): string {
+  if (!isUuid(id)) throw new ApiError(404, "Не знайдено");
+  return `/api/users/${id}${rest}`;
 }
 export async function getProfile(id: string): Promise<PublicProfile> {
-  return apiGet<PublicProfile>(`/api/users/${id}`);
+  return apiGet<PublicProfile>(userPath(id));
+}
+/** The user's published events, all dates, soonest first. */
+export async function userEvents(id: string): Promise<EventDto[]> {
+  return apiGet<EventDto[]>(userPath(id, "/events"));
+}
+export async function followUser(id: string): Promise<void> {
+  await apiSend("POST", userPath(id, "/follow"));
+}
+export async function unfollowUser(id: string): Promise<void> {
+  await apiSend("DELETE", userPath(id, "/follow"));
 }
 
 // ---- direct messages ----

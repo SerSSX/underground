@@ -5,13 +5,14 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getEvent, getToken, errorMessage,
-  type NotificationDto, type ConversationDto, type MessageDto,
+  isUuid, type NotificationDto, type ConversationDto, type MessageDto,
 } from "../../lib/api";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import { initials, shortWhen, timeOf } from "../../lib/ui";
 import { isNearBottom } from "../../lib/chat-scroll.mjs";
 import { ChevronLeft, MessageCircle, Send, Bell } from "../components/Icon";
+import StartChats from "./StartChats";
 
 type Peer = { id: string; name: string; avatar: string | null };
 
@@ -29,6 +30,10 @@ function InboxInner() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  // The "About «title»: " text put in the field when the chat is opened from an event; while the field still holds
+  // exactly that, focusing it puts the caret at the end so typing continues the sentence.
+  const prefill = useRef<string | null>(null);
   // Whether the reader is at (within 80 px of) the newest message. Kept up to date on every scroll of the list,
   // so a keyboard opening or closing only follows the newest message for someone who was already there.
   const nearBottom = useRef(true);
@@ -37,30 +42,46 @@ function InboxInner() {
 
   useEffect(() => {
     if (!getToken()) {
-      router.replace(`/login?next=${encodeURIComponent("/inbox" + (params.get("to") ? `?to=${params.get("to")}` : ""))}`);
+      // Keep the deep link (who, and which event) through sign-in.
+      const keep = new URLSearchParams();
+      for (const k of ["to", "about"]) { const v = params.get(k); if (isUuid(v)) keep.set(k, v); }
+      const q = keep.toString();
+      router.replace(`/login?next=${encodeURIComponent("/inbox" + (q ? `?${q}` : ""))}`);
       return;
     }
     void loadConvs();
     myNotifications().then(setAlerts).catch(() => setAlerts([]));
   }, [router, params, loadConvs]);
 
-  // Deep link from an event page: /inbox?to=<organizer id> opens (or starts) that conversation.
-  const applied = useRef(false);
+  // Deep link from an event page, a profile or the "start a conversation" list: /inbox?to=<user id>&about=<event id>
+  // opens (or starts) that conversation. The key of the last link applied is kept until the URL drops it, so the
+  // same page can open a second deep link later (the start list links back to /inbox).
+  const applied = useRef<string | null>(null);
   useEffect(() => {
     const to = params.get("to");
-    if (!to || !convs || applied.current) return;
-    applied.current = true;
-    router.replace("/inbox");
-    if (!/^[0-9a-f-]{36}$/i.test(to)) return; // only a user id, never a path into the API
+    if (!to) { applied.current = null; return; }
     const about = params.get("about");
-    if (about && /^[0-9a-f-]{36}$/i.test(about)) {
+    const key = `${to}|${about ?? ""}`;
+    if (!convs || applied.current === key) return;
+    applied.current = key;
+    router.replace("/inbox");
+    if (!isUuid(to)) return; // only a user id, never a path into the API
+    if (me && to === me.id) return; // nobody writes to themselves (the API refuses it too)
+    if (isUuid(about)) {
       // Start the message with the event it is about, so the organiser knows the context.
-      getEvent(about).then((ev) => setText((t) => t || tf(lang, "Щодо «{title}»: ", "About “{title}”: ", { title: ev.title }))).catch(() => {});
+      getEvent(about).then((ev) => {
+        const start = tf(lang, "Щодо «{title}»: ", "About “{title}”: ", { title: ev.title });
+        setText((t) => {
+          if (t) return t;
+          prefill.current = start;
+          return start;
+        });
+      }).catch(() => {});
     }
     const c = convs.find((x) => x.peer_id === to);
     if (c) setPeer({ id: c.peer_id, name: c.peer_name, avatar: c.peer_avatar });
     else getProfile(to).then((p) => setPeer({ id: p.id, name: p.name, avatar: p.avatar_url })).catch(() => {});
-  }, [params, convs]);
+  }, [params, convs, me, lang, router]);
 
   useEffect(() => {
     setMsgs([]);
@@ -119,6 +140,7 @@ function InboxInner() {
     setError(null);
     // Clear at once, so what the user types while this one is in flight is kept (TASK-304 DEV check).
     setText("");
+    prefill.current = null;
     try {
       const m = await sendMessage(peer.id, body);
       setMsgs((prev) => [...prev, m]);
@@ -132,7 +154,30 @@ function InboxInner() {
     }
   }
 
+  // Send button and the keyboard's Send key both land here. The field is focused again synchronously, inside the
+  // tap's own event and before any await: iOS only lets a script focus a field (and keep the keyboard up) from a
+  // user gesture. The button used to keep focus with pointerdown preventDefault, which in WebKit with touch also
+  // swallowed the tap, so the button did nothing on iPhones (TASK-305).
+  function onCompose(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    input.current?.focus();
+    void send();
+  }
+
+  // Caret to the end of an untouched prefill. Deferred one tick: on a phone the tap places the caret where the finger
+  // landed right after focus, which would otherwise win.
+  function onFieldFocus(e: React.FocusEvent<HTMLInputElement>) {
+    const el = e.currentTarget;
+    if (prefill.current !== null && el.value === prefill.current) {
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      setTimeout(() => { if (document.activeElement === el && el.value === prefill.current) el.setSelectionRange(end, end); }, 0);
+    }
+    setTimeout(toNewest, 300);
+  }
+
   const unreadAlerts = alerts?.filter((n) => !n.read).length ?? 0;
+  const peerIds = new Set((convs ?? []).map((c) => c.peer_id));
 
   return (
     <main className="container">
@@ -147,15 +192,19 @@ function InboxInner() {
         convs === null ? (
           <div className="skeleton" style={{ height: 420 }} />
         ) : convs.length === 0 && !peer ? (
-          <div className="empty">
-            <div className="ei"><MessageCircle className="ico lg" /></div>
-            <h3>{tr(lang, "Поки без розмов", "No conversations yet")}</h3>
-            <p>{tr(lang, "Маєте питання до організатора? Натисніть «Написати» на сторінці події.", "Got a question for an organiser? Tap Message on the event page.")}</p>
-            <Link className="btn" href="/">{tr(lang, "До афіші", "Browse events")}</Link>
-          </div>
+          <>
+            <StartChats meId={me?.id ?? null} skip={peerIds} variant="card" />
+            <div className="empty">
+              <div className="ei"><MessageCircle className="ico lg" /></div>
+              <h3>{tr(lang, "Поки без розмов", "No conversations yet")}</h3>
+              <p>{tr(lang, "Маєте питання до організатора? Натисніть «Написати» на сторінці події.", "Got a question for an organiser? Tap Message on the event page.")}</p>
+              <Link className="btn" href="/">{tr(lang, "До афіші", "Browse events")}</Link>
+            </div>
+          </>
         ) : (
           <div className={`chat-layout ${peer ? "has-thread" : ""}`}>
             <div className="chat-list">
+              <StartChats meId={me?.id ?? null} skip={peerIds} variant="list" />
               {convs.map((c) => (
                 <button key={c.peer_id} className={`chat-item ${peer?.id === c.peer_id ? "active" : ""}`} onClick={() => setPeer({ id: c.peer_id, name: c.peer_name, avatar: c.peer_avatar })}>
                   <span className="avatar">{c.peer_avatar ? <img src={c.peer_avatar} alt="" /> : initials(c.peer_name)}</span>
@@ -172,8 +221,10 @@ function InboxInner() {
                 <>
                   <div className="chat-head">
                     <button className="btn quiet icon sm" onClick={() => setPeer(null)} aria-label={tr(lang, "До списку", "Back to list")}><ChevronLeft className="ico" /></button>
-                    <span className="avatar sm">{peer.avatar ? <img src={peer.avatar} alt="" /> : initials(peer.name)}</span>
-                    <span className="strong">{peer.name}</span>
+                    <Link href={`/u/${peer.id}`} className="chat-peer" aria-label={tf(lang, "Профіль: {name}", "Profile: {name}", { name: peer.name })}>
+                      <span className="avatar sm">{peer.avatar ? <img src={peer.avatar} alt="" /> : initials(peer.name)}</span>
+                      <span className="strong">{peer.name}</span>
+                    </Link>
                   </div>
                   <div className="chat-msgs" aria-live="polite" ref={list} onScroll={(e) => { const el = e.currentTarget; nearBottom.current = isNearBottom(el.scrollHeight, el.scrollTop, el.clientHeight); }}>
                     {msgs.length === 0 && <p className="muted small" style={{ textAlign: "center", marginTop: 20 }}>{tr(lang, "Напишіть перше повідомлення — організатор побачить його тут.", "Write the first message — the organiser will see it here.")}</p>}
@@ -183,10 +234,11 @@ function InboxInner() {
                       </div>
                     ))}
                   </div>
-                  <form className="chat-compose" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+                  <form className="chat-compose" onSubmit={onCompose}>
                     <label className="sr-only" htmlFor="msg">{tr(lang, "Повідомлення", "Message")}</label>
-                    <input id="msg" className="input" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} onFocus={() => setTimeout(toNewest, 300)} placeholder={tr(lang, "Повідомлення…", "Message…")} autoComplete="off" enterKeyHint="send" />
-                    <button className="btn icon" disabled={sending || !text.trim()} aria-label={tr(lang, "Надіслати", "Send")} onPointerDown={(e) => e.preventDefault()}><Send className="ico sm" /></button>
+                    <input id="msg" ref={input} className="input" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} onFocus={onFieldFocus} placeholder={tr(lang, "Повідомлення…", "Message…")} autoComplete="off" enterKeyHint="send" />
+                    {/* Disabled only while empty: a disabled default button also blocks the keyboard's Send key. */}
+                    <button type="submit" className="btn icon" disabled={!text.trim()} aria-label={tr(lang, "Надіслати", "Send")} title={tr(lang, "Надіслати", "Send")}><Send className="ico sm" aria-hidden /></button>
                   </form>
                 </>
               ) : (

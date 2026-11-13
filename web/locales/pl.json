@@ -628,5 +628,33 @@
   "пошта тимчасово недоступна, спробуйте пізніше": "poczta jest chwilowo niedostępna, spróbuj później",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "obraz jest zbyt złożony do przetworzenia — zapisz go jako JPEG albo zmniejsz",
   "забагато завантажень одночасно, спробуйте за хвилину": "zbyt wiele przesyłanych plików naraz, spróbuj za minutę",
-  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "przesyłanie trwa zbyt długo — sprawdź połączenie i spróbuj ponownie"
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "przesyłanie trwa zbyt długo — sprawdź połączenie i spróbuj ponownie",
+  "Як мене бачать інші": "Jak widzą mnie inni",
+  "Профіль: {name}": "Profil: {name}",
+  "Квиток: {title}": "Bilet: {title}",
+  "Збережено: {title}": "Zapisane: {title}",
+  "Почати розмову": "Rozpocznij rozmowę",
+  "Організатори подій, на які ви йдете або які зберегли.": "Organizatorzy wydarzeń, na które idziesz lub które zapisałeś.",
+  "Такого профілю немає": "Nie znaleziono profilu",
+  "Можливо, посилання застаріло або акаунт видалено.": "Link mógł wygasnąć albo konto zostało usunięte.",
+  "{n} підписник": {
+    "one": "{n} obserwujący",
+    "few": "{n} obserwujących",
+    "many": "{n} obserwujących"
+  },
+  "{n} відгук": {
+    "one": "{n} opinia",
+    "few": "{n} opinie",
+    "many": "{n} opinii"
+  },
+  "Це ваш профіль": "To twój profil",
+  "Ви підписані": "Obserwujesz",
+  "Підписатися": "Obserwuj",
+  "Найближчі події": "Nadchodzące wydarzenia",
+  "Найближчих подій немає.": "Brak nadchodzących wydarzeń.",
+  "Минула подія: {n}": {
+    "one": "Minione wydarzenie: {n}",
+    "few": "Minione wydarzenia: {n}",
+    "many": "Minione wydarzenia: {n}"
+  }
 }

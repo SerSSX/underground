@@ -613,5 +613,30 @@
   "пошта тимчасово недоступна, спробуйте пізніше": "l'e-mail est temporairement indisponible, réessayez plus tard",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "l'image est trop complexe à traiter — enregistrez-la en JPEG ou réduisez sa taille",
   "забагато завантажень одночасно, спробуйте за хвилину": "trop d'envois en même temps, réessayez dans une minute",
-  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "l'envoi prend trop de temps — vérifiez votre connexion et réessayez"
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "l'envoi prend trop de temps — vérifiez votre connexion et réessayez",
+  "Як мене бачать інші": "Comment les autres me voient",
+  "Профіль: {name}": "Profil : {name}",
+  "Квиток: {title}": "Billet : {title}",
+  "Збережено: {title}": "Enregistré : {title}",
+  "Почати розмову": "Démarrer une conversation",
+  "Організатори подій, на які ви йдете або які зберегли.": "Les organisateurs des événements auxquels vous allez ou que vous avez enregistrés.",
+  "Такого профілю немає": "Profil introuvable",
+  "Можливо, посилання застаріло або акаунт видалено.": "Le lien est peut-être périmé, ou le compte a été supprimé.",
+  "{n} підписник": {
+    "one": "{n} abonné",
+    "other": "{n} abonnés"
+  },
+  "{n} відгук": {
+    "one": "{n} avis",
+    "other": "{n} avis"
+  },
+  "Це ваш профіль": "C’est votre profil",
+  "Ви підписані": "Abonné",
+  "Підписатися": "Suivre",
+  "Найближчі події": "Événements à venir",
+  "Найближчих подій немає.": "Aucun événement à venir.",
+  "Минула подія: {n}": {
+    "one": "Événement passé : {n}",
+    "other": "Événements passés : {n}"
+  }
 }

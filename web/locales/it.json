@@ -613,5 +613,30 @@
   "пошта тимчасово недоступна, спробуйте пізніше": "l'email è temporaneamente non disponibile, riprova più tardi",
   "зображення надто складне для обробки — збережіть як JPEG або зменште розмір": "l'immagine è troppo complessa da elaborare: salvala come JPEG o riducine le dimensioni",
   "забагато завантажень одночасно, спробуйте за хвилину": "troppi caricamenti contemporaneamente, riprova tra un minuto",
-  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "il caricamento sta impiegando troppo tempo: controlla la connessione e riprova"
+  "завантаження триває надто довго — перевірте з'єднання і спробуйте ще раз": "il caricamento sta impiegando troppo tempo: controlla la connessione e riprova",
+  "Як мене бачать інші": "Come mi vedono gli altri",
+  "Профіль: {name}": "Profilo: {name}",
+  "Квиток: {title}": "Biglietto: {title}",
+  "Збережено: {title}": "Salvato: {title}",
+  "Почати розмову": "Inizia una conversazione",
+  "Організатори подій, на які ви йдете або які зберегли.": "Organizzatori degli eventi a cui partecipi o che hai salvato.",
+  "Такого профілю немає": "Profilo non trovato",
+  "Можливо, посилання застаріло або акаунт видалено.": "Il link potrebbe essere scaduto, oppure l'account è stato eliminato.",
+  "{n} підписник": {
+    "one": "{n} follower",
+    "other": "{n} follower"
+  },
+  "{n} відгук": {
+    "one": "{n} recensione",
+    "other": "{n} recensioni"
+  },
+  "Це ваш профіль": "Questo è il tuo profilo",
+  "Ви підписані": "Segui già",
+  "Підписатися": "Segui",
+  "Найближчі події": "Prossimi eventi",
+  "Найближчих подій немає.": "Nessun evento in programma.",
+  "Минула подія: {n}": {
+    "one": "Evento passato: {n}",
+    "other": "Eventi passati: {n}"
+  }
 }
