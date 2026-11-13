@@ -80,6 +80,7 @@ export const SERVER_MESSAGES = {
   "пароль задовгий (до 256 символів)": "the password is too long (up to 256 characters)",
   "файл не є зображенням JPEG, PNG або WebP": "the file is not a JPEG, PNG or WebP image",
   "зображення завелике: до 32 мегапікселів": "the image is too large: up to 32 megapixels",
+  "пошта тимчасово недоступна, спробуйте пізніше": "mail is temporarily unavailable, try again later",
 };
 
 /** Server texts with numbers in them: the regex captures the values, in the order of `vars`. */

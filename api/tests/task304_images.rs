@@ -142,10 +142,17 @@ fn crc32(data: &[u8]) -> u32 {
 
 /// A valid tiny RGB PNG whose header claims `w`×`h` pixels (a decompression bomb's shape).
 fn png_claiming(w: u32, h: u32) -> Vec<u8> {
+    png_claiming_as(w, h, 8, 2)
+}
+
+/// The same with a given bit depth and colour type (2 = RGB, 6 = RGBA).
+fn png_claiming_as(w: u32, h: u32, depth: u8, color_type: u8) -> Vec<u8> {
     let mut png = picture(1, 1, ImageFormat::Png);
     assert_eq!(&png[12..16], b"IHDR");
     png[16..20].copy_from_slice(&w.to_be_bytes());
     png[20..24].copy_from_slice(&h.to_be_bytes());
+    png[24] = depth;
+    png[25] = color_type;
     let crc = crc32(&png[12..29]);
     png[29..33].copy_from_slice(&crc.to_be_bytes());
     png
@@ -233,8 +240,8 @@ async fn non_images_are_refused_whatever_their_name(pool: PgPool) {
 async fn too_many_pixels_are_refused_before_decoding(pool: PgPool) {
     let app = make_app(pool);
     let token = register_token(&app).await;
-    // 6000×6000 = 36 MP: over the 32 MP cap, yet its RGB buffer (108 MB) is under the decoder's
-    // allocation cap, so only the pixel check can be what refuses it.
+    // 6000×6000 = 36 MP: over the 32 MP cap. Only the pixel check refuses it with the pixel message
+    // (the memory estimate would refuse it too, but runs after it).
     let bomb = png_claiming(6000, 6000);
     assert!(bomb.len() < 200, "a tiny file");
     let (status, v) = send(&app, upload_req(&token, "bomb.png", "image/png", &bomb)).await;
@@ -282,4 +289,79 @@ fn transparency_is_kept() {
     let back = image::load_from_memory_with_format(&out.large, ImageFormat::WebP).unwrap();
     assert!(back.color().has_alpha());
     assert!(back.get_pixel(5, 5)[3] < 10 && back.get_pixel(60, 5)[3] > 245);
+}
+
+/// A real 16×16 progressive 4:4:4 JPEG whose frame header (SOF2) is rewritten to claim `w`×`h`.
+fn progressive_jpeg_claiming(w: u16, h: u16) -> Vec<u8> {
+    let mut j = include_bytes!("fixtures/progressive_444_16px.jpg").to_vec();
+    let at = j.windows(2).position(|m| m == [0xFF, 0xC2]).expect("SOF2");
+    j[at + 5..at + 7].copy_from_slice(&h.to_be_bytes());
+    j[at + 7..at + 9].copy_from_slice(&w.to_be_bytes());
+    j
+}
+
+/// Review item 2: what a decode would hold is bounded from the header, before any allocation —
+/// pixels under the 32 MP cap are not enough when the bytes per pixel or the decoder's own
+/// buffers would blow the API's memory.
+#[sqlx::test(migrations = "./migrations")]
+async fn memory_heavy_pictures_under_the_pixel_cap_are_refused(pool: PgPool) {
+    let app = make_app(pool);
+    let token = register_token(&app).await;
+    let too_large = "зображення завелике: до 32 мегапікселів";
+    // 16-bit RGBA at 5656 × 5656 (31.99 MP): a 256 MB pixel buffer from a ~100-byte file.
+    let png16 = png_claiming_as(5656, 5656, 16, 6);
+    let (status, v) = send(&app, upload_req(&token, "deep.png", "image/png", &png16)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(v["error"], too_large, "[SEC] 16-bit RGBA at the pixel cap");
+    // Progressive 4:4:4 JPEG at 6530 × 4900 (32 MP): 96 MB of pixels plus 192 MB of coefficients.
+    let prog = progressive_jpeg_claiming(6530, 4900);
+    let (status, v) = send(&app, upload_req(&token, "prog.jpg", "image/jpeg", &prog)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(v["error"], too_large, "[SEC] progressive JPEG at the pixel cap");
+    // 8-bit RGBA at 32 MP also needs more than the budget.
+    assert_eq!(
+        process(&png_claiming_as(6530, 4900, 8, 6)).err(),
+        Some(Reject::TooLarge)
+    );
+    // An 8-bit RGB PNG at 32 MP is within the budget (and then fails on its missing pixel data).
+    assert_eq!(process(&png_claiming(6530, 4900)).err(), Some(Reject::NotImage));
+    // The real progressive fixture itself decodes.
+    assert!(process(include_bytes!("fixtures/progressive_444_16px.jpg")).is_ok());
+}
+
+#[test]
+fn jpeg_coefficient_estimate() {
+    use underground_api::uploads::jpeg_coefficient_bytes;
+    // 4:4:4 progressive: 3 components × blocks × 64 × 2 bytes.
+    assert_eq!(
+        jpeg_coefficient_bytes(&progressive_jpeg_claiming(6530, 4900)),
+        Some(817 * 613 * 3 * 128)
+    );
+    assert_eq!(
+        jpeg_coefficient_bytes(include_bytes!("fixtures/progressive_444_16px.jpg")),
+        Some(2 * 2 * 3 * 128)
+    );
+    assert_eq!(
+        jpeg_coefficient_bytes(&picture(64, 64, ImageFormat::Jpeg)),
+        Some(0),
+        "baseline holds none"
+    );
+    assert_eq!(jpeg_coefficient_bytes(b"\xFF\xD8\xFF"), None);
+    assert_eq!(jpeg_coefficient_bytes(b"not a jpeg"), None);
+}
+
+/// Peak-memory measurement (TASK-304 review), not part of the suite. Run the test binary under
+/// `/usr/bin/time -l` with `UG_MEASURE_FILE=<picture>` (and `UG_MEASURE_BUDGET=<bytes>` to lift the
+/// decode budget) and read "maximum resident set size".
+#[test]
+#[ignore]
+fn measure_decode_peak() {
+    let path = std::env::var("UG_MEASURE_FILE").expect("UG_MEASURE_FILE");
+    let budget = std::env::var("UG_MEASURE_BUDGET")
+        .ok()
+        .and_then(|b| b.parse().ok())
+        .unwrap_or(underground_api::uploads::DECODE_BUDGET);
+    let data = std::fs::read(path).unwrap();
+    let out = underground_api::uploads::process_with_budget(&data, budget);
+    println!("MEASURE result: {:?}", out.map(|p| (p.width, p.height)));
 }

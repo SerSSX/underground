@@ -444,6 +444,8 @@ async fn reset_password_bumps_watermark_and_invalidates_all_tokens(pool: PgPool)
         .await
         .unwrap();
     assert!(bumped, "reset bumps tokens_valid_after");
+    // That a token from the very second of the reset is rejected too (the watermark goes to the next
+    // whole second) is proven by tests/task304_password.rs::a_reset_kills_a_token_from_the_same_second.
 }
 
 #[sqlx::test(migrations = "./migrations")]

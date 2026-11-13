@@ -10,6 +10,7 @@ import {
 import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import { initials, shortWhen, timeOf } from "../../lib/ui";
+import { isNearBottom } from "../../lib/chat-scroll.mjs";
 import { ChevronLeft, MessageCircle, Send, Bell } from "../components/Icon";
 
 type Peer = { id: string; name: string; avatar: string | null };
@@ -28,6 +29,9 @@ function InboxInner() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
+  // Whether the reader is at (within 80 px of) the newest message. Kept up to date on every scroll of the list,
+  // so a keyboard opening or closing only follows the newest message for someone who was already there.
+  const nearBottom = useRef(true);
 
   const loadConvs = useCallback(() => myConversations().then(setConvs).catch((e) => { setError(errorMessage(e)); setConvs([]); }), []);
 
@@ -85,8 +89,10 @@ function InboxInner() {
     const fit = () => {
       root.style.setProperty("--vv-h", `${Math.round(vv ? vv.height : window.innerHeight)}px`);
       root.style.setProperty("--vv-top", `${Math.round(vv ? vv.offsetTop : 0)}px`);
-      toNewest();
+      // Only someone already at the newest message is kept there; a reader of older messages stays put.
+      if (nearBottom.current) toNewest();
     };
+    nearBottom.current = true; // a conversation opens at its newest message
     fit();
     root.classList.add("chat-open");
     vv?.addEventListener("resize", fit);
@@ -166,7 +172,7 @@ function InboxInner() {
                     <span className="avatar sm">{peer.avatar ? <img src={peer.avatar} alt="" /> : initials(peer.name)}</span>
                     <span className="strong">{peer.name}</span>
                   </div>
-                  <div className="chat-msgs" aria-live="polite" ref={list}>
+                  <div className="chat-msgs" aria-live="polite" ref={list} onScroll={(e) => { const el = e.currentTarget; nearBottom.current = isNearBottom(el.scrollHeight, el.scrollTop, el.clientHeight); }}>
                     {msgs.length === 0 && <p className="muted small" style={{ textAlign: "center", marginTop: 20 }}>{tr(lang, "Напишіть перше повідомлення — організатор побачить його тут.", "Write the first message — the organiser will see it here.")}</p>}
                     {msgs.map((m) => (
                       <div key={m.id} className={`bubble ${m.sender_id === me?.id ? "mine" : "theirs"}`}>

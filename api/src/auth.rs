@@ -86,9 +86,10 @@ pub(crate) fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
 }
 
+/// One plain address (TASK-304 review): an account email later receives reset mail, so it must
+/// never name several recipients (`a@x.co,b@y.co`) or carry a display name.
 fn validate_email(email: &str) -> bool {
-    let e = email.trim();
-    e.len() >= 3 && e.contains('@') && !e.contains(' ')
+    crate::mail::is_single_address(email.trim())
 }
 
 #[derive(Deserialize)]

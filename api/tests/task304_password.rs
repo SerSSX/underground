@@ -432,3 +432,89 @@ async fn a_token_from_the_same_second_as_the_change_is_rejected(pool: PgPool) {
     let (st, _) = send(&app, build("GET", "/api/me", Some(&token), None)).await;
     assert_eq!(st, StatusCode::OK);
 }
+
+/// Review item 1: a reset signs out a token minted in the very second of the reset, too.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_reset_kills_a_token_from_the_same_second(pool: PgPool) {
+    let app = make_app(pool.clone());
+    register(&app, "rs@x.co", "password1").await;
+    let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = 'rs@x.co'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let mut checked = false;
+    for round in 0..4 {
+        let raw = format!("same-second-{round}");
+        sqlx::query("INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '20 minutes')")
+            .bind(id)
+            .bind(underground_api::passwords::token_hash(&raw))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let wait = 1_000 - i64::from(Utc::now().timestamp_subsec_millis()) + 20;
+        tokio::time::sleep(std::time::Duration::from_millis(wait as u64)).await;
+        let before = Utc::now().timestamp();
+        let (st, _) = send(
+            &app,
+            build(
+                "POST",
+                "/api/auth/reset-password",
+                None,
+                Some(json!({"token": raw, "password": format!("resetpw-{round}")})),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        let after = Utc::now().timestamp();
+        if before == after {
+            // iat = the floored second of the reset (what `floor(watermark)` was before the fix).
+            let same_second = token_with_iat(&id.to_string(), before);
+            let (st, _) = send(&app, build("GET", "/api/me", Some(&same_second), None)).await;
+            assert_eq!(
+                st,
+                StatusCode::UNAUTHORIZED,
+                "[SEC] a token minted in the second of the reset is dead"
+            );
+            let next_second = token_with_iat(&id.to_string(), before + 1);
+            let (st, _) = send(&app, build("GET", "/api/me", Some(&next_second), None)).await;
+            assert_eq!(st, StatusCode::OK, "a sign-in after the reset works");
+            checked = true;
+            break;
+        }
+    }
+    assert!(checked, "the reset never fitted in one second; the check did not run");
+}
+
+/// Review item 6: the bounds count characters, not bytes.
+#[sqlx::test(migrations = "./migrations")]
+async fn password_bounds_count_characters(pool: PgPool) {
+    let app = make_app(pool);
+    let token = register(&app, "chars@x.co", "password1").await;
+    let (st, _) = send(
+        &app,
+        build(
+            "POST",
+            "/api/me/password",
+            Some(&token),
+            Some(json!({"current": "password1", "new": "ж".repeat(4)})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "4 characters (8 bytes) is too short"
+    );
+    let (st, v) = send(
+        &app,
+        build(
+            "POST",
+            "/api/me/password",
+            Some(&token),
+            Some(json!({"current": "password1", "new": "ж".repeat(200)})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "200 characters (400 bytes) is accepted: {v}");
+    assert_eq!(login(&app, "chars@x.co", &"ж".repeat(200)).await, StatusCode::OK);
+}

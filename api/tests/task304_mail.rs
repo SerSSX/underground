@@ -34,7 +34,9 @@ fn captured() -> &'static Mutex<Vec<Captured>> {
     C.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Start the stub once; returns its base URL. Recipients starting with "fail" get HTTP 500.
+/// Start the stub once; returns its base URL. Recipients starting with "fail" get HTTP 500; those
+/// starting with "slow" are answered after 3 s. One thread per connection, so a slow mail does not
+/// hold up the other tests.
 fn stub() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| {
@@ -42,7 +44,18 @@ fn stub() -> &'static str {
         let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
+                let Ok(stream) = stream else { continue };
+                std::thread::spawn(move || serve_one(stream));
+            }
+        });
+        url
+    })
+}
+
+fn serve_one(mut stream: std::net::TcpStream) {
+    {
+        {
+            {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
@@ -67,7 +80,14 @@ fn stub() -> &'static str {
                 reader.read_exact(&mut buf).unwrap();
                 let body: Value = serde_json::from_slice(&buf).unwrap_or(Value::Null);
                 let fail = body["to"][0].as_str().is_some_and(|t| t.starts_with("fail"));
-                captured().lock().unwrap().push(Captured { authorization: auth, idempotency_key: idem, body });
+                if body["to"][0].as_str().is_some_and(|t| t.starts_with("slow")) {
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+                captured().lock().unwrap().push(Captured {
+                    authorization: auth,
+                    idempotency_key: idem,
+                    body,
+                });
                 let (status, out) = if !path_ok {
                     ("404 Not Found", "{}")
                 } else if fail {
@@ -81,9 +101,8 @@ fn stub() -> &'static str {
                     out.len()
                 );
             }
-        });
-        url
-    })
+        }
+    }
 }
 
 fn make_app(pool: PgPool) -> Router {
@@ -413,4 +432,135 @@ async fn a_failing_resend_is_retried_twice_with_one_idempotency_key(pool: PgPool
     );
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_eq!(mails_to("fail@x.co", 4).await.len(), 3, "bounded: no 4th attempt");
+}
+
+/// Review item 8: the answer never waits on Resend — a stub that takes 3 s still gets a 204 in < 1 s.
+#[sqlx::test(migrations = "./migrations")]
+async fn the_answer_does_not_wait_for_a_slow_resend(pool: PgPool) {
+    let app = make_app(pool);
+    register(&app, "slow@x.co", "en").await;
+    let t = std::time::Instant::now();
+    let (st, _, _) = forgot(&app, "slow@x.co", "198.51.100.8").await;
+    let took = t.elapsed();
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert!(took < Duration::from_secs(1), "answered in {took:?}");
+    assert_eq!(mails_to("slow@x.co", 1).await.len(), 1, "the mail still went out");
+}
+
+/// Review item 4: the daily budget. Spent → 503 for a known and an unknown address alike, from
+/// both mail endpoints; nothing is claimed as sent.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_spent_daily_budget_answers_503_for_any_address(pool: PgPool) {
+    let app = make_app(pool.clone());
+    register(&app, "budget@x.co", "en").await;
+    // 79 of the default 80 slots used today.
+    sqlx::query("INSERT INTO mail_sends (to_hash) SELECT md5(g::text) FROM generate_series(1, 79) g")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        forgot(&app, "budget@x.co", "198.51.100.10").await.0,
+        StatusCode::NO_CONTENT,
+        "the 80th mail goes"
+    );
+    assert_eq!(mails_to("budget@x.co", 1).await.len(), 1);
+
+    let known = forgot(&app, "budget@x.co", "198.51.100.10").await;
+    let unknown = forgot(&app, "nobody-b@x.co", "198.51.100.10").await;
+    assert_eq!(
+        known.0,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "[SEC] budget spent → honest 503"
+    );
+    assert_eq!(
+        known, unknown,
+        "[SEC] and the same answer for an address without an account"
+    );
+    let v: Value = serde_json::from_slice(&known.2).unwrap();
+    assert_eq!(v["error"], "пошта тимчасово недоступна, спробуйте пізніше");
+    let (st, v) = send(
+        &app,
+        build(
+            "POST",
+            "/api/auth/email/request-code",
+            "198.51.100.10",
+            Some(json!({"email": "code-b@x.co"})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "code sign-in too: {v}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(mails_to("budget@x.co", 2).await.len(), 1, "no second mail");
+    assert!(mails_to("code-b@x.co", 1).await.is_empty());
+}
+
+/// Review item 4: at most 10 mails to one address a day, counted the same for any address.
+#[sqlx::test(migrations = "./migrations")]
+async fn one_address_gets_at_most_ten_mails_a_day(pool: PgPool) {
+    let app = make_app(pool.clone());
+    register(&app, "cap@x.co", "en").await;
+    for addr in ["cap@x.co", "nobody-c@x.co"] {
+        sqlx::query("INSERT INTO mail_sends (to_hash) SELECT $1 FROM generate_series(1, 10)")
+            .bind(underground_api::mail::recipient_hash(addr))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let known = forgot(&app, "cap@x.co", "198.51.100.11").await;
+    let unknown = forgot(&app, "nobody-c@x.co", "198.51.100.11").await;
+    assert_eq!(
+        known.0,
+        StatusCode::TOO_MANY_REQUESTS,
+        "[SEC] 11th mail to one address refused"
+    );
+    assert_eq!(known, unknown, "[SEC] identically for an address without an account");
+    assert_eq!(
+        forgot(&app, "other@x.co", "198.51.100.11").await.0,
+        StatusCode::NO_CONTENT,
+        "other addresses unaffected"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(mails_to("cap@x.co", 1).await.is_empty());
+}
+
+/// Review item 4: one request can never name several recipients.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_list_of_addresses_is_refused(pool: PgPool) {
+    let app = make_app(pool);
+    for email in [
+        "a@x.co,b@y.co",
+        "a@x.co;b@y.co",
+        "Bob <b@y.co>",
+        "a@x.co b@y.co",
+        "a@x.co@y.co",
+    ] {
+        let (st, _) = send(
+            &app,
+            build(
+                "POST",
+                "/api/auth/email/request-code",
+                "198.51.100.12",
+                Some(json!({"email": email})),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "[SEC] {email}");
+        let (st, _) = send(
+            &app,
+            build(
+                "POST",
+                "/api/auth/register",
+                "198.51.100.12",
+                Some(json!({"email": email, "password": "password1", "name": "U"})),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "[SEC] no account under {email}");
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(captured()
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|c| !c.body["to"][0].as_str().unwrap_or("").contains(',')));
 }

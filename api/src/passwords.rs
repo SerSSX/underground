@@ -2,13 +2,17 @@
 //!
 //! Reset tokens are single-use, valid for [`RESET_TTL_MINS`], and only their SHA-256 hash is
 //! stored, so a DB read cannot reset anyone's password. `forgot_password` answers 204 with an
-//! empty body for every address — registered, unknown or blocked — after the same rate-limit
-//! checks, and the mail goes out from a background task (`mail::enqueue`), so neither the answer
-//! nor its timing tells whether an account exists. Asking again replaces the previous link.
+//! empty body for every address — registered, unknown or blocked — after the same rate-limit and
+//! mail-budget checks, so the ANSWER does not tell whether an account exists. Its TIMING does, a
+//! little: only a registered address gets the token writes (~0.3 ms more, measured by review);
+//! the mail itself goes out from a background task (`mail::enqueue`), so Resend's latency is not
+//! visible. Existence is not secret here anyway: sign-up answers 409 for a registered address
+//! (rate-limited per IP and per address). Asking again replaces the previous link.
 //!
-//! Changing the password signs out every other session: `tokens_valid_after` moves one second
-//! past now, and the caller gets a fresh token minted at exactly that second (JWT `iat` has
-//! one-second resolution, so without the +1 s a token stolen in the same second would survive).
+//! A reset and a change both sign out every session: `tokens_valid_after` moves to the next whole
+//! second, because JWT `iat` has one-second resolution and the check is `iat >= watermark`; with
+//! plain `now()` a token minted in the same second would survive. The change answers a fresh token
+//! minted at exactly that second.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -25,7 +29,7 @@ use crate::state::AppState;
 
 /// How long a reset link stays valid.
 pub const RESET_TTL_MINS: i64 = 30;
-/// Password length bounds (bytes). The upper one keeps argon2 from hashing megabytes.
+/// Password length bounds (characters). The upper one keeps argon2 from hashing megabytes.
 const MIN_PASSWORD: usize = 8;
 const MAX_PASSWORD: usize = 256;
 /// How recent a password-less user's sign-in must be to SET a first password (as for erasure).
@@ -66,18 +70,22 @@ pub fn build_reset_email(base_url: &str, raw_token: &str) -> (String, String) {
     (m.subject, m.text)
 }
 
+/// Bounds in characters (as the messages and the web's `minLength`/`maxLength` say), not bytes:
+/// "жжжж" is 4 characters, 8 bytes.
 fn check_new_password(password: &str) -> Result<(), AppError> {
-    if password.len() < MIN_PASSWORD {
+    let chars = password.chars().count();
+    if chars < MIN_PASSWORD {
         return Err(AppError::Validation("password must be at least 8 characters".into()));
     }
-    if password.len() > MAX_PASSWORD {
+    if chars > MAX_PASSWORD {
         return Err(AppError::Validation("пароль задовгий (до 256 символів)".into()));
     }
     Ok(())
 }
 
 /// `POST /api/auth/forgot-password` — start a reset. Always 204 with no body (unknown, blocked
-/// and registered addresses alike); 429 only from limits that count every address the same way.
+/// and registered addresses alike); 429/503 only from limits and the mail budget, which count
+/// every address the same way.
 pub async fn forgot_password(
     State(st): State<AppState>,
     ip: ClientIp,
@@ -99,6 +107,11 @@ pub async fn forgot_password(
         3600,
     )
     .await?;
+    // A mail slot before the lookup, for every address alike (TASK-304 review): a spent daily
+    // budget is 503 "mail temporarily unavailable" for any address, never a pretended "sent".
+    if crate::mail::enabled() {
+        crate::mail::reserve(&st.db, &email).await?;
+    }
     let found: Option<(Uuid, Option<String>)> = sqlx::query_as(
         "SELECT u.id, p.locale FROM users u LEFT JOIN user_prefs p ON p.user_id = u.id \
          WHERE u.email = $1 AND u.blocked = false",
@@ -163,10 +176,13 @@ pub async fn reset_password(
     .fetch_optional(&mut *tx)
     .await?;
     let user_id = user_id.ok_or_else(|| AppError::Conflict("посилання недійсне або протерміноване".into()))?;
-    // Only an active account can be reset (a blocked/erased user must not regain a password), and
-    // bumping tokens_valid_after instantly invalidates any token issued before this reset.
+    // Only an active account can be reset (a blocked/erased user must not regain a password).
+    // The watermark goes to the NEXT whole second, so every token issued up to and including this
+    // second dies (`iat` is whole seconds and the check is `iat >= tokens_valid_after`).
     let updated = sqlx::query(
-        "UPDATE users SET password_hash = $1, tokens_valid_after = now() WHERE id = $2 AND blocked = false",
+        "UPDATE users SET password_hash = $1, \
+         tokens_valid_after = date_trunc('second', now()) + interval '1 second' \
+         WHERE id = $2 AND blocked = false",
     )
     .bind(&pw_hash)
     .bind(user_id)
@@ -239,6 +255,8 @@ pub async fn change_password(
         }
     }
     let pw_hash = hash_password(&req.new)?;
+    // One transaction: the new password, the watermark and the retired reset links land together.
+    let mut tx = st.db.begin().await?;
     // The watermark goes one whole second past now; the new token is minted AT that second.
     let valid_after: chrono::DateTime<Utc> = sqlx::query_scalar(
         "UPDATE users SET password_hash = $1, tokens_valid_after = date_trunc('second', now()) + interval '1 second' \
@@ -246,14 +264,15 @@ pub async fn change_password(
     )
     .bind(&pw_hash)
     .bind(user.id)
-    .fetch_optional(&st.db)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::Unauthorized)?;
     // A reset link asked for before the change must not undo it.
     sqlx::query("UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL")
         .bind(user.id)
-        .execute(&st.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     let token = crate::auth::issue_token_at(user.id, &st.jwt_secret, valid_after.timestamp())?;
     crate::telemetry::log(&st.db, Some(user.id), "password_changed", serde_json::json!({})).await;
     Ok(Json(ChangeResp { token }))
@@ -285,6 +304,17 @@ mod tests {
         assert!(check_new_password("12345678").is_ok());
         assert!(check_new_password(&"x".repeat(256)).is_ok());
         assert!(check_new_password(&"x".repeat(257)).is_err());
+        // Characters, not bytes (Cyrillic is 2 bytes each).
+        assert!(
+            check_new_password(&"ж".repeat(200)).is_ok(),
+            "200 chars = 400 bytes: accepted"
+        );
+        assert!(check_new_password(&"ж".repeat(256)).is_ok());
+        assert!(check_new_password(&"ж".repeat(257)).is_err());
+        assert!(
+            check_new_password(&"ж".repeat(4)).is_err(),
+            "4 chars = 8 bytes: too short"
+        );
     }
 
     #[test]

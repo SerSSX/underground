@@ -28,8 +28,9 @@ pub fn code_hash(raw: &str) -> String {
     hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
+/// One plain address only (TASK-304 review): a comma, `;` or `<…>` could name several recipients.
 fn valid_email(email: &str) -> bool {
-    email.len() >= 3 && email.contains('@') && !email.contains(' ')
+    crate::mail::is_single_address(email)
 }
 
 /// Generate a zero-padded 6-digit numeric code from the OS CSPRNG.
@@ -72,6 +73,11 @@ pub async fn request_code(
     .fetch_one(&st.db)
     .await?;
     if recent < MAX_CODES_PER_WINDOW {
+        // A mail slot first (TASK-304 review), before any account lookup and the same for every
+        // address: a spent daily budget answers 503 instead of pretending a code was sent.
+        if crate::mail::enabled() {
+            crate::mail::reserve(&st.db, &email).await?;
+        }
         let code = generate_code();
         let expires = Utc::now() + Duration::minutes(CODE_TTL_MINS);
         sqlx::query("INSERT INTO login_codes (email, code_hash, expires_at) VALUES ($1, $2, $3)")
@@ -165,5 +171,9 @@ mod tests {
         assert!(valid_email("a@b.co"));
         assert!(!valid_email("nope"));
         assert!(!valid_email("a b@c.co"));
+        assert!(!valid_email("a@b.co,c@d.co"), "[SEC] one recipient only");
+        assert!(!valid_email("a@b.co;c@d.co"));
+        assert!(!valid_email("X <a@b.co>"));
+        assert!(!valid_email("a@b@c.co"));
     }
 }

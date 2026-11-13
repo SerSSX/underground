@@ -36,7 +36,10 @@ IFS= read -r RK || true
 IFS= read -r FROM || true
 umask 077
 TMP=$(mktemp .env.dev.XXXXXX)
-grep -v -E "^(RESEND_API_KEY|EMAIL_FROM)=" .env.dev > "$TMP" || true
+# grep -v: exit 1 only means every line was one of the two keys (nothing left); 2 is a real error.
+RC=0
+grep -v -E "^(RESEND_API_KEY|EMAIL_FROM)=" .env.dev > "$TMP" || RC=$?
+if [ "$RC" -gt 1 ]; then rm -f "$TMP"; echo "ERROR: .env.dev could not be read; nothing changed" >&2; exit 1; fi
 if [ -n "$RK" ]; then
   printf "RESEND_API_KEY=%s\nEMAIL_FROM='"'"'%s'"'"'\n" "$RK" "$FROM" >> "$TMP"
 else

@@ -69,6 +69,8 @@ services:
       # .env.dev without the keys working.
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
+      # Most account mails per 24 h (Resend's free plan allows 100/day); spent → the API answers 503.
+      MAIL_DAILY_BUDGET: ${MAIL_DAILY_BUDGET:-80}
     volumes:
       - type: bind
         source: ${DATA_DIR}/uploads

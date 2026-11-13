@@ -609,5 +609,6 @@
   "увійдіть ще раз, щоб задати пароль": "inicia sesión de nuevo para crear una contraseña",
   "пароль задовгий (до 256 символів)": "la contraseña es demasiado larga (hasta 256 caracteres)",
   "файл не є зображенням JPEG, PNG або WebP": "el archivo no es una imagen JPEG, PNG o WebP",
-  "зображення завелике: до 32 мегапікселів": "la imagen es demasiado grande: hasta 32 megapíxeles"
+  "зображення завелике: до 32 мегапікселів": "la imagen es demasiado grande: hasta 32 megapíxeles",
+  "пошта тимчасово недоступна, спробуйте пізніше": "el correo no está disponible temporalmente, inténtalo más tarde"
 }

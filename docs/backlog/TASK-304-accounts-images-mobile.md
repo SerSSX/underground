@@ -79,3 +79,38 @@ TASK-303 closure MINORs N1–N4 (seed onboarded flag, city whitespace compare, t
 
 ### Owner steps for mail
 See `deploy/README.md` → "Пошта (Resend)"; the key is set with `deploy/set-mail-key.sh` (owner only).
+
+## Review fix batch (2026-11-13)
+
+1. Reset now moves `tokens_valid_after` to the next whole second too (`date_trunc('second', now()) + 1 s`), as the
+   change does; a JWT minted in the second of the reset is rejected (`task304_password::a_reset_kills_a_token_from_the_same_second`).
+2. Upload memory is bounded from the header before decoding: `decode_cost` = decoded buffer (`total_bytes`, so 16-bit
+   and alpha count) × a per-decoder multiplier, + the DCT coefficients of a progressive JPEG (parsed from SOF2), + a
+   fixed 80 MiB for 16-bit PNG; refused above `DECODE_BUDGET` = 140 MiB ("too large"). `image`'s `max_alloc` is not
+   applied by `from_decoder`, so it could not do this. Small pictures are scaled with the float filter only when 8-bit
+   (16-bit took a 16 B/px float copy). Peak RSS, release build, one process (incl. its own ~6 MiB):
+
+   | Picture | Before | Now |
+   |---|---|---|
+   | 16-bit RGBA PNG 5656² (32 MP, 249 KB file) | 311 MiB | refused, 6 MiB |
+   | progressive 4:4:4 JPEG 32 MP | 307 MiB | refused, 8 MiB |
+   | progressive 4:2:0 JPEG 32 MP | 214 MiB | refused, 7 MiB |
+   | RGBA PNG 32 MP / lossy WebP+alpha 32 MP | 197 / 362 MiB | refused |
+   | baseline JPEG 32 MP (4:4:4 or 4:2:0) | 124 MiB | 124 MiB, accepted |
+   | RGB PNG 32 MP | 123 MiB | 123 MiB, accepted |
+   | largest accepted: progressive 4:4:4 13.1 MP / RGBA PNG 19.1 MP / WebP 27.1 MP / WebP+alpha 8.6 MP / 16-bit RGBA PNG 3.8 MP / 16-bit RGB PNG 3.8 MP | — | 141 / 145 / 137 / 140 / 147 / 66 MiB |
+
+   The pixel cap stays 32 MP; what limits a picture now is the memory it needs. Measured with the ignored test
+   `task304_images::measure_decode_peak` under `/usr/bin/time -l`.
+3. The decode permit is owned by the blocking task (`acquire_owned`), so a dropped request keeps its slot until its
+   decode ends (`task304_upload_cancel`).
+4. Mail budget: `MAIL_DAILY_BUDGET` (80) per rolling 24 h and 10 per address, counted in the DATABASE (`mail_sends`,
+   address as SHA-256; survives restarts and replicas), taken before any account lookup for every address alike;
+   spent → 503 "пошта тимчасово недоступна, спробуйте пізніше", address cap → 429; one WARN when the last slot goes.
+   With mail off nothing is counted. Addresses must be one plain address (exactly one `@`, no `,;<>"`, no
+   whitespace) at sign-up and code request; `mail::enqueue` refuses anything else as a last guard.
+5. Timing: the cheaper fix — comments corrected (a reset writes a token row only for a registered address; existence is
+   already disclosed by sign-up's 409).
+6. Password bounds count characters. 7. The change is one transaction. 8–10: slow-Resend test, comments, redacting
+   `Debug`, `grep` exit codes in `set-mail-key.sh`, and the chat follows the newest message on a keyboard change only
+   for a reader within 80 px of it.

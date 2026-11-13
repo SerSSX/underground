@@ -5,8 +5,10 @@
 //! then). With mail off the endpoints answer exactly as before and nothing is sent.
 //!
 //! Delivery is a background task per mail ([`enqueue`]): the request that asked for it never
-//! waits on Resend, so its answer and its timing do not depend on whether a mail went out (no
-//! account oracle). Messages live only in memory until sent — a reset token or a login code is
+//! waits on Resend, so Resend's latency or failure does not show in the answer. The answer itself
+//! is the same for any address; its timing still differs slightly (a reset writes a token row only
+//! for a registered address), and account existence is not secret anyway: sign-up answers 409 for a
+//! registered address (rate-limited). Messages live only in memory until sent — a reset token or a login code is
 //! never written anywhere in plain text (the database keeps their hashes only). A restart loses
 //! what was in flight; the user asks again.
 //!
@@ -15,13 +17,24 @@
 //! two retries with backoff and jitter on 429/5xx/network errors. Logs carry the mail kind, the
 //! HTTP status and Resend's message id — never the key, the recipient or the body.
 //!
+//! Abuse bound (TASK-304 review): every mail first takes a slot from [`reserve`] — at most
+//! `MAIL_DAILY_BUDGET` (default 80, under Resend's free 100/day) in any 24 h, and at most
+//! [`PER_RECIPIENT_DAILY`] to one address. Counted in the DATABASE (`mail_sends`, recipient as a
+//! SHA-256 hash), not in process memory, so it survives restarts and holds with several API
+//! replicas. A spent budget is answered honestly (503 "mail temporarily unavailable"), never as
+//! "sent"; the decision is taken before any account lookup, identically for every address.
+//!
 //! The order-confirmation and notification outboxes in `email.rs` are NOT sent through this
 //! module (they stay logged-only until the owner asks for them).
 
 use std::time::Duration;
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
+use sqlx::PgPool;
 use tokio::sync::Semaphore;
+
+use crate::error::AppError;
 
 /// Resend's API host; tests point `RESEND_URL` at a stub on 127.0.0.1.
 pub const DEFAULT_RESEND_URL: &str = "https://api.resend.com";
@@ -33,7 +46,7 @@ static IN_FLIGHT: Semaphore = Semaphore::const_new(4);
 
 /// Mail settings from the environment, read on every use so a restart with a new `.env` is all
 /// it takes to switch mail on or off.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MailConfig {
     api_key: String,
     pub from: String,
@@ -85,7 +98,7 @@ pub fn enabled() -> bool {
 }
 
 /// One message: a plain-text part and an HTML part.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Mail {
     /// A short label for logs ("password_reset", "login_code"); never personal data.
     pub kind: &'static str,
@@ -93,6 +106,97 @@ pub struct Mail {
     pub subject: String,
     pub text: String,
     pub html: String,
+}
+
+/// The key is never printed, not even by `{:?}`.
+impl std::fmt::Debug for MailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MailConfig")
+            .field("api_key", &"<redacted>")
+            .field("from", &self.from)
+            .field("endpoint", &self.endpoint.as_str())
+            .finish()
+    }
+}
+
+/// A mail carries a reset token or a login code and a person's address: `{:?}` shows the kind only.
+impl std::fmt::Debug for Mail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mail").field("kind", &self.kind).finish_non_exhaustive()
+    }
+}
+
+/// One plain address: exactly one `@`, something on both sides, 3–254 characters, and none of
+/// the characters that let one string name several recipients or a display name
+/// (`,` `;` `<` `>` `"`, whitespace, control characters).
+pub fn is_single_address(email: &str) -> bool {
+    let n = email.chars().count();
+    if !(3..=254).contains(&n) || email.matches('@').count() != 1 {
+        return false;
+    }
+    if email
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, ',' | ';' | '<' | '>' | '"'))
+    {
+        return false;
+    }
+    let (local, domain) = email.split_once('@').unwrap_or_default();
+    !local.is_empty() && !domain.is_empty()
+}
+
+/// Most mails to one address in any 24 h.
+pub const PER_RECIPIENT_DAILY: i64 = 10;
+const DEFAULT_DAILY_BUDGET: i64 = 80;
+/// Advisory-lock namespace for the budget (count + insert are serialised).
+const BUDGET_LOCK: i32 = 0x4d41_494c; // "MAIL"
+
+/// How `mail_sends` stores a recipient: SHA-256 hex of the normalised address (no plain PII).
+pub fn recipient_hash(email: &str) -> String {
+    hex::encode(Sha256::digest(email.trim().to_lowercase().as_bytes()))
+}
+
+fn daily_budget() -> i64 {
+    crate::ratelimit::env_limit("MAIL_DAILY_BUDGET", DEFAULT_DAILY_BUDGET)
+}
+
+/// Take one slot of the daily mail budget for `to`. Callers run this BEFORE they look the address
+/// up, for every address alike, so the outcome never depends on whether an account exists.
+/// Spent global budget → 503 "mail temporarily unavailable"; this address's daily cap → 429.
+/// Logs one WARN when the slot taken is the last one of the budget.
+pub async fn reserve(db: &PgPool, to: &str) -> Result<(), AppError> {
+    let budget = daily_budget();
+    let hash = recipient_hash(to);
+    let mut tx = db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1, 0)")
+        .bind(BUDGET_LOCK)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM mail_sends WHERE sent_at <= now() - interval '1 day'")
+        .execute(&mut *tx)
+        .await?;
+    let (total, mine): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE to_hash = $1) FROM mail_sends WHERE sent_at > now() - interval '1 day'",
+    )
+    .bind(&hash)
+    .fetch_one(&mut *tx)
+    .await?;
+    if total >= budget {
+        return Err(AppError::Unavailable(
+            "пошта тимчасово недоступна, спробуйте пізніше".into(),
+        ));
+    }
+    if mine >= PER_RECIPIENT_DAILY {
+        return Err(AppError::RateLimited);
+    }
+    sqlx::query("INSERT INTO mail_sends (to_hash) VALUES ($1)")
+        .bind(&hash)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    if total + 1 == budget {
+        tracing::warn!(target: "email", budget, "mail: the daily budget is used up; mail is refused until slots free up");
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -107,6 +211,10 @@ struct ResendBody<'a> {
 /// Hand a mail to the background sender and return at once. With mail off it is dropped (logged
 /// by kind only). Must be called inside a Tokio runtime (every handler is).
 pub fn enqueue(mail: Mail) {
+    if !is_single_address(&mail.to) {
+        tracing::warn!(target: "email", kind = mail.kind, "mail refused: recipient is not one plain address");
+        return;
+    }
     let Some(cfg) = MailConfig::from_env() else {
         tracing::info!(target: "email", kind = mail.kind, "mail off (no RESEND_API_KEY/EMAIL_FROM): not sent");
         return;
@@ -380,6 +488,36 @@ mod tests {
         assert!(m.subject.contains("123456") && m.text.contains("123456") && m.html.contains("123456"));
         let m = code_mail(Some("uk"), "a@b.co", "654321", 10);
         assert!(m.text.contains("654321") && m.text.contains("10 хвилин"));
+    }
+
+    #[test]
+    fn single_address_only() {
+        assert!(is_single_address("a@b.co"));
+        assert!(is_single_address("first.last+tag@sub.example.org"));
+        for bad in [
+            "a@b.co,c@d.co",
+            "a@b.co;c@d.co",
+            "A <a@b.co>",
+            "a@b.co c@d.co",
+            "a@@b.co",
+            "a@b@c.co",
+            "@b.co",
+            "a@",
+            "nope",
+            "a\"@b.co",
+            "a@b.co\n",
+        ] {
+            assert!(!is_single_address(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn debug_never_shows_secrets() {
+        let c = MailConfig::resolve(s("re_secret_value"), s("a@b.co"), None).unwrap();
+        assert!(!format!("{c:?}").contains("re_secret_value"));
+        let m = code_mail(Some("en"), "victim@x.co", "123456", 10);
+        let d = format!("{m:?}");
+        assert!(!d.contains("123456") && !d.contains("victim@x.co"), "{d}");
     }
 
     #[test]
