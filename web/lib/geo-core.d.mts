@@ -53,3 +53,6 @@ export function mapsHref(
 ): string | null;
 export function parseStoredCity(raw: string | null | undefined): ChosenCity | null;
 export function storeCity(chosen: ChosenCity): string;
+export function trustedCityRow<T extends { name: string; lat: number; lng: number; country_code?: string | null; source?: string | null }>(
+  rows: T[], name: string, countryCode?: string | null,
+): T | null;

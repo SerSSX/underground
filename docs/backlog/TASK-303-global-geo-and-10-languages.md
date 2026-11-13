@@ -271,3 +271,18 @@ From the independent API review and web review F1/F2. Migration `0050_geo_fixes.
    (name fallback); U+200B–200F, U+202A–202E, U+2066–2069, U+FEFF stripped from geo results, `q`, event
    city/venue/country and prefs city; `cities (lat, lng)` index; User-Agent from `PUBLIC_BASE_URL`; env vars in
    docs/configuration-manual.md.
+
+### Web wired to the G1 fix batch (dd7e477)
+
+- Prefs: `putPrefs` and `syncUserLocale` send the UI language as is (all 10); `putPrefs` also sends the city's
+  `country_code` (picked suggestion, the remembered home city, or prefs as loaded; typing a name drops it) from
+  onboarding and /account; `syncUserLocale` re-sends the stored `country_code`. `serverLocale` is no longer used by the
+  web (kept with its test). The F1 guard reads the explicit `onboarded` column: no locale PUT for `onboarded: false`;
+  onboarding still shows for it.
+- Events: `country_code` goes with every create and edit — picked address, picked city, the prefilled link (`?cc=`),
+  and now a typed city resolved through `/api/cities` (the row's code fills an empty one).
+- Typed-city lookups (`trustedCityRow`, `lib/geo-core.mjs`, tested): a `/api/cities` row is used only if seeded
+  (`source` "seed", or absent from an older API) or learned with the country code the form knows; otherwise the
+  fallback zone as before. Home's Enter lookup uses the same rule. The Maps-centre and edit-centre checks treat a point
+  as a city centre if it equals any row of that name (names are now unique per country, not globally).
+- Not run against a live dd7e477 API (no API build in this step).

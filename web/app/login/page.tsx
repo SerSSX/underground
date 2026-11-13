@@ -4,7 +4,6 @@ import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { login, requestEmailCode, verifyEmailCode, setToken, errorMessage, isUnauthorized, safeNext, syncUserLocale } from "../../lib/api";
-import { serverLocale } from "../../lib/i18n-core.mjs";
 import { EMAIL_CODE_LOGIN } from "../../lib/flags";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
@@ -39,7 +38,7 @@ function LoginForm() {
   const done = (token: string) => {
     setToken(token);
     // The language picked before signing in follows the account (skipped for a not-yet-onboarded one).
-    void syncUserLocale(serverLocale(lang));
+    void syncUserLocale(lang);
     refresh();
     router.push(next);
   };

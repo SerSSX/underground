@@ -10,7 +10,7 @@ import { categoryLabel, inWindow, TOP_CATEGORIES, type When } from "../lib/ui";
 import { Search, MapPin, Plus, Compass, LocateFixed, X } from "./components/Icon";
 import CityInput from "./components/CityInput";
 import { reversePlace, searchPlaces } from "../lib/geo";
-import { cityName, cityStoredName, distanceKm, inCity, parseStoredCity, roundCoord, sortByDistance, storeCity, type ChosenCity, type GeoPlace, type Point } from "../lib/geo-core.mjs";
+import { cityName, cityStoredName, trustedCityRow, distanceKm, inCity, parseStoredCity, roundCoord, sortByDistance, storeCity, type ChosenCity, type GeoPlace, type Point } from "../lib/geo-core.mjs";
 
 const CITY_KEY = "ug_city";
 /** A city that has events: its name, with an event's point so other spellings of it match too. */
@@ -94,7 +94,7 @@ export default function HomeClient() {
       if (hit) {
         chosen = { name: cityStoredName(hit) || name, label: cityName(hit) || undefined, lat: hit.lat, lng: hit.lng, country_code: hit.country_code ?? undefined };
       } else {
-        const row = (await searchCities(name)).find((c) => c.name.toLowerCase() === lower);
+        const row = trustedCityRow(await searchCities(name), name, null);
         if (row) chosen = { name: row.name, lat: row.lat, lng: row.lng, country_code: row.country_code ?? undefined };
       }
     } catch { /* lookups failed: filter by the name alone */ }

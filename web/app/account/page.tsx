@@ -21,6 +21,8 @@ export default function AccountPage() {
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
   const [city, setCity] = useState("");
+  // The city's country, from prefs or a picked suggestion; typing a name drops it.
+  const [cc, setCc] = useState<string | null>(null);
   const [interests, setInterests] = useState<string[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +37,7 @@ export default function AccountPage() {
       return;
     }
     getMe().then((u) => { setMe(u); setName(u.name); setDob(u.dob ?? ""); }).catch((e) => setError(errorMessage(e)));
-    getPrefs().then((p) => { setCity(p.city ?? ""); setInterests(p.categories); }).catch(() => {});
+    getPrefs().then((p) => { setCity(p.city ?? ""); setCc(p.country_code ?? null); setInterests(p.categories); }).catch(() => {});
   }, [router]);
 
   async function run(key: string, fn: () => Promise<void>, ok?: string) {
@@ -63,7 +65,7 @@ export default function AccountPage() {
     refresh();
   }, tr(lang, "Фото оновлено", "Photo updated"));
 
-  const savePrefs = () => run("prefs", async () => { await putPrefs(interests, city.trim() || null); }, tr(lang, "Інтереси збережено", "Interests saved"));
+  const savePrefs = () => run("prefs", async () => { await putPrefs(interests, city.trim() || null, cc); }, tr(lang, "Інтереси збережено", "Interests saved"));
 
   const doExport = () => run("export", async () => {
     const data = await exportMyData();
@@ -126,7 +128,7 @@ export default function AccountPage() {
         <p className="muted small" style={{ marginTop: 4, marginBottom: 14 }}>{tr(lang, "За ними складається добірка «Для тебе».", "These shape your For You picks.")}</p>
         <div className="field" style={{ maxWidth: 320, marginBottom: 14 }}>
           <label htmlFor="acc-city">{tr(lang, "Місто", "City")}</label>
-          <CityInput id="acc-city" value={city} onChange={setCity} />
+          <CityInput id="acc-city" value={city} onChange={(v) => { setCity(v); setCc(null); }} onPick={(p, name) => { setCity(name); setCc(p.country_code); }} />
         </div>
         <div className="chips">
           {EVENT_CATEGORIES.map((c) => {

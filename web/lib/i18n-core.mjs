@@ -51,8 +51,8 @@ export function hasCatalog(lang) {
   return Object.prototype.hasOwnProperty.call(catalogs, lang);
 }
 
-/** The locale stored in the user's server prefs. The API keeps notification texts in uk and en only
- *  (api/src/prefs.rs maps anything else to uk), so every other language asks for English. */
+/** Legacy (before the TASK-303 G1 fix batch): the uk/en-only prefs locale. The web now sends the UI language
+ *  itself (the API stores all 10 and picks uk or English texts); kept for its test until that test is retired. */
 export function serverLocale(lang) {
   return lang === "uk" ? "uk" : "en";
 }

@@ -7,7 +7,7 @@
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { syncUserLocale } from "./api";
 import {
-  DEFAULT_LANG, hasCatalog, isLang, pickLang, serverLocale, setCatalog, setCurrentLang, templateParts,
+  DEFAULT_LANG, hasCatalog, isLang, pickLang, setCatalog, setCurrentLang, templateParts,
   type CatalogLang, type Lang,
 } from "./i18n-core.mjs";
 import { isoDateLabel } from "./dates.mjs";
@@ -90,7 +90,7 @@ export function LangProvider({ children }: { children: ReactNode }) {
     store(l);
     void apply(l);
     // Best-effort: persist to backend prefs so server notifications match the UI language.
-    void syncUserLocale(serverLocale(l));
+    void syncUserLocale(l);
   }, [apply]);
 
   return <LangContext.Provider value={{ lang, setLang }}>{children}</LangContext.Provider>;

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   addressLabel, addressWhere, cityLabel, cityName, cityStoredName, distanceKm, geoLang, haversineKm, inCity, kmShown, mapsHref,
-  parseStoredCity, roundCoord, sanitizePlace, sanitizePlaces, sortByDistance, storeCity,
+  parseStoredCity, roundCoord, trustedCityRow, sanitizePlace, sanitizePlaces, sortByDistance, storeCity,
 } from "./geo-core.mjs";
 
 const porto = { label: "Porto, Porto, Portugal", name: "Porto", street: null, housenumber: null, city: "Porto", state: "Porto", country: "Portugal", country_code: "PT", lat: 41.1496, lng: -8.611, kind: "city" };
@@ -121,4 +121,17 @@ test("remembered city: JSON round trip, legacy plain names, junk ignored, near-m
   const near = parseStoredCity(storeCity({ name: "Київ", lat: 50.456789, lng: 30.512345, near: true }));
   assert.deepEqual(near, { name: "Київ", lat: 50.46, lng: 30.51, near: true }, "the visitor's position is stored at ~1 km");
   assert.deepEqual(parseStoredCity('{"name":"X","lat":200,"lng":0,"near":true,"country_code":"<x>"}'), { name: "X" });
+});
+
+test("typed city lookup trusts seeded rows, or learned rows only in the country the form knows", () => {
+  const seed = { name: "Porto", lat: 41.15, lng: -8.61, country_code: "PT", source: "seed" };
+  const osmBR = { name: "Porto", lat: -8.9, lng: -36.5, country_code: "BR", source: "osm" };
+  const osmIT = { name: "porto", lat: 43.07, lng: 11.94, country_code: "IT", source: "osm" };
+  assert.equal(trustedCityRow([osmBR, seed], "Porto", null), seed, "no country known → the seeded row");
+  assert.equal(trustedCityRow([seed, osmBR], "porto ", "br"), osmBR, "the learned row in the known country");
+  assert.equal(trustedCityRow([osmBR, osmIT], "Porto", null), null, "learned rows alone answer no bare name");
+  assert.equal(trustedCityRow([osmBR], "Porto", "IT"), null, "a learned row in another country is not trusted");
+  assert.equal(trustedCityRow([{ name: "Lisbon", lat: 38.7, lng: -9.1 }], "Lisbon", null)?.name, "Lisbon", "an older API without source");
+  assert.equal(trustedCityRow([{ ...seed, lat: 99 }], "Porto", null), null, "a row without a valid point");
+  assert.equal(trustedCityRow(null, "Porto", null), null);
 });

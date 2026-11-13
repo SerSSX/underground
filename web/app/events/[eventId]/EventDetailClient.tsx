@@ -92,12 +92,15 @@ export default function EventDetailClient({ eventId, initialEvent }: { eventId: 
     const ctl = new AbortController();
     searchCities(placeCity, ctl.signal)
       .then((list) => {
-        const hit = list.find((c) => c.name.toLowerCase() === placeCity.toLowerCase());
+        // Several rows may share a name (one per country): the event's point is a centre if it equals any.
+        const ev = event as { lat: number; lng: number };
+        const hit = list.find((c) => c.name.toLowerCase() === placeCity.toLowerCase()
+          && Math.abs(c.lat - ev.lat) <= 1e-6 && Math.abs(c.lng - ev.lng) <= 1e-6);
         setCityCenter(hit ? { lat: hit.lat, lng: hit.lng } : null);
       })
       .catch(() => { /* keep the address query */ });
     return () => ctl.abort();
-  }, [needCenter, placeCity]);
+  }, [needCenter, placeCity, event?.lat, event?.lng]);
 
   if (!event) {
     return (

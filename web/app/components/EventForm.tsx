@@ -9,7 +9,7 @@ import { FREE_ONLY } from "../../lib/flags";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { categoryLabel, countryTz, tzLabel } from "../../lib/ui";
 import { isZone, zoneFor } from "../../lib/geo";
-import { addressLabel, cityStoredName, CITY_RADIUS_KM, hasPoint, haversineKm, type GeoPlace, type Point } from "../../lib/geo-core.mjs";
+import { addressLabel, cityStoredName, trustedCityRow, CITY_RADIUS_KM, hasPoint, haversineKm, type GeoPlace, type Point } from "../../lib/geo-core.mjs";
 import { ImageIcon, X, ChevronDown } from "./Icon";
 
 export interface EventFormInitial {
@@ -111,6 +111,7 @@ export default function EventForm({
     setZonePending(true);
     let zone: string | null = null;
     let center: Point | null = null;
+    let rowCc: string | null = null;
     // A hung request must not keep the submit button disabled: give up after 6 s and use the fallback.
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 6000);
@@ -120,10 +121,13 @@ export default function EventForm({
     const city = place.city.trim();
     if (!zone && city.length >= 2) {
       try {
-        const hit = (await searchCities(city, ctl.signal)).find((c) => c.name.toLowerCase() === city.toLowerCase());
+        // Only a row the API itself would use for this event: seeded, or learned in the country the form
+        // knows (G1 fix batch: learned rows answer only their own country). Else the fallback zone.
+        const hit = trustedCityRow(await searchCities(city, ctl.signal), city, place.cc);
         if (hit) {
           zone = (hit.timezone && isZone(hit.timezone) ? hit.timezone : null) ?? countryTz(hit.country);
           center = { lat: hit.lat, lng: hit.lng };
+          rowCc = hit.country_code && /^[A-Za-z]{2}$/.test(hit.country_code) ? hit.country_code.toUpperCase() : null;
         }
       } catch { /* lookup failed: the fallback zone */ }
     }
@@ -131,13 +135,16 @@ export default function EventForm({
     if (seq !== zoneSeq.current) return; // a newer place won
     setF((prev) => ({ ...prev, timezone: zone ?? undefined }));
     if (center && !place.point) setCityPoint(center);
+    // A typed city the gazetteer knows: send its country code with the event (the form had none).
+    if (rowCc && !place.point) setF((prev) => (prev.country_code ? prev : { ...prev, country_code: rowCc }));
     setZonePending(false);
   }
 
   // A typed city: look it up once the typing pauses.
   useEffect(() => {
     if (typedCity === null) return;
-    const t = setTimeout(() => void settleZone({ city: typedCity.text }), 400);
+    // cc: what the form already knows (e.g. ?cc= from the home link); a typed city clears it otherwise.
+    const t = setTimeout(() => void settleZone({ city: typedCity.text, cc: f.country_code }), 400);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typedCity]);
@@ -156,8 +163,10 @@ export default function EventForm({
     const ctl = new AbortController();
     searchCities(city, ctl.signal)
       .then((list) => {
-        const c = list.find((x) => x.name.toLowerCase() === city.toLowerCase());
-        if (!c || Math.abs(c.lat - (initial.lat as number)) > 1e-6 || Math.abs(c.lng - (initial.lng as number)) > 1e-6) return;
+        // Several rows may share a name (one per country): the stored point is a centre if it equals any of them.
+        const centre = list.some((x) => x.name.toLowerCase() === city.toLowerCase()
+          && Math.abs(x.lat - (initial.lat as number)) <= 1e-6 && Math.abs(x.lng - (initial.lng as number)) <= 1e-6);
+        if (!centre) return;
         // Untouched since load: drop the centre (the API puts it back from the city name on save).
         setF((prev) => (prev.lat === initial.lat && prev.lng === initial.lng ? { ...prev, lat: null, lng: null } : prev));
       })

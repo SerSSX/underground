@@ -212,3 +212,19 @@ export function storeCity(chosen) {
   if (chosen.near) out.near = true;
   return JSON.stringify(out);
 }
+
+/**
+ * The gazetteer row (`GET /api/cities`) a form may take a typed city's zone, point and country from
+ * (TASK-303 G1 fix batch: learned `osm` rows answer only their own country). A row matches the name (any case)
+ * and is either seeded (`source` "seed", or no `source` from an older API) or learned with the country code the
+ * form already knows. Among several, the one in the known country wins. None → null: the caller falls back.
+ */
+export function trustedCityRow(rows, name, countryCode) {
+  if (!Array.isArray(rows) || typeof name !== "string") return null;
+  const lower = name.trim().toLowerCase();
+  const cc = typeof countryCode === "string" && /^[A-Za-z]{2}$/.test(countryCode) ? countryCode.toUpperCase() : null;
+  const same = rows.filter((r) => r && typeof r.name === "string" && r.name.trim().toLowerCase() === lower && hasPoint(r));
+  const inCountry = (r) => !!cc && typeof r.country_code === "string" && r.country_code.toUpperCase() === cc;
+  const seeded = (r) => r.source === undefined || r.source === null || r.source === "seed";
+  return same.find(inCountry) ?? same.find(seeded) ?? null;
+}

@@ -1,5 +1,5 @@
 import { safeNextFor } from "./safe-next.mjs";
-import { currentLang, serverLocale } from "./i18n-core.mjs";
+import { currentLang } from "./i18n-core.mjs";
 import { canonicalServerText, serverText } from "./server-messages.mjs";
 import { mapsHref } from "./geo-core.mjs";
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
@@ -162,6 +162,8 @@ export interface CityDto {
   country_code?: string | null;
   /** IANA zone (TASK-303 G1); null on rows the API cannot place. */
   timezone?: string | null;
+  /** "seed" (ours) or "osm" (learned from the geocoder; answers only its own country — G1 fix batch). */
+  source?: string | null;
 }
 /** Our city gazetteer by name prefix (not the geocoder): what the API itself knows about a city. */
 export async function searchCities(q: string, signal?: AbortSignal): Promise<CityDto[]> {
@@ -390,15 +392,22 @@ export async function claimTicket(token: string): Promise<TicketDto> {
 export interface Prefs {
   categories: string[];
   city: string | null;
+  country?: string | null;
+  /** ISO code of the prefs city (TASK-303 G1 fix batch). */
+  country_code?: string | null;
+  /** One of the 10 UI languages. */
+  locale?: string | null;
+  /** An explicit column: a sign-up with `locale` creates a row with onboarded = false. */
   onboarded: boolean;
 }
 export async function getPrefs(): Promise<Prefs> {
   return apiGet<Prefs>("/api/me/prefs");
 }
-export async function putPrefs(categories: string[], city: string | null): Promise<Prefs> {
-  // The API replaces the whole prefs row and reads a missing locale as "uk": send the current one, or saving
-  // interests would switch an English reader's notifications to Ukrainian.
-  return apiSend<Prefs>("PUT", "/api/me/prefs", { categories, city, locale: serverLocale(currentLang()) });
+/** Save interests and city. Sends the UI language as is (the API stores all 10 since the G1 fix batch) and the
+ *  city's country code when known, so a learned city resolves in the right country. */
+export async function putPrefs(categories: string[], city: string | null, countryCode?: string | null): Promise<Prefs> {
+  const country_code = city && countryCode && /^[A-Za-z]{2}$/.test(countryCode) ? countryCode.toUpperCase() : null;
+  return apiSend<Prefs>("PUT", "/api/me/prefs", { categories, city, country_code, locale: currentLang() });
 }
 
 // ---- organizer cabinet ----
@@ -574,9 +583,9 @@ export function fmtPrice(amount: string, currency: string): string {
 export async function syncUserLocale(locale: string): Promise<void> {
   if (!getToken()) return;
   try {
-    const prefs = await apiGet<{ categories: string[]; city: string | null; onboarded?: boolean }>("/api/me/prefs");
+    const prefs = await apiGet<Prefs>("/api/me/prefs");
     if (prefs.onboarded === false) return;
-    await apiSend("PUT", "/api/me/prefs", { categories: prefs.categories, city: prefs.city, locale });
+    await apiSend("PUT", "/api/me/prefs", { categories: prefs.categories, city: prefs.city, country_code: prefs.country_code ?? null, locale });
   } catch {
     /* ignore: locale sync is non-essential */
   }

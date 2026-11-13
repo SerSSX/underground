@@ -15,12 +15,17 @@ function OnboardingInner() {
   const next = safeNext(useSearchParams().get("next"));
   const [selected, setSelected] = useState<string[]>([]);
   const [city, setCity] = useState("");
+  // The picked (or remembered) city's country, sent with prefs; typing a name drops it.
+  const [cc, setCc] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     // Start from the city chosen on the home page, if any (no fixed default: the app is worldwide).
-    try { setCity((c) => c || (parseStoredCity(localStorage.getItem("ug_city"))?.name ?? "")); } catch { /* storage blocked */ }
+    try {
+      const stored = parseStoredCity(localStorage.getItem("ug_city"));
+      if (stored) { setCity((c) => c || stored.name); setCc((x) => x ?? stored.country_code ?? null); }
+    } catch { /* storage blocked */ }
   }, []);
 
   useEffect(() => {
@@ -45,7 +50,7 @@ function OnboardingInner() {
     setBusy(true);
     setError(null);
     try {
-      await putPrefs(selected, city.trim() || null);
+      await putPrefs(selected, city.trim() || null, cc);
       router.push(next);
     } catch (e) {
       setError(errorMessage(e));
@@ -85,7 +90,7 @@ function OnboardingInner() {
 
         <div className="field" style={{ marginTop: 24, maxWidth: 360 }}>
           <label htmlFor="city">{tr(lang, "Ваше місто", "Your city")}</label>
-          <CityInput id="city" value={city} onChange={setCity} />
+          <CityInput id="city" value={city} onChange={(v) => { setCity(v); setCc(null); }} onPick={(p, name) => { setCity(name); setCc(p.country_code); }} />
         </div>
 
         {error && <div className="alert error" style={{ marginTop: 14 }}>{error}</div>}
