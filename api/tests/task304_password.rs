@@ -383,54 +383,56 @@ async fn features_report_mail_off_without_a_key(pool: PgPool) {
     assert_eq!((st, body), (StatusCode::NO_CONTENT, Value::Null));
 }
 
+/// The second (unix) a change or reset happened, read back from the watermark: with the fix it is
+/// T+1 → T; with a plain `now()` it is T.xxx → T as well. Deterministic, no clock race with argon2.
+async fn operation_second(pool: &PgPool, id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT floor(extract(epoch FROM tokens_valid_after - interval '1 microsecond'))::bigint FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn assert_same_second_dead_next_alive(app: &Router, pool: &PgPool, id: uuid::Uuid, what: &str) {
+    let t = operation_second(pool, id).await;
+    let same_second = token_with_iat(&id.to_string(), t);
+    let (st, _) = send(app, build("GET", "/api/me", Some(&same_second), None)).await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "[SEC] a token minted in the second of the {what} is dead"
+    );
+    let next_second = token_with_iat(&id.to_string(), t + 1);
+    let (st, _) = send(app, build("GET", "/api/me", Some(&next_second), None)).await;
+    assert_eq!(st, StatusCode::OK, "a token minted after the {what} works");
+}
+
 /// A token minted in the very second of the change (before it) must die too: JWT `iat` has
 /// one-second resolution, so the watermark goes one second past the change.
 #[sqlx::test(migrations = "./migrations")]
 async fn a_token_from_the_same_second_as_the_change_is_rejected(pool: PgPool) {
     let app = make_app(pool.clone());
-    let mut token = register(&app, "same@x.co", "password1").await;
+    let token = register(&app, "same@x.co", "password1").await;
     let id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = 'same@x.co'")
         .fetch_one(&pool)
         .await
         .unwrap();
-    let mut current = "password1".to_string();
-    let mut checked = false;
-    for round in 0..4 {
-        // Start right after a second boundary so the change finishes within that second.
-        let now = Utc::now();
-        let wait = 1_000 - i64::from(now.timestamp_subsec_millis()) + 20;
-        tokio::time::sleep(std::time::Duration::from_millis(wait as u64)).await;
-        let before = Utc::now().timestamp();
-        let next = format!("newpass-{round}");
-        let (st, v) = send(
-            &app,
-            build(
-                "POST",
-                "/api/me/password",
-                Some(&token),
-                Some(json!({"current": current, "new": next})),
-            ),
-        )
-        .await;
-        assert_eq!(st, StatusCode::OK, "{v}");
-        let after = Utc::now().timestamp();
-        token = v["token"].as_str().unwrap().to_string();
-        current = next;
-        if before == after {
-            let same_second = token_with_iat(&id.to_string(), before);
-            let (st, _) = send(&app, build("GET", "/api/me", Some(&same_second), None)).await;
-            assert_eq!(
-                st,
-                StatusCode::UNAUTHORIZED,
-                "[SEC] a token minted in the second of the change is dead"
-            );
-            checked = true;
-            break;
-        }
-    }
-    assert!(checked, "the change never fitted in one second; the check did not run");
-    let (st, _) = send(&app, build("GET", "/api/me", Some(&token), None)).await;
-    assert_eq!(st, StatusCode::OK);
+    let (st, v) = send(
+        &app,
+        build(
+            "POST",
+            "/api/me/password",
+            Some(&token),
+            Some(json!({"current": "password1", "new": "newpass-1"})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_same_second_dead_next_alive(&app, &pool, id, "change").await;
+    let (st, _) = send(&app, build("GET", "/api/me", Some(v["token"].as_str().unwrap()), None)).await;
+    assert_eq!(st, StatusCode::OK, "the token from the answer works");
 }
 
 /// Review item 1: a reset signs out a token minted in the very second of the reset, too.
@@ -442,47 +444,26 @@ async fn a_reset_kills_a_token_from_the_same_second(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    let mut checked = false;
-    for round in 0..4 {
-        let raw = format!("same-second-{round}");
-        sqlx::query("INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '20 minutes')")
-            .bind(id)
-            .bind(underground_api::passwords::token_hash(&raw))
-            .execute(&pool)
-            .await
-            .unwrap();
-        let wait = 1_000 - i64::from(Utc::now().timestamp_subsec_millis()) + 20;
-        tokio::time::sleep(std::time::Duration::from_millis(wait as u64)).await;
-        let before = Utc::now().timestamp();
-        let (st, _) = send(
-            &app,
-            build(
-                "POST",
-                "/api/auth/reset-password",
-                None,
-                Some(json!({"token": raw, "password": format!("resetpw-{round}")})),
-            ),
-        )
-        .await;
-        assert_eq!(st, StatusCode::NO_CONTENT);
-        let after = Utc::now().timestamp();
-        if before == after {
-            // iat = the floored second of the reset (what `floor(watermark)` was before the fix).
-            let same_second = token_with_iat(&id.to_string(), before);
-            let (st, _) = send(&app, build("GET", "/api/me", Some(&same_second), None)).await;
-            assert_eq!(
-                st,
-                StatusCode::UNAUTHORIZED,
-                "[SEC] a token minted in the second of the reset is dead"
-            );
-            let next_second = token_with_iat(&id.to_string(), before + 1);
-            let (st, _) = send(&app, build("GET", "/api/me", Some(&next_second), None)).await;
-            assert_eq!(st, StatusCode::OK, "a sign-in after the reset works");
-            checked = true;
-            break;
-        }
-    }
-    assert!(checked, "the reset never fitted in one second; the check did not run");
+    sqlx::query(
+        "INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '20 minutes')",
+    )
+    .bind(id)
+    .bind(underground_api::passwords::token_hash("same-second"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (st, _) = send(
+        &app,
+        build(
+            "POST",
+            "/api/auth/reset-password",
+            None,
+            Some(json!({"token": "same-second", "password": "resetpw-1"})),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert_same_second_dead_next_alive(&app, &pool, id, "reset").await;
 }
 
 /// Review item 6: the bounds count characters, not bytes.
