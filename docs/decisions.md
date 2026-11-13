@@ -46,3 +46,11 @@ account lookup, identically for every address. **Residual, for the owner:** an a
 default caps) can still spend the daily budget, which stops reset and code mail for everyone until slots free up
 (rolling 24 h), or keep one address delayed for as long as the attack lasts. Closing that needs a CAPTCHA, a paid
 mail plan with a higher budget, or both: a product and money decision.
+
+## 2026-11-13 — TASK-304: residual mail risk accepted for DEV, CAPTCHA before prod
+
+Question put to the owner: the many-IP residual above (budget exhaustion / delaying one address); options were
+accept for DEV with a CAPTCHA (Cloudflare Turnstile, free) before prod, a CAPTCHA now, or accept permanently.
+Owner's answer (verbatim): «Прийняти для DEV, капча до проду (Recommended)».
+Consequence: Turnstile on the code-request and forgot-password forms is a prerequisite of Underground's first
+prod release (tracked in docs/STATE.md); the Turnstile site key/secret are created by the owner.
