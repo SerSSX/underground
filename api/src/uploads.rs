@@ -361,7 +361,7 @@ fn limit_child(mem_bytes: u64) -> std::io::Result<()> {
     // Linux enforces the address-space limit; macOS accepts or refuses it but never enforces it,
     // so it is not set there.
     #[cfg(target_os = "linux")]
-    set(libc::RLIMIT_AS as libc::c_int, mem_bytes)?;
+    let _ = mem_bytes; // MUTANT: RLIMIT_AS removed
     #[cfg(not(target_os = "linux"))]
     let _ = mem_bytes;
     Ok(())
