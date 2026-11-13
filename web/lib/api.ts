@@ -2,6 +2,7 @@ import { safeNextFor } from "./safe-next.mjs";
 import { currentLang } from "./i18n-core.mjs";
 import { canonicalServerText, serverText } from "./server-messages.mjs";
 import { mapsHref } from "./geo-core.mjs";
+import { shrinkForUpload } from "./image-shrink";
 const BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const TOKEN_KEY = "ug_web_token";
 
@@ -63,9 +64,12 @@ export async function apiSend<T>(method: string, path: string, body?: unknown): 
   const text = await res.text();
   return (text ? JSON.parse(text) : null) as T;
 }
+/** Upload a picture. The API stores it as WebP (≤ 1600 px, plus a 480 px card copy beside it, see
+ *  lib/images.mjs) and answers its URL. Big photos are shrunk in the browser first (TASK-304): less mobile data,
+ *  and a 12 MB phone photo fits the 5 MB limit. */
 export async function uploadImage(file: File): Promise<string> {
   const form = new FormData();
-  form.append("file", file);
+  form.append("file", await shrinkForUpload(file));
   const res = await check(await fetch(`${BASE}/api/uploads`, { method: "POST", headers: authHeaders(), body: form }));
   return ((await res.json()) as { url: string }).url;
 }
@@ -113,6 +117,8 @@ export interface UserDto {
   bio: string | null;
   is_organizer: boolean;
   dob?: string | null;
+  /** The account has a password (TASK-304; absent from an older API → treated as true). */
+  has_password?: boolean;
 }
 
 /** Minimum-age ratings an organizer can set (empty = unrestricted). */
@@ -238,15 +244,39 @@ export async function register(email: string, password: string, name: string): P
   const data = await apiSend<{ token: string }>("POST", "/api/auth/register", { email, password, name, locale: currentLang() });
   return data.token;
 }
+/** The mail goes out in the account's language, or in the UI language when the account has none stored. */
 export async function forgotPassword(email: string): Promise<void> {
-  await apiSend("POST", "/api/auth/forgot-password", { email });
+  await apiSend("POST", "/api/auth/forgot-password", { email, locale: currentLang() });
+}
+/** Change the password (or set a first one for an account without). The API signs out every other session
+ *  and answers a fresh token for this one, stored here. */
+export async function changePassword(current: string | null, next: string): Promise<void> {
+  const data = await apiSend<{ token: string }>("POST", "/api/me/password", { ...(current ? { current } : {}), new: next });
+  setToken(data.token);
 }
 export async function resetPassword(token: string, password: string): Promise<void> {
   await apiSend("POST", "/api/auth/reset-password", { token, password });
 }
 // Passwordless email one-time code (TASK-115). request → email a code; verify → app-JWT.
 export async function requestEmailCode(email: string): Promise<void> {
-  await apiSend("POST", "/api/auth/email/request-code", { email });
+  await apiSend("POST", "/api/auth/email/request-code", { email, locale: currentLang() });
+}
+
+/** What this deployment can do right now (TASK-304), from `GET /api/features`. `email`: the mail service is
+ *  connected, so code sign-in and password-reset emails really arrive. */
+export interface Features {
+  email: boolean;
+}
+let featuresPromise: Promise<Features> | null = null;
+/** Read once per page load; any failure reads as "off", so the site never offers what may not work. */
+export function getFeatures(): Promise<Features> {
+  featuresPromise ??= apiGet<Partial<Features>>("/api/features")
+    .then((f) => ({ email: f.email === true }))
+    .catch(() => {
+      featuresPromise = null;
+      return { email: false };
+    });
+  return featuresPromise;
 }
 export async function verifyEmailCode(email: string, code: string): Promise<string> {
   // May create the account: it starts in the UI language, as with register().

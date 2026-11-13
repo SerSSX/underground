@@ -134,4 +134,7 @@ test("typed city lookup trusts seeded rows, or learned rows only in the country 
   assert.equal(trustedCityRow([{ name: "Lisbon", lat: 38.7, lng: -9.1 }], "Lisbon", null)?.name, "Lisbon", "an older API without source");
   assert.equal(trustedCityRow([{ ...seed, lat: 99 }], "Porto", null), null, "a row without a valid point");
   assert.equal(trustedCityRow(null, "Porto", null), null);
+  // N4: a known country never falls back to a row elsewhere, seeded or not.
+  assert.equal(trustedCityRow([seed], "Porto", "BR"), null, "the seeded Porto (PT) is not used for a Brazilian form");
+  assert.equal(trustedCityRow([seed, osmBR], "Porto", "PT"), seed, "the seeded row in the known country");
 });

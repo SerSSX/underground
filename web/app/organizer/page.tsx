@@ -118,7 +118,7 @@ export default function OrganizerPage() {
             const pct = total > 0 ? Math.round((booked / total) * 100) : 0;
             return (
               <article key={e.id} className="orow">
-                <Link href={`/organizer/${e.id}`} className="thumb" aria-label={e.title}><Poster src={e.poster_url} title={e.title} category={e.category} /></Link>
+                <Link href={`/organizer/${e.id}`} className="thumb" aria-label={e.title}><Poster src={e.poster_url} title={e.title} category={e.category} variant="thumb" /></Link>
                 <div style={{ minWidth: 0 }}>
                   <div className="row gap wrap" style={{ marginBottom: 4 }}>{statusBadge(e)}</div>
                   <Link href={`/organizer/${e.id}`}><h3 style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.title}</h3></Link>

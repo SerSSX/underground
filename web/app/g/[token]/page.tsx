@@ -17,13 +17,15 @@ import {
   errorMessage,
   type GiftPreviewDto,
 } from "../../../lib/api";
-import { EMAIL_CODE_LOGIN } from "../../../lib/flags";
+import { useFeatures } from "../../../lib/features";
 import { shortWhen } from "../../../lib/ui";
 import { Gift } from "../../components/Icon";
 import { useLang, tr, tf } from "../../../lib/i18n";
 
 export default function ClaimGiftPage() {
   const { lang } = useLang();
+  // Code sign-in here only where mail really goes out (TASK-304); otherwise sign in or sign up.
+  const mail = useFeatures().email;
   const token = String(useParams().token || "");
   const [preview, setPreview] = useState<GiftPreviewDto | null>(null);
   const [loading, setLoading] = useState(true);
@@ -117,7 +119,7 @@ export default function ClaimGiftPage() {
         <button className="btn block" style={{ marginTop: 12 }} disabled={busy} onClick={claim}>
           {busy ? "…" : tr(lang, "Забрати квиток", "Claim ticket")}
         </button>
-      ) : !EMAIL_CODE_LOGIN ? (
+      ) : !mail ? (
         <div className="stack" style={{ marginTop: 16 }}>
           <Link className="btn block lg" href={`/login?next=${encodeURIComponent(`/g/${token}`)}`}>{tr(lang, "Увійти й забрати місце", "Sign in to claim")}</Link>
           <Link className="btn ghost block" href={`/register?next=${encodeURIComponent(`/g/${token}`)}`}>{tr(lang, "Створити акаунт", "Create an account")}</Link>

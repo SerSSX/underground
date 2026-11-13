@@ -595,5 +595,19 @@
   "такий код уже існує": "bu kod zaten var",
   "Помилка {status}": "Hata {status}",
   "на одну людину — не більше {max} місць (у вас уже {held})": "kişi başı en fazla {max} yer (zaten {held} yerin var)",
-  "забагато активних запрошень (до {max}); скасуйте непотрібні": "çok fazla bekleyen davet (en fazla {max}); gereksizleri iptal et"
+  "забагато активних запрошень (до {max}); скасуйте непотрібні": "çok fazla bekleyen davet (en fazla {max}); gereksizleri iptal et",
+  "Пароль змінено. Інші пристрої вийшли з акаунта.": "Şifre değiştirildi. Diğer cihazlarından çıkış yapıldı.",
+  "Після зміни пароля інші пристрої вийдуть з акаунта.": "Şifreyi değiştirmek diğer cihazlarından çıkış yapar.",
+  "Ви входите кодом з пошти. Задайте пароль, щоб входити й ним.": "E-postayla gelen bir kodla giriş yapıyorsun. Şifreyle de girebilmek için bir şifre belirle.",
+  "Поточний пароль": "Mevcut şifre",
+  "Новий пароль": "Yeni şifre",
+  "Задати пароль": "Şifre belirle",
+  "Відновлення пароля поштою поки недоступне.": "E-postayla şifre sıfırlama henüz kullanılamıyor.",
+  "Ця пошта вже має акаунт. Увійдіть у нього.": "Bu e-postanın zaten bir hesabı var. O hesaba giriş yap.",
+  "неправильний поточний пароль": "mevcut şifre yanlış",
+  "введіть поточний пароль": "mevcut şifreni gir",
+  "увійдіть ще раз, щоб задати пароль": "şifre belirlemek için tekrar giriş yap",
+  "пароль задовгий (до 256 символів)": "şifre çok uzun (en fazla 256 karakter)",
+  "файл не є зображенням JPEG, PNG або WebP": "dosya bir JPEG, PNG veya WebP görseli değil",
+  "зображення завелике: до 32 мегапікселів": "görsel çok büyük: en fazla 32 megapiksel"
 }

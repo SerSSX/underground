@@ -595,5 +595,19 @@
   "такий код уже існує": "este código ya existe",
   "Помилка {status}": "Error {status}",
   "на одну людину — не більше {max} місць (у вас уже {held})": "máximo {max} plazas por persona (ya tienes {held})",
-  "забагато активних запрошень (до {max}); скасуйте непотрібні": "demasiadas invitaciones pendientes (hasta {max}); cancela las que no necesites"
+  "забагато активних запрошень (до {max}); скасуйте непотрібні": "demasiadas invitaciones pendientes (hasta {max}); cancela las que no necesites",
+  "Пароль змінено. Інші пристрої вийшли з акаунта.": "Contraseña cambiada. Se cerró la sesión en tus otros dispositivos.",
+  "Після зміни пароля інші пристрої вийдуть з акаунта.": "Al cambiar la contraseña se cierra la sesión en tus otros dispositivos.",
+  "Ви входите кодом з пошти. Задайте пароль, щоб входити й ним.": "Entras con un código por correo. Crea una contraseña para entrar también con ella.",
+  "Поточний пароль": "Contraseña actual",
+  "Новий пароль": "Contraseña nueva",
+  "Задати пароль": "Crear contraseña",
+  "Відновлення пароля поштою поки недоступне.": "El restablecimiento de contraseña por correo aún no está disponible.",
+  "Ця пошта вже має акаунт. Увійдіть у нього.": "Este correo ya tiene una cuenta. Inicia sesión en ella.",
+  "неправильний поточний пароль": "la contraseña actual no es correcta",
+  "введіть поточний пароль": "introduce tu contraseña actual",
+  "увійдіть ще раз, щоб задати пароль": "inicia sesión de nuevo para crear una contraseña",
+  "пароль задовгий (до 256 символів)": "la contraseña es demasiado larga (hasta 256 caracteres)",
+  "файл не є зображенням JPEG, PNG або WebP": "el archivo no es una imagen JPEG, PNG o WebP",
+  "зображення завелике: до 32 мегапікселів": "la imagen es demasiado grande: hasta 32 megapíxeles"
 }

@@ -36,7 +36,7 @@ export default function EventCard({
   return (
     <article className="ecard">
       <Link href={`/events/${event.id}`} className="poster" aria-label={event.title}>
-        <Poster src={event.poster_url} title={event.title} category={event.category} eager={eager} />
+        <Poster src={event.poster_url} title={event.title} category={event.category} eager={eager} variant="card" />
         {badge && (
           <span className="date-badge" aria-hidden>
             <div className="d">{badge.day}</div>

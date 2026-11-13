@@ -27,7 +27,7 @@ function InboxInner() {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
 
   const loadConvs = useCallback(() => myConversations().then(setConvs).catch((e) => { setError(errorMessage(e)); setConvs([]); }), []);
 
@@ -67,7 +67,40 @@ function InboxInner() {
     const id = setInterval(pull, 8000);
     return () => { stop = true; clearInterval(id); };
   }, [peer]);
-  useEffect(() => { bottom.current?.scrollIntoView({ block: "end" }); }, [msgs.length]);
+  // Newest message into view by scrolling the message list itself, never the page: scrollIntoView also scrolled
+  // the window, which on a phone pushed the compose bar under the on-screen keyboard (TASK-304).
+  const toNewest = useCallback(() => {
+    const el = list.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+  useEffect(toNewest, [msgs.length, toNewest]);
+
+  // Phones: an open conversation fills exactly the VISIBLE part of the screen (the visual viewport, which shrinks
+  // when the keyboard opens), so the compose bar sits right above the keyboard and the last message above it.
+  // The page behind is locked so it cannot scroll the bar away.
+  useEffect(() => {
+    if (!peer) return;
+    const root = document.documentElement;
+    const vv = window.visualViewport;
+    const fit = () => {
+      root.style.setProperty("--vv-h", `${Math.round(vv ? vv.height : window.innerHeight)}px`);
+      root.style.setProperty("--vv-top", `${Math.round(vv ? vv.offsetTop : 0)}px`);
+      toNewest();
+    };
+    fit();
+    root.classList.add("chat-open");
+    vv?.addEventListener("resize", fit);
+    vv?.addEventListener("scroll", fit);
+    window.addEventListener("resize", fit);
+    return () => {
+      vv?.removeEventListener("resize", fit);
+      vv?.removeEventListener("scroll", fit);
+      window.removeEventListener("resize", fit);
+      root.classList.remove("chat-open");
+      root.style.removeProperty("--vv-h");
+      root.style.removeProperty("--vv-top");
+    };
+  }, [peer, toNewest]);
 
   useEffect(() => {
     if (tab === "alerts" && alerts?.some((n) => !n.read)) void markNotificationsRead().catch(() => {});
@@ -133,19 +166,18 @@ function InboxInner() {
                     <span className="avatar sm">{peer.avatar ? <img src={peer.avatar} alt="" /> : initials(peer.name)}</span>
                     <span className="strong">{peer.name}</span>
                   </div>
-                  <div className="chat-msgs" aria-live="polite">
+                  <div className="chat-msgs" aria-live="polite" ref={list}>
                     {msgs.length === 0 && <p className="muted small" style={{ textAlign: "center", marginTop: 20 }}>{tr(lang, "Напишіть перше повідомлення — організатор побачить його тут.", "Write the first message — the organiser will see it here.")}</p>}
                     {msgs.map((m) => (
                       <div key={m.id} className={`bubble ${m.sender_id === me?.id ? "mine" : "theirs"}`}>
                         {m.text}<span className="tm">{shortWhen(m.created_at, lang)}</span>
                       </div>
                     ))}
-                    <div ref={bottom} />
                   </div>
                   <form className="chat-compose" onSubmit={(e) => { e.preventDefault(); void send(); }}>
                     <label className="sr-only" htmlFor="msg">{tr(lang, "Повідомлення", "Message")}</label>
-                    <input id="msg" className="input" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} placeholder={tr(lang, "Повідомлення…", "Message…")} autoComplete="off" />
-                    <button className="btn icon" disabled={sending || !text.trim()} aria-label={tr(lang, "Надіслати", "Send")}><Send className="ico sm" /></button>
+                    <input id="msg" className="input" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} onFocus={() => setTimeout(toNewest, 300)} placeholder={tr(lang, "Повідомлення…", "Message…")} autoComplete="off" enterKeyHint="send" />
+                    <button className="btn icon" disabled={sending || !text.trim()} aria-label={tr(lang, "Надіслати", "Send")} onPointerDown={(e) => e.preventDefault()}><Send className="ico sm" /></button>
                   </form>
                 </>
               ) : (

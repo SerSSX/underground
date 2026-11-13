@@ -595,5 +595,19 @@
   "такий код уже існує": "este código já existe",
   "Помилка {status}": "Erro {status}",
   "на одну людину — не більше {max} місць (у вас уже {held})": "no máximo {max} lugares por pessoa (já tem {held})",
-  "забагато активних запрошень (до {max}); скасуйте непотрібні": "demasiados convites pendentes (até {max}); cancele aqueles de que não precisa"
+  "забагато активних запрошень (до {max}); скасуйте непотрібні": "demasiados convites pendentes (até {max}); cancele aqueles de que não precisa",
+  "Пароль змінено. Інші пристрої вийшли з акаунта.": "Palavra-passe alterada. A sessão foi terminada nos outros dispositivos.",
+  "Після зміни пароля інші пристрої вийдуть з акаунта.": "Ao alterar a palavra-passe, a sessão é terminada nos seus outros dispositivos.",
+  "Ви входите кодом з пошти. Задайте пароль, щоб входити й ним.": "Inicia sessão com um código enviado por email. Defina uma palavra-passe para também entrar com ela.",
+  "Поточний пароль": "Palavra-passe atual",
+  "Новий пароль": "Nova palavra-passe",
+  "Задати пароль": "Definir palavra-passe",
+  "Відновлення пароля поштою поки недоступне.": "A recuperação da palavra-passe por email ainda não está disponível.",
+  "Ця пошта вже має акаунт. Увійдіть у нього.": "Este email já tem uma conta. Inicie sessão nela.",
+  "неправильний поточний пароль": "a palavra-passe atual está errada",
+  "введіть поточний пароль": "introduza a sua palavra-passe atual",
+  "увійдіть ще раз, щоб задати пароль": "inicie sessão novamente para definir uma palavra-passe",
+  "пароль задовгий (до 256 символів)": "a palavra-passe é demasiado longa (até 256 caracteres)",
+  "файл не є зображенням JPEG, PNG або WebP": "o ficheiro não é uma imagem JPEG, PNG ou WebP",
+  "зображення завелике: до 32 мегапікселів": "a imagem é demasiado grande: até 32 megapíxeis"
 }

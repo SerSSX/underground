@@ -5,6 +5,12 @@
 /* ---------- base ---------- */
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
+/* TASK-304 (owner): the mobile page must not stretch sideways or bounce-zoom. A guard against any element wider
+   than the screen (real overflows are fixed where found), no pull-to-refresh glow chaining out of inner
+   scrollers, and no double-tap zoom on controls. */
+html, body { overflow-x: hidden; overscroll-behavior-x: none; }
+@supports (overflow: clip) { html, body { overflow-x: clip; } }
+a, button, input, select, textarea, label, summary, [role="button"], [role="tab"] { touch-action: manipulation; }
 html, body {
   margin: 0;
   padding: 0;
@@ -166,6 +172,11 @@ textarea.input { min-height: 110px; resize: vertical; line-height: 1.5; }
 .input[aria-invalid="true"] { border-color: var(--danger); }
 select.input { appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23a3a8b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 40px; }
 input[type="date"].input, input[type="datetime-local"].input, input[type="time"].input { color-scheme: dark; }
+/* iOS Safari zooms the page into any focused field whose text is under 16 px (TASK-304): every field is 16 px
+   on phones, whatever class it carries. */
+@media (max-width: 860px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea, .input { font-size: 16px; }
+}
 .input-icon { position: relative; }
 .input-icon .ico { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--muted-2); pointer-events: none; }
 .input-icon .input { padding-left: 42px; }
@@ -390,10 +401,22 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 .bubble.theirs { align-self: flex-start; border-bottom-left-radius: 6px; }
 .bubble .tm { display: block; font-size: 11px; opacity: .65; margin-top: 4px; }
 .chat-compose { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
+.chat-compose .input { flex: 1; min-width: 0; }
 @media (max-width: 860px) {
   .chat-layout { grid-template-columns: 1fr; height: calc(100dvh - 56px - var(--tabbar-h) - 160px - env(safe-area-inset-bottom)); border-radius: var(--r-lg); }
   .chat-layout.has-thread .chat-list { display: none; }
   .chat-layout:not(.has-thread) .chat-thread { display: none; }
+  /* TASK-304: an open conversation on a phone fills the VISIBLE screen (--vv-top/--vv-h come from
+     window.visualViewport in app/inbox/page.tsx and shrink when the keyboard opens), above the top and tab bars,
+     so the compose bar always sits right above the keyboard. The page behind it is locked. */
+  .chat-layout.has-thread {
+    position: fixed; left: 0; right: 0; top: var(--vv-top, 0px); z-index: 70;
+    height: var(--vv-h, 100dvh); border: 0; border-radius: 0;
+  }
+  .chat-layout.has-thread .chat-head { padding-top: max(12px, env(safe-area-inset-top)); }
+  .chat-layout.has-thread .chat-msgs { overscroll-behavior: contain; padding: 14px; }
+  .chat-layout.has-thread .chat-compose { padding-bottom: max(12px, env(safe-area-inset-bottom)); background: var(--surface); }
+  html.chat-open, html.chat-open body { overflow: hidden; overscroll-behavior: none; }
 }
 
 /* ---------- tables (secondary pages) ---------- */
@@ -438,6 +461,7 @@ input[type="date"].input, input[type="datetime-local"].input, input[type="time"]
 .lang-pick select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; font-size: 16px; border: 0; }
 .lang-select { display: inline-block; min-width: 180px; }
 .lang-select select.input { min-height: 40px; padding-top: 6px; padding-bottom: 6px; font-size: 14px; }
+@media (max-width: 860px) { .lang-select select.input { font-size: 16px; } }
 .menu-lang { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }
 .menu-lang .lang-select { flex: 1; min-width: 0; }
 

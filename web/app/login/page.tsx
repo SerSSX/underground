@@ -1,10 +1,11 @@
 "use client";
 
-import { Suspense, useState, type FormEvent } from "react";
+import { Suspense, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { login, requestEmailCode, verifyEmailCode, setToken, errorMessage, isUnauthorized, safeNext, syncUserLocale } from "../../lib/api";
-import { EMAIL_CODE_LOGIN } from "../../lib/flags";
+import { useFeatures } from "../../lib/features";
+import { takePrefillEmail } from "../../lib/prefill";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import AuthCard from "../components/AuthCard";
@@ -23,6 +24,16 @@ function LoginForm() {
   const [codeSent, setCodeSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Code sign-in and "Forgot?" only where mail really goes out (GET /api/features, TASK-304).
+  const mail = useFeatures().email;
+  // Sent here from sign-up with an address that already has an account: start with it filled in.
+  useEffect(() => {
+    const prefill = takePrefillEmail();
+    if (prefill) setEmail((e) => e || prefill);
+  }, []);
+  useEffect(() => {
+    if (!mail) setMode("password");
+  }, [mail]);
 
   async function run(fn: () => Promise<void>, wrong?: string) {
     setBusy(true);
@@ -66,7 +77,7 @@ function LoginForm() {
       subtitle={tr(lang, "Увійдіть, щоб бронювати місця й створювати події.", "Sign in to book places and create events.")}
       footer={<>{tr(lang, "Ще немає акаунта?", "No account yet?")} <Link className="link" href={`/register?next=${encodeURIComponent(next)}`}>{tr(lang, "Зареєструватися", "Sign up")}</Link></>}
     >
-      {EMAIL_CODE_LOGIN && (
+      {mail && (
         <div className="seg" style={{ width: "100%", marginBottom: 18 }}>
           <button type="button" className={mode === "password" ? "active" : ""} style={{ flex: 1 }} onClick={() => setMode("password")}>{tr(lang, "Пароль", "Password")}</button>
           <button type="button" className={mode === "code" ? "active" : ""} style={{ flex: 1 }} onClick={() => setMode("code")}>{tr(lang, "Код на пошту", "Email code")}</button>
@@ -81,7 +92,7 @@ function LoginForm() {
             <input id="email" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" inputMode="email" />
           </div>
           <div className="field">
-            <div className="row spread"><label htmlFor="pw">{tr(lang, "Пароль", "Password")}</label>{EMAIL_CODE_LOGIN && <Link className="link small" href="/forgot-password">{tr(lang, "Забули?", "Forgot?")}</Link>}</div>
+            <div className="row spread"><label htmlFor="pw">{tr(lang, "Пароль", "Password")}</label>{mail && <Link className="link small" href="/forgot-password">{tr(lang, "Забули?", "Forgot?")}</Link>}</div>
             <div style={{ position: "relative" }}>
               <input id="pw" className="input" type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" style={{ paddingRight: 48 }} />
               <button type="button" className="btn quiet icon sm" style={{ position: "absolute", right: 6, top: 6 }} onClick={() => setShow((s) => !s)} aria-label={show ? tr(lang, "Сховати пароль", "Hide password") : tr(lang, "Показати пароль", "Show password")} aria-pressed={show}><Eye className="ico sm" /></button>

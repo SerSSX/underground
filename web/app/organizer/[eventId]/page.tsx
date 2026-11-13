@@ -183,7 +183,7 @@ function ManageInner() {
       <Link href="/organizer" className="btn quiet sm" style={{ marginLeft: -12, marginBottom: 8 }}><ChevronLeft className="ico sm" />{tr(lang, "Мої події", "My events")}</Link>
 
       <div className="orow" style={{ marginBottom: 20 }}>
-        <div className="thumb"><Poster src={event.poster_url} title={event.title} category={event.category} /></div>
+        <div className="thumb"><Poster src={event.poster_url} title={event.title} category={event.category} variant="thumb" /></div>
         <div style={{ minWidth: 0 }}>
           <h1 style={{ fontSize: 24 }}>{event.title}</h1>
           <div className="muted small" style={{ marginTop: 4 }}>{shortWhen(event.starts_at, lang, event.timezone)}{event.city ? ` · ${event.city}` : ""}</div>

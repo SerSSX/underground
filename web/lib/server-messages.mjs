@@ -73,6 +73,13 @@ export const SERVER_MESSAGES = {
   "акаунт недоступний": "the account is unavailable",
   "відгуки відкриються після початку події": "reviews open once the event has started",
   "такий код уже існує": "this code already exists",
+  // TASK-304: passwords and pictures (api/src/passwords.rs, uploads.rs)
+  "неправильний поточний пароль": "the current password is wrong",
+  "введіть поточний пароль": "enter your current password",
+  "увійдіть ще раз, щоб задати пароль": "sign in again to set a password",
+  "пароль задовгий (до 256 символів)": "the password is too long (up to 256 characters)",
+  "файл не є зображенням JPEG, PNG або WebP": "the file is not a JPEG, PNG or WebP image",
+  "зображення завелике: до 32 мегапікселів": "the image is too large: up to 32 megapixels",
 };
 
 /** Server texts with numbers in them: the regex captures the values, in the order of `vars`. */

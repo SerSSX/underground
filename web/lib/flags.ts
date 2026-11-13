@@ -5,7 +5,5 @@ export const FREE_ONLY = process.env.NEXT_PUBLIC_FREE_ONLY !== "0";
 /** Most places one person may book for one event (owner decision 2026-11-11). */
 export const MAX_PLACES = 5;
 
-/** The mail service is connected: sign-in by an emailed one-time code and password-reset emails.
- *  Off until plan step 1 connects it — without it no email arrives, and the site must not offer what it
- *  cannot do. */
-export const EMAIL_CODE_LOGIN = process.env.NEXT_PUBLIC_EMAIL_LOGIN === "1";
+// Mail (code sign-in, password reset) is no longer a build-time flag: lib/features.ts reads it at runtime from
+// GET /api/features (TASK-304).

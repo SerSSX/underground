@@ -217,7 +217,8 @@ export function storeCity(chosen) {
  * The gazetteer row (`GET /api/cities`) a form may take a typed city's zone, point and country from
  * (TASK-303 G1 fix batch: learned `osm` rows answer only their own country). A row matches the name (any case)
  * and is either seeded (`source` "seed", or no `source` from an older API) or learned with the country code the
- * form already knows. Among several, the one in the known country wins. None → null: the caller falls back.
+ * form already knows. When the country is known, only a row in that country is used; none → null: the caller
+ * falls back.
  */
 export function trustedCityRow(rows, name, countryCode) {
   if (!Array.isArray(rows) || typeof name !== "string") return null;
@@ -226,5 +227,8 @@ export function trustedCityRow(rows, name, countryCode) {
   const same = rows.filter((r) => r && typeof r.name === "string" && r.name.trim().toLowerCase() === lower && hasPoint(r));
   const inCountry = (r) => !!cc && typeof r.country_code === "string" && r.country_code.toUpperCase() === cc;
   const seeded = (r) => r.source === undefined || r.source === null || r.source === "seed";
-  return same.find(inCountry) ?? same.find(seeded) ?? null;
+  // A known country decides alone (TASK-303 N4): a seeded row of the same name elsewhere ("Porto" in Portugal
+  // for a Brazilian form) would put the event in the wrong country and zone.
+  if (cc) return same.find(inCountry) ?? null;
+  return same.find(seeded) ?? null;
 }

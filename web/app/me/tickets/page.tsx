@@ -181,7 +181,7 @@ function TicketsInner() {
             const maps = mapsUrl(g.venue, g.city);
             return (
               <article key={g.eventId} className="tcard">
-                <Link href={`/events/${g.eventId}`} className="thumb" aria-label={g.title}><Poster src={g.poster} title={g.title} category={null} /></Link>
+                <Link href={`/events/${g.eventId}`} className="thumb" aria-label={g.title}><Poster src={g.poster} title={g.title} category={null} variant="thumb" /></Link>
                 <div style={{ minWidth: 0 }}>
                   <Link href={`/events/${g.eventId}`}><h3>{g.title}</h3></Link>
                   <div className="muted small" style={{ marginTop: 2 }}>{shortWhen(g.startsAt, lang, g.tz)}</div>

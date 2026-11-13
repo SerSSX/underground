@@ -595,5 +595,19 @@
   "такий код уже існує": "ce code existe déjà",
   "Помилка {status}": "Erreur {status}",
   "на одну людину — не більше {max} місць (у вас уже {held})": "au maximum {max} places par personne (vous en avez déjà {held})",
-  "забагато активних запрошень (до {max}); скасуйте непотрібні": "trop d’invitations en attente (jusqu’à {max}) ; annulez celles dont vous n’avez pas besoin"
+  "забагато активних запрошень (до {max}); скасуйте непотрібні": "trop d’invitations en attente (jusqu’à {max}) ; annulez celles dont vous n’avez pas besoin",
+  "Пароль змінено. Інші пристрої вийшли з акаунта.": "Mot de passe modifié. Vos autres appareils ont été déconnectés.",
+  "Після зміни пароля інші пристрої вийдуть з акаунта.": "Changer le mot de passe déconnecte vos autres appareils.",
+  "Ви входите кодом з пошти. Задайте пароль, щоб входити й ним.": "Vous vous connectez avec un code reçu par e-mail. Définissez un mot de passe pour vous connecter aussi avec.",
+  "Поточний пароль": "Mot de passe actuel",
+  "Новий пароль": "Nouveau mot de passe",
+  "Задати пароль": "Définir un mot de passe",
+  "Відновлення пароля поштою поки недоступне.": "La réinitialisation du mot de passe par e-mail n'est pas encore disponible.",
+  "Ця пошта вже має акаунт. Увійдіть у нього.": "Cet e-mail a déjà un compte. Connectez-vous à ce compte.",
+  "неправильний поточний пароль": "le mot de passe actuel est incorrect",
+  "введіть поточний пароль": "saisissez votre mot de passe actuel",
+  "увійдіть ще раз, щоб задати пароль": "reconnectez-vous pour définir un mot de passe",
+  "пароль задовгий (до 256 символів)": "le mot de passe est trop long (256 caractères maximum)",
+  "файл не є зображенням JPEG, PNG або WebP": "le fichier n'est pas une image JPEG, PNG ou WebP",
+  "зображення завелике: до 32 мегапікселів": "l'image est trop grande : 32 mégapixels maximum"
 }

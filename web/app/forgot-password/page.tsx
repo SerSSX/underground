@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { forgotPassword, errorMessage } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
+import { useFeatures } from "../../lib/features";
 
 export default function ForgotPasswordPage() {
   const { lang } = useLang();
@@ -11,6 +12,7 @@ export default function ForgotPasswordPage() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const features = useFeatures();
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -29,7 +31,12 @@ export default function ForgotPasswordPage() {
   return (
     <main className="container narrow">
       <h1 style={{ fontSize: 24 }}>{tr(lang, "Відновлення паролю", "Reset password")}</h1>
-      {sent ? (
+      {!features.ready ? (
+        <div className="skeleton" style={{ height: 120, marginTop: 12 }} />
+      ) : !features.email ? (
+        // No mail service on this deployment: say so instead of promising a letter that never comes.
+        <p className="muted">{tr(lang, "Відновлення пароля поштою поки недоступне.", "Password reset by email isn't available yet.")}</p>
+      ) : sent ? (
         // Deliberately generic — we never reveal whether the email is registered.
         <p className="muted">
           {tr(

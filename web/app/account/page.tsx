@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getToken, getMe, patchMe, getPrefs, putPrefs, exportMyData, deleteMyAccount, uploadImage, errorMessage, EVENT_CATEGORIES, type UserDto } from "../../lib/api";
+import { getToken, getMe, patchMe, getPrefs, putPrefs, exportMyData, deleteMyAccount, uploadImage, changePassword, errorMessage, EVENT_CATEGORIES, type UserDto } from "../../lib/api";
 import { useLang, tr } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import { categoryLabel, initials } from "../../lib/ui";
@@ -11,7 +11,7 @@ import CityInput from "../components/CityInput";
 import Modal from "../components/Modal";
 import LanguagePicker from "../components/LanguagePicker";
 import { Toast, useToast } from "../components/Toast";
-import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight } from "../components/Icon";
+import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight, KeyRound } from "../components/Icon";
 
 export default function AccountPage() {
   const router = useRouter();
@@ -29,6 +29,11 @@ export default function AccountPage() {
   const [del, setDel] = useState(false);
   const [noPw, setNoPw] = useState(false);
   const [proof, setProof] = useState("");
+  // Password section (TASK-304).
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwRepeat, setPwRepeat] = useState("");
+  const [pwError, setPwError] = useState<string | null>(null);
   const [toast, showToast] = useToast();
 
   useEffect(() => {
@@ -74,6 +79,26 @@ export default function AccountPage() {
     a.download = "underground-my-data.json";
     a.click();
   });
+
+  const hasPassword = me?.has_password !== false;
+  const pwMismatch = pwRepeat.length > 0 && pwNew !== pwRepeat;
+  const savePassword = async () => {
+    setBusy("password");
+    setPwError(null);
+    try {
+      await changePassword(hasPassword ? pwCurrent : null, pwNew);
+      setPwCurrent("");
+      setPwNew("");
+      setPwRepeat("");
+      setMe((m) => (m ? { ...m, has_password: true } : m));
+      refresh();
+      showToast(tr(lang, "Пароль змінено. Інші пристрої вийшли з акаунта.", "Password changed. Other devices were signed out."));
+    } catch (e) {
+      setPwError(errorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const doDelete = () => run("delete", async () => {
     await deleteMyAccount(noPw ? { confirm: "DELETE" } : { password: proof });
@@ -144,6 +169,39 @@ export default function AccountPage() {
           <div className="row gap"><Globe className="ico" /><span className="strong">{tr(lang, "Мова інтерфейсу", "Language")}</span></div>
           <LanguagePicker />
         </div>
+      </section>
+
+      <section className="card section">
+        <h2 className="row gap" style={{ fontSize: 17, marginBottom: 4 }}><KeyRound className="ico" />{tr(lang, "Пароль", "Password")}</h2>
+        <p className="muted small" style={{ marginBottom: 14 }}>
+          {hasPassword
+            ? tr(lang, "Після зміни пароля інші пристрої вийдуть з акаунта.", "Changing the password signs out your other devices.")
+            : tr(lang, "Ви входите кодом з пошти. Задайте пароль, щоб входити й ним.", "You sign in with an email code. Set a password to sign in with it too.")}
+        </p>
+        <form className="form" style={{ maxWidth: 360 }} onSubmit={(e) => { e.preventDefault(); void savePassword(); }}>
+          {/* Lets password managers file the new password under the right account. */}
+          <input type="email" name="username" autoComplete="username" value={me.email} readOnly hidden />
+          {hasPassword && (
+            <div className="field">
+              <label htmlFor="pw-current">{tr(lang, "Поточний пароль", "Current password")}</label>
+              <input id="pw-current" className="input" type="password" value={pwCurrent} onChange={(e) => setPwCurrent(e.target.value)} autoComplete="current-password" required />
+            </div>
+          )}
+          <div className="field">
+            <label htmlFor="pw-new">{tr(lang, "Новий пароль", "New password")}</label>
+            <input id="pw-new" className="input" type="password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} autoComplete="new-password" minLength={8} maxLength={256} required aria-describedby="pw-new-hint" aria-invalid={pwNew.length > 0 && pwNew.length < 8} />
+            <span id="pw-new-hint" className={pwNew.length > 0 && pwNew.length < 8 ? "err" : "hint"}>{tr(lang, "Щонайменше 8 символів", "At least 8 characters")}</span>
+          </div>
+          <div className="field">
+            <label htmlFor="pw-repeat">{tr(lang, "Повторіть пароль", "Confirm password")}</label>
+            <input id="pw-repeat" className="input" type="password" value={pwRepeat} onChange={(e) => setPwRepeat(e.target.value)} autoComplete="new-password" required aria-invalid={pwMismatch} />
+            {pwMismatch && <span className="err">{tr(lang, "Паролі не співпадають", "Passwords don't match")}</span>}
+          </div>
+          {pwError && <div className="alert error" role="alert">{pwError}</div>}
+          <button className="btn secondary" style={{ alignSelf: "flex-start" }} disabled={busy === "password" || pwNew.length < 8 || pwNew !== pwRepeat || (hasPassword && !pwCurrent)}>
+            {hasPassword ? tr(lang, "Змінити пароль", "Change password") : tr(lang, "Задати пароль", "Set password")}
+          </button>
+        </form>
       </section>
 
       <section className="card section">

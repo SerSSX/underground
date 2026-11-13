@@ -27,9 +27,14 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image" as const },
 };
 
+// Owner's request (TASK-304): on phones the page keeps its size, no pinch or double-tap zoom. Known cost: people
+// with low vision cannot zoom in (WCAG 1.4.4); iOS Safari ignores user-scalable=no and still allows pinch. Fields
+// are 16 px on phones (globals.css), so iOS no longer zooms in when one is focused.
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
   viewportFit: "cover",
   themeColor: "#08090d",
 };

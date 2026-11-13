@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, type FormEvent } from "react";
+import { Suspense, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { resetPassword, errorMessage } from "../../lib/api";
@@ -9,7 +9,15 @@ import { useLang, tr } from "../../lib/i18n";
 function ResetForm() {
   const router = useRouter();
   const { lang } = useLang();
-  const token = useSearchParams().get("token") || "";
+  // The link's token is kept in state and taken out of the address bar at once (TASK-304), so it does not stay
+  // in the browser history or travel on in a Referer.
+  const fromUrl = useSearchParams().get("token") || "";
+  const [token, setTokenValue] = useState(fromUrl);
+  useEffect(() => {
+    if (!fromUrl) return;
+    setTokenValue(fromUrl);
+    window.history.replaceState(window.history.state, "", window.location.pathname);
+  }, [fromUrl]);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);

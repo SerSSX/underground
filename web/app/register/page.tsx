@@ -3,7 +3,8 @@
 import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { register, setToken, errorMessage, safeNext } from "../../lib/api";
+import { register, setToken, errorMessage, safeNext, ApiError } from "../../lib/api";
+import { setPrefillEmail } from "../../lib/prefill";
 import { useLang, rich, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
 import AuthCard from "../components/AuthCard";
@@ -20,11 +21,19 @@ function RegisterForm() {
   const [show, setShow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The address already has an account (API 409): offer to sign in with it instead (TASK-304).
+  const [exists, setExists] = useState(false);
+
+  const goLogin = () => {
+    setPrefillEmail(email.trim());
+    router.push(`/login?next=${encodeURIComponent(next)}`);
+  };
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setExists(false);
     try {
       setToken(await register(email.trim(), password, name.trim()));
       refresh();
@@ -32,7 +41,8 @@ function RegisterForm() {
       // interests are asked only of people who came to browse.
       router.push(next === "/" ? `/onboarding?next=${encodeURIComponent(next)}` : next);
     } catch (err) {
-      setError(errorMessage(err));
+      if (err instanceof ApiError && err.status === 409) setExists(true);
+      else setError(errorMessage(err));
       setBusy(false);
     }
   }
@@ -52,7 +62,7 @@ function RegisterForm() {
         </div>
         <div className="field">
           <label htmlFor="email">{tr(lang, "Email", "Email")}</label>
-          <input id="email" className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" inputMode="email" />
+          <input id="email" className="input" type="email" value={email} onChange={(e) => { setEmail(e.target.value); setExists(false); }} required autoComplete="email" inputMode="email" />
         </div>
         <div className="field">
           <label htmlFor="pw">{tr(lang, "Пароль", "Password")}</label>
@@ -62,6 +72,12 @@ function RegisterForm() {
           </div>
           <span id="pw-hint" className={short ? "err" : "hint"}>{tr(lang, "Щонайменше 8 символів", "At least 8 characters")}</span>
         </div>
+        {exists && (
+          <div className="alert" role="alert" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+            <span>{tr(lang, "Ця пошта вже має акаунт. Увійдіть у нього.", "This email already has an account. Log in to it.")}</span>
+            <button type="button" className="btn secondary" onClick={goLogin}>{tr(lang, "Увійти", "Log in")}</button>
+          </div>
+        )}
         {error && <div className="alert error">{error}</div>}
         <button className="btn block lg" disabled={busy || !name.trim() || !email.trim() || password.length < 8}>{busy ? "…" : tr(lang, "Створити акаунт", "Create account")}</button>
         <p className="subtle xs" style={{ textAlign: "center" }}>
