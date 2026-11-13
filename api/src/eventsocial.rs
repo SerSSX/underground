@@ -54,12 +54,13 @@ pub async fn social(
     // follows only, and only on a published event — otherwise anyone could follow a person and
     // learn which events (hidden and draft ones included) they booked.
     let friends_interested: Vec<UserBrief> = sqlx::query_as(
-        "SELECT u.id, u.name, u.avatar_url FROM event_saves s \
+        "SELECT u.id, CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS name, \
+            u.avatar_url FROM event_saves s \
          JOIN events e ON e.id = s.event_id AND e.status = 'published' \
          JOIN follows f ON f.followee_id = s.user_id AND f.follower_id = $2 \
          JOIN follows back ON back.follower_id = s.user_id AND back.followee_id = $2 \
          JOIN users u ON u.id = s.user_id AND u.blocked = false \
-         WHERE s.event_id = $1 ORDER BY u.name LIMIT 12",
+         WHERE s.event_id = $1 ORDER BY name LIMIT 12",
     )
     .bind(event_id)
     .bind(viewer_id)
@@ -67,12 +68,13 @@ pub async fn social(
     .await?;
 
     let friends_going: Vec<UserBrief> = sqlx::query_as(
-        "SELECT DISTINCT u.id, u.name, u.avatar_url FROM tickets t \
+        "SELECT DISTINCT u.id, CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS name, \
+            u.avatar_url FROM tickets t \
          JOIN events e ON e.id = t.event_id AND e.status = 'published' \
          JOIN follows f ON f.followee_id = t.owner_id AND f.follower_id = $2 \
          JOIN follows back ON back.follower_id = t.owner_id AND back.followee_id = $2 \
          JOIN users u ON u.id = t.owner_id AND u.blocked = false \
-         WHERE t.event_id = $1 AND t.status IN ('active','used') ORDER BY u.name LIMIT 12",
+         WHERE t.event_id = $1 AND t.status IN ('active','used') ORDER BY name LIMIT 12",
     )
     .bind(event_id)
     .bind(viewer_id)

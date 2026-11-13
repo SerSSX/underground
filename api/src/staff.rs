@@ -156,6 +156,15 @@ pub async fn accept_invite(
             "організатор не може прийняти власне запрошення".into(),
         ));
     }
+    // TASK-305: no door rights for a cancelled or finished event; the invite stays pending.
+    let sql = format!(
+        "SELECT e.status IN ('cancelled', 'blocked') OR {} FROM events e WHERE e.id = $1",
+        crate::tickets::EVENT_OVER_SQL
+    );
+    let gone: Option<bool> = sqlx::query_scalar(&sql).bind(event_id).fetch_one(&mut *tx).await?;
+    if gone.unwrap_or(false) {
+        return Err(AppError::Conflict("подію скасовано або вона вже минула".into()));
+    }
     sqlx::query(
         "INSERT INTO event_staff (event_id, user_id, permission, invited_by) \
          SELECT $1, $2, 'scan', invited_by FROM staff_invites WHERE id = $3 \

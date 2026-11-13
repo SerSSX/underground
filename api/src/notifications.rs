@@ -46,7 +46,8 @@ pub async fn notify_actor(
     }
     let result = sqlx::query(
         "INSERT INTO notifications (user_id, kind, title, body, event_id, actor_id) \
-         SELECT $1, $2, (SELECT name FROM users WHERE id = $3) || ' ' || \
+         SELECT $1, $2, (SELECT CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END \
+                FROM users u WHERE u.id = $3) || ' ' || \
             CASE WHEN COALESCE((SELECT locale FROM user_prefs WHERE user_id = $1), 'uk') <> 'uk' \
                  THEN $5 ELSE $4 END, \
             $6, $7, $3",
@@ -62,6 +63,9 @@ pub async fn notify_actor(
     .await?;
     Ok(result.rows_affected())
 }
+
+/// Most characters of an event title copied into a notification (TASK-305 F1).
+pub const NOTIFY_TITLE_MAX: usize = 120;
 
 /// Fan out an `event_match` notification to every user whose prefs match the
 /// event's category and city (a missing city on either side matches anything).
@@ -82,7 +86,7 @@ pub async fn notify_event_match(db: &PgPool, event: &Event) -> Result<u64, sqlx:
            AND ($6::uuid IS NULL OR p.user_id <> $6) \
            AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = p.user_id AND f.followee_id = $6)",
     )
-    .bind(&event.title)
+    .bind(crate::text::truncate_chars(&event.title, NOTIFY_TITLE_MAX))
     .bind(body)
     .bind(event.id)
     .bind(&event.category)
@@ -99,7 +103,8 @@ pub async fn notify_followers_new_event(db: &PgPool, event: &Event) -> Result<u6
     let result = sqlx::query(
         "INSERT INTO notifications (user_id, kind, title, body, event_id) \
          SELECT f.follower_id, 'organizer_event', \
-            (SELECT name FROM users WHERE id = $1) || \
+            (SELECT CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END \
+                FROM users u WHERE u.id = $1) || \
             CASE WHEN COALESCE(up.locale, 'uk') <> 'uk' THEN ' announced an event' ELSE ' оголосив(ла) подію' END, \
             $2, $3 \
          FROM follows f \
@@ -107,7 +112,7 @@ pub async fn notify_followers_new_event(db: &PgPool, event: &Event) -> Result<u6
          WHERE f.followee_id = $1",
     )
     .bind(event.organizer_id)
-    .bind(&event.title)
+    .bind(crate::text::truncate_chars(&event.title, NOTIFY_TITLE_MAX))
     .bind(event.id)
     .execute(db)
     .await?;

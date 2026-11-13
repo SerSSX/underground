@@ -34,23 +34,23 @@ pub struct PublicProfile {
     pub is_following: bool,
 }
 
+/// The profile as anyone else sees it. TASK-305: the name is the display name (a placeholder that
+/// repeats the email shows as «Гість»), and reviews of cancelled events do not count (F9).
 async fn fetch_profile(db: &PgPool, id: Uuid, viewer: Option<Uuid>) -> Result<Option<PublicProfile>, sqlx::Error> {
-    sqlx::query_as(
-        "SELECT u.id, u.name, u.role, u.avatar_url, u.bio, u.is_organizer, u.verified, \
+    let sql = format!(
+        "SELECT u.id, {name} AS name, u.role, u.avatar_url, u.bio, u.is_organizer, u.verified, \
             (SELECT count(*) FROM follows WHERE followee_id = u.id) AS followers_count, \
             (SELECT count(*) FROM follows WHERE follower_id = u.id) AS following_count, \
             (SELECT count(*) FROM events WHERE organizer_id = u.id AND status = 'published') AS events_count, \
             (SELECT avg(r.rating)::float8 FROM reviews r JOIN events e ON e.id = r.event_id \
-                WHERE e.organizer_id = u.id) AS rating_avg, \
+                WHERE e.organizer_id = u.id AND e.status <> 'cancelled') AS rating_avg, \
             (SELECT count(*) FROM reviews r JOIN events e ON e.id = r.event_id \
-                WHERE e.organizer_id = u.id) AS rating_count, \
+                WHERE e.organizer_id = u.id AND e.status <> 'cancelled') AS rating_count, \
             EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = u.id) AS is_following \
          FROM users u WHERE u.id = $1 AND u.blocked = false",
-    )
-    .bind(id)
-    .bind(viewer)
-    .fetch_optional(db)
-    .await
+        name = crate::users::DISPLAY_NAME_SQL
+    );
+    sqlx::query_as(&sql).bind(id).bind(viewer).fetch_optional(db).await
 }
 
 /// `GET /api/users/:id` — public profile with counters. Auth is optional
@@ -132,15 +132,17 @@ pub struct UserBrief {
     pub avatar_url: Option<String>,
 }
 
+/// `sql` selects `{name}` for the display name (TASK-305 P), filled in here.
 async fn fetch_briefs(db: &PgPool, sql: &str, id: Uuid) -> Result<Vec<UserBrief>, sqlx::Error> {
-    sqlx::query_as(sql).bind(id).fetch_all(db).await
+    let sql = sql.replace("{name}", crate::users::DISPLAY_NAME_SQL);
+    sqlx::query_as(&sql).bind(id).fetch_all(db).await
 }
 
 /// `GET /api/users/:id/followers`
 pub async fn followers(State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Vec<UserBrief>>, AppError> {
     let users = fetch_briefs(
         &st.db,
-        "SELECT u.id, u.name, u.avatar_url FROM follows f \
+        "SELECT u.id, {name} AS name, u.avatar_url FROM follows f \
          JOIN users u ON u.id = f.follower_id AND u.blocked = false \
          WHERE f.followee_id = $1 ORDER BY f.created_at DESC",
         id,
@@ -153,7 +155,7 @@ pub async fn followers(State(st): State<AppState>, Path(id): Path<Uuid>) -> Resu
 pub async fn following(State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Vec<UserBrief>>, AppError> {
     let users = fetch_briefs(
         &st.db,
-        "SELECT u.id, u.name, u.avatar_url FROM follows f \
+        "SELECT u.id, {name} AS name, u.avatar_url FROM follows f \
          JOIN users u ON u.id = f.followee_id AND u.blocked = false \
          WHERE f.follower_id = $1 ORDER BY f.created_at DESC",
         id,

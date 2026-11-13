@@ -436,7 +436,56 @@ fn transfer_refused() -> AppError {
     AppError::Validation(TRANSFER_REFUSED.into())
 }
 
+/// SQL (events aliased `e`): the event is over — its end, or 12 hours after its start when it has
+/// no end, has passed (the web's rule for when a ticket stops being useful).
+pub const EVENT_OVER_SQL: &str = "COALESCE(e.ends_at, e.starts_at + interval '12 hours') < now()";
+
+/// The answer for a ticket of a cancelled, blocked or finished event (transfer, claim).
+const EVENT_GONE: &str = "подію скасовано або вона вже минула";
+
+/// The caller's own active ticket for a transfer, locked: its event, cost type and age rating.
+/// 404 unless the caller owns it and it is active (TASK-305 F2: checked before anything about
+/// the recipient is looked at); 409 when its event is cancelled or over, or it is under dispute.
+async fn own_transferable_ticket(
+    tx: &mut sqlx::PgConnection,
+    ticket_id: Uuid,
+    owner: Uuid,
+) -> Result<(Uuid, String, Option<String>), AppError> {
+    let sql = format!(
+        "SELECT t.event_id, e.cost_type, e.age_rating, e.status IN ('cancelled', 'blocked') OR {EVENT_OVER_SQL} \
+         FROM tickets t JOIN events e ON e.id = t.event_id \
+         WHERE t.id = $1 AND t.owner_id = $2 AND t.status = 'active' FOR UPDATE OF t"
+    );
+    let row: Option<(Uuid, String, Option<String>, Option<bool>)> = sqlx::query_as(&sql)
+        .bind(ticket_id)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let (event_id, cost_type, age_rating, gone) = row.ok_or(AppError::NotFound)?;
+    if gone.unwrap_or(false) {
+        return Err(AppError::Conflict(EVENT_GONE.into()));
+    }
+    // Money policy (BACK-1): a transfer gifts ENTRY only — the purchaser keeps the order/escrow
+    // relationship and the right to dispute (the ticket DTO only surfaces the order to the buyer,
+    // see TICKET_SELECT's `o.buyer_id = t.owner_id`). But a ticket whose order is under active
+    // dispute (escrow frozen) must NOT be gifted away — a pending refund could void the QR.
+    let frozen: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE ticket_id = $1 AND escrow_status = 'frozen')")
+            .bind(ticket_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if frozen {
+        return Err(AppError::Conflict("квиток під спором — передавання недоступне".into()));
+    }
+    Ok((event_id, cost_type, age_rating))
+}
+
 /// `POST /api/tickets/:id/transfer` — owner gifts an active ticket to another user by email.
+///
+/// TASK-305 F2: the caller's own ticket is checked first (404 otherwise), so a caller without a
+/// ticket learns nothing about any email. After that every recipient problem — no such account,
+/// the caller themself, under the event's age rating or without a date of birth, already at the
+/// place cap — gives the one [`TRANSFER_REFUSED`] answer.
 pub async fn transfer_ticket(
     user: CurrentUser,
     State(st): State<AppState>,
@@ -451,57 +500,20 @@ pub async fn transfer_ticket(
         3600,
     )
     .await?;
-    let recipient: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND blocked = false")
-        .bind(req.email.trim().to_lowercase())
-        .fetch_optional(&st.db)
-        .await?;
-    let recipient = recipient.ok_or_else(transfer_refused)?;
-    if recipient == user.id {
-        return Err(AppError::Validation("не можна подарувати квиток собі".into()));
-    }
-    // An age-restricted event's ticket cannot be gifted to someone who doesn't meet the rating
-    // (otherwise transfer would bypass the checkout/reserve age gate).
-    let age_rating: Option<String> = sqlx::query_scalar(
-        "SELECT e.age_rating FROM tickets t JOIN events e ON e.id = t.event_id \
-         WHERE t.id = $1 AND t.owner_id = $2 AND t.status = 'active'",
-    )
-    .bind(ticket_id)
-    .bind(user.id)
-    .fetch_optional(&st.db)
-    .await?
-    .flatten();
-    if !crate::users::meets_age(&st.db, recipient, age_rating.as_deref()).await? {
-        return Err(AppError::Conflict(
-            "отримувач не відповідає віковому обмеженню події".into(),
-        ));
-    }
-    // Money policy (BACK-1): a transfer gifts ENTRY only — the purchaser keeps the order/escrow
-    // relationship and the right to dispute (the ticket DTO only surfaces the order to the buyer,
-    // see TICKET_SELECT's `o.buyer_id = t.owner_id`). But a ticket whose order is under active
-    // dispute (escrow frozen) must NOT be gifted away — a pending refund could void the QR.
-    let frozen: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM orders WHERE ticket_id = $1 AND escrow_status = 'frozen')")
-            .bind(ticket_id)
-            .fetch_one(&st.db)
-            .await?;
-    if frozen {
-        return Err(AppError::Conflict("квиток під спором — передавання недоступне".into()));
-    }
-
     let mut tx = st.db.begin().await?;
     // Lock order ticket → event, the same as `return_ticket`.
-    let row: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT t.event_id, e.cost_type FROM tickets t JOIN events e ON e.id = t.event_id \
-         WHERE t.id = $1 AND t.owner_id = $2 AND t.status = 'active' FOR UPDATE OF t",
-    )
-    .bind(ticket_id)
-    .bind(user.id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (event_id, cost_type) = row.ok_or(AppError::NotFound)?;
-    // CT4 / D3: receiving a place counts toward the recipient's 5-place cap.
-    // The cap still holds, but the answer is the same as for an unknown email (N6): the sender
-    // must not learn whether a third party holds places at this event.
+    let (event_id, cost_type, age_rating) = own_transferable_ticket(&mut tx, ticket_id, user.id).await?;
+    let recipient: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1 AND blocked = false")
+        .bind(req.email.trim().to_lowercase())
+        .fetch_optional(&mut *tx)
+        .await?;
+    let recipient = recipient.filter(|r| *r != user.id).ok_or_else(transfer_refused)?;
+    // An age-restricted event's ticket cannot go to someone who doesn't meet the rating
+    // (otherwise transfer would bypass the checkout/reserve age gate).
+    if !crate::users::meets_age(&mut *tx, recipient, age_rating.as_deref()).await? {
+        return Err(transfer_refused());
+    }
+    // CT4 / D3: receiving a place counts toward the recipient's 5-place cap; same answer (N6).
     match ensure_recipient_has_room(&mut tx, event_id, &cost_type, recipient, ticket_id).await {
         Err(AppError::Conflict(_)) => return Err(transfer_refused()),
         other => other?,
@@ -719,13 +731,17 @@ pub async fn claim_ticket(
         return Err(AppError::Conflict("термін дії подарунка минув".into()));
     }
     // Lock order gift → ticket → event.
-    let (event_id, age, cost_type): (Uuid, Option<String>, String) = sqlx::query_as(
-        "SELECT t.event_id, e.age_rating, e.cost_type FROM tickets t JOIN events e ON e.id = t.event_id \
-         WHERE t.id = $1 FOR UPDATE OF t",
-    )
-    .bind(ticket_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let sql = format!(
+        "SELECT t.event_id, e.age_rating, e.cost_type, e.status IN ('cancelled', 'blocked') OR {EVENT_OVER_SQL} \
+         FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $1 FOR UPDATE OF t"
+    );
+    let (event_id, age, cost_type, gone): (Uuid, Option<String>, String, Option<bool>) =
+        sqlx::query_as(&sql).bind(ticket_id).fetch_one(&mut *tx).await?;
+    // TASK-305: a gift for a cancelled or finished event is not claimed; the gift stays pending
+    // (rolled back) so the sender can revoke it.
+    if gone.unwrap_or(false) {
+        return Err(AppError::Conflict(EVENT_GONE.into()));
+    }
     if !crate::users::meets_age(&mut *tx, user.id, age.as_deref()).await? {
         return Err(AppError::Conflict("ви не відповідаєте віковому обмеженню події".into()));
     }
@@ -773,19 +789,22 @@ pub async fn gift_preview(
     State(st): State<AppState>,
     Path(token): Path<String>,
 ) -> Result<Json<GiftPreview>, AppError> {
-    sqlx::query_as::<_, GiftPreview>(
-        "SELECT u.name AS from_name, e.title AS event_title, e.starts_at AS event_starts_at, \
+    // TASK-305 P: the sender's display name, never a placeholder that repeats their email.
+    let sql = format!(
+        "SELECT {name} AS from_name, e.title AS event_title, e.starts_at AS event_starts_at, \
             e.city AS event_city, e.poster_url AS event_poster_url, \
             e.timezone AS event_timezone, g.expires_at \
          FROM ticket_gifts g JOIN tickets t ON t.id = g.ticket_id JOIN events e ON e.id = t.event_id \
          JOIN users u ON u.id = g.from_user_id \
          WHERE g.token_hash = $1 AND g.status = 'pending' AND g.expires_at > now()",
-    )
-    .bind(hash_token(token.trim()))
-    .fetch_optional(&st.db)
-    .await?
-    .map(Json)
-    .ok_or(AppError::NotFound)
+        name = crate::users::DISPLAY_NAME_SQL
+    );
+    sqlx::query_as::<_, GiftPreview>(&sql)
+        .bind(hash_token(token.trim()))
+        .fetch_optional(&st.db)
+        .await?
+        .map(Json)
+        .ok_or(AppError::NotFound)
 }
 
 #[cfg(test)]

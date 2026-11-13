@@ -19,6 +19,10 @@ use crate::users::{self, User};
 
 const TOKEN_TTL_SECS: i64 = 7 * 24 * 3600;
 
+/// Display-name and bio caps, in characters (TASK-305 F10).
+pub const NAME_MAX: usize = 80;
+pub const BIO_MAX: usize = 500;
+
 pub fn hash_password(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
@@ -26,6 +30,12 @@ pub fn hash_password(password: &str) -> Result<String, AppError> {
         .map(|h| h.to_string())
         .map_err(|_| AppError::Internal)
 }
+
+/// A hash of a password nobody knows, made with the same parameters as real ones. Login verifies
+/// against it when the account does not exist or has no password, so that answer takes as long
+/// as a wrong password (TASK-305 F4: no account-existence oracle by timing).
+static DUMMY_HASH: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| hash_password(&Uuid::new_v4().to_string()).unwrap_or_default());
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
     PasswordHash::new(hash)
@@ -135,11 +145,13 @@ pub async fn register(
     if req.password.len() < 8 {
         return Err(AppError::Validation("password must be at least 8 characters".into()));
     }
-    if req.name.trim().is_empty() {
+    // Controls and bidi controls out (TASK-305 F8); same cap as `PATCH /api/me`, in characters
+    // (TASK-302 P12, TASK-305 F10): the name fills guest lists and scanner screens.
+    let name = crate::text::clean_line(&req.name);
+    if crate::text::is_blank(&name) {
         return Err(AppError::Validation("name is required".into()));
     }
-    // Same cap as `PATCH /api/me` (TASK-302 P12): the name fills guest lists and scanner screens.
-    if req.name.trim().len() > 80 {
+    if name.chars().count() > NAME_MAX {
         return Err(AppError::Validation("name is too long".into()));
     }
     // Cheap uniqueness check before the expensive hash; the unique index stays the race backstop.
@@ -151,7 +163,7 @@ pub async fn register(
         return Err(AppError::Conflict("email already registered".into()));
     }
     let hash = hash_password(&req.password)?;
-    let user = match users::create_user(&st.db, &email, req.name.trim(), &hash).await {
+    let user = match users::create_user(&st.db, &email, &name, &hash).await {
         Ok(u) => u,
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
             return Err(AppError::Conflict("email already registered".into()));
@@ -164,17 +176,29 @@ pub async fn register(
     Ok((StatusCode::CREATED, Json(AuthResp { token, user })))
 }
 
-pub async fn login(State(st): State<AppState>, Json(req): Json<LoginReq>) -> Result<Json<AuthResp>, AppError> {
+pub async fn login(
+    State(st): State<AppState>,
+    ip: crate::ratelimit::ClientIp,
+    Json(req): Json<LoginReq>,
+) -> Result<Json<AuthResp>, AppError> {
     let email = normalize_email(&req.email);
+    // Password spraying across many emails from one client (TASK-305 F4): 30 per 10 min per IP.
+    crate::ratelimit::hit(
+        &st.db,
+        &format!("login-ip:{}", ip.0),
+        crate::ratelimit::env_limit("LOGIN_LIMIT_PER_IP", 30),
+        600,
+    )
+    .await?;
     // Throttle brute-force against a single account (BR-017): 10 attempts / 5 min per email.
     crate::ratelimit::hit(&st.db, &format!("login:{email}"), 10, 300).await?;
-    let creds = users::find_credentials(&st.db, &email)
-        .await?
+    let creds = users::find_credentials(&st.db, &email).await?;
+    let hash = creds.as_ref().and_then(|c| c.password_hash.as_deref());
+    // Always one argon2 verify, against the dummy hash when there is no real one (F4).
+    let matched = verify_password(&req.password, hash.unwrap_or(DUMMY_HASH.as_str()));
+    let creds = creds
+        .filter(|c| matched && c.password_hash.is_some())
         .ok_or(AppError::Unauthorized)?;
-    let hash = creds.password_hash.ok_or(AppError::Unauthorized)?;
-    if !verify_password(&req.password, &hash) {
-        return Err(AppError::Unauthorized);
-    }
     let user = users::find_by_id(&st.db, creds.id)
         .await?
         .ok_or(AppError::Unauthorized)?;
@@ -243,28 +267,43 @@ pub async fn patch_me(
     State(st): State<AppState>,
     Json(req): Json<PatchMeReq>,
 ) -> Result<Json<User>, AppError> {
-    let name = req.name.as_deref().map(str::trim);
-    if name.is_some_and(str::is_empty) {
+    // Controls and bidi controls out (TASK-305 F8); caps in characters (F10).
+    let name = req.name.as_deref().map(crate::text::clean_line);
+    if name.as_deref().is_some_and(crate::text::is_blank) {
         return Err(AppError::Validation("name must not be blank".into()));
     }
-    if name.is_some_and(|n| n.len() > 80) {
+    if name.as_deref().is_some_and(|n| n.chars().count() > NAME_MAX) {
         return Err(AppError::Validation("name is too long".into()));
     }
-    // Bio: trim; an explicit empty string clears it.
-    let bio = req.bio.as_deref().map(str::trim);
-    if bio.is_some_and(|b| b.len() > 500) {
+    // Bio: cleaned and trimmed, newlines kept; an explicit empty string clears it.
+    let bio = req.bio.as_deref().map(crate::text::clean_multiline);
+    if bio.as_deref().is_some_and(|b| b.chars().count() > BIO_MAX) {
         return Err(AppError::Validation("bio must be at most 500 chars".into()));
     }
     let avatar_url = req.avatar_url.as_deref().map(str::trim).filter(|a| !a.is_empty());
+    // The same URL rule as event images (TASK-305 F3): https, or one of our own /uploads files.
+    if avatar_url.is_some_and(|a| !crate::events::is_safe_url(a, true)) {
+        return Err(AppError::Validation(
+            "фото профілю: посилання має починатися з https:// або бути завантаженим файлом".into(),
+        ));
+    }
     if req.dob.is_some_and(|d| d > Utc::now().date_naive()) {
         return Err(AppError::Validation(
             "дата народження не може бути в майбутньому".into(),
         ));
     }
-    users::update_profile(&st.db, user.id, name, bio, avatar_url, req.is_organizer, req.dob)
-        .await?
-        .map(Json)
-        .ok_or(AppError::NotFound)
+    users::update_profile(
+        &st.db,
+        user.id,
+        name.as_deref(),
+        bio.as_deref(),
+        avatar_url,
+        req.is_organizer,
+        req.dob,
+    )
+    .await?
+    .map(Json)
+    .ok_or(AppError::NotFound)
 }
 
 /// Extractor that requires an authenticated user with the `ADMIN` role (else 403).

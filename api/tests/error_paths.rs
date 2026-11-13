@@ -61,6 +61,19 @@ async fn create_event(app: &Router, token: &str, body: Value) -> String {
     v["id"].as_str().unwrap().to_string()
 }
 
+/// TASK-305 F9: only a guest reviews, so a reviewer first holds a place (setup only).
+async fn give_ticket(pool: &PgPool, event: &str, email: &str) {
+    sqlx::query(
+        "INSERT INTO tickets (event_id, owner_id, qr_token, price, status) \
+         SELECT $1::uuid, id, 'UG-' || gen_random_uuid(), 0, 'active' FROM users WHERE email = $2",
+    )
+    .bind(event)
+    .bind(email)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn register_maps_unexpected_db_error_to_500(pool: PgPool) {
     let app = make_app(pool.clone());
@@ -143,6 +156,7 @@ async fn event_and_review_survive_wall_post_failure(pool: PgPool) {
     )
     .await;
 
+    give_ticket(&pool, &event, "f@x.co").await;
     sqlx::query("DROP TABLE posts CASCADE").execute(&pool).await.unwrap();
 
     let (status, _) = send(

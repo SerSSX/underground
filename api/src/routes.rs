@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let app = Router::new()
         .route("/health", get(health))
         .route("/api/version", get(version))
         .route("/api/features", get(features))
@@ -144,6 +144,27 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me", get(auth::me).patch(auth::patch_me).delete(gdpr::delete_me))
         .route("/api/me/export", get(gdpr::export_me))
         .with_state(state)
+        .layer(axum::middleware::from_fn(crate::text::reject_nul));
+    security_headers(app)
+}
+
+/// Response headers on every API answer, `/uploads` files and 404s included (TASK-305 F5). Set
+/// here, not only at the proxy, so what the tests exercise is what ships. No `script-src`: the
+/// API serves JSON and images, and the web apps set their own.
+fn security_headers(app: Router) -> Router {
+    use axum::http::{header, HeaderName, HeaderValue};
+    use tower_http::set_header::SetResponseHeaderLayer;
+    let set = |name: HeaderName, value: &'static str| {
+        SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))
+    };
+    app.layer(set(header::STRICT_TRANSPORT_SECURITY, "max-age=15552000"))
+        .layer(set(header::X_FRAME_OPTIONS, "DENY"))
+        .layer(set(
+            header::CONTENT_SECURITY_POLICY,
+            "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+        ))
+        .layer(set(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+        .layer(set(header::REFERRER_POLICY, "strict-origin-when-cross-origin"))
 }
 
 #[derive(Serialize)]

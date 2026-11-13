@@ -75,6 +75,19 @@ async fn create_event_at(app: &Router, token: &str, title: &str, starts_at: &str
     v["id"].as_str().unwrap().to_string()
 }
 
+/// TASK-305 F9: only a guest reviews, so a reviewer first holds a place (setup only).
+async fn give_ticket(pool: &PgPool, event: &str, email: &str) {
+    sqlx::query(
+        "INSERT INTO tickets (event_id, owner_id, qr_token, price, status) \
+         SELECT $1::uuid, id, 'UG-' || gen_random_uuid(), 0, 'active' FROM users WHERE email = $2",
+    )
+    .bind(event)
+    .bind(email)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 const PAST: &str = "2020-01-01T19:00:00Z";
 const FUTURE: &str = "2030-01-01T19:00:00Z";
 
@@ -148,11 +161,13 @@ async fn cannot_buy_or_reserve_past_event(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn reviews_open_only_after_event_starts(pool: PgPool) {
-    let app = make_app(pool);
+    let app = make_app(pool.clone());
     let maker = token_for(&app, "m@x.co").await;
     let fan = token_for(&app, "f@x.co").await;
     let future = create_event_at(&app, &maker, "Soon", FUTURE, "free").await;
     let started = create_event_at(&app, &maker, "Done", PAST, "free").await;
+    give_ticket(&pool, &future, "f@x.co").await;
+    give_ticket(&pool, &started, "f@x.co").await;
 
     let (status, body) = send(
         &app,

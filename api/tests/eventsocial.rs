@@ -47,7 +47,11 @@ async fn register(app: &Router, email: &str) -> (String, String) {
             "POST",
             "/api/auth/register",
             None,
-            Some(json!({"email":email,"password":"password1","name":email.split('@').next().unwrap()})),
+            // TASK-305 P: the name is the email's local part, so the account's email gets a prefix (a name
+            // equal to the local part is shown to others as «Гість»). Setup only; assertions unchanged.
+            Some(
+                json!({"email":format!("acct.{email}"),"password":"password1","name":email.split('@').next().unwrap()}),
+            ),
         ),
     )
     .await;

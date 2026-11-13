@@ -14,6 +14,7 @@ use crate::error::AppError;
 use crate::notifications;
 use crate::state::AppState;
 
+/// Post and comment cap, in characters (TASK-305 F10).
 const MAX_TEXT_LEN: usize = 2000;
 
 /// A wall post with author, optional attached event, and social counters.
@@ -40,7 +41,11 @@ pub struct PostView {
     pub reason: Option<String>,
 }
 
-const POST_VIEW_COLS: &str = "p.id, p.author_id, u.name AS author_name, u.avatar_url AS author_avatar, \
+/// `u.name_is_placeholder` spelled out (the display-name rule, users::DISPLAY_NAME_SQL): a const
+/// cannot `format!`, and the wall must not show a name that repeats the email (TASK-305 P).
+const POST_VIEW_COLS: &str = "p.id, p.author_id, \
+        CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
+        u.avatar_url AS author_avatar, \
         p.kind, p.text, p.rating, p.event_id, \
         e.title AS event_title, e.poster_url AS event_poster, e.category AS event_category, \
         e.starts_at AS event_starts_at, \
@@ -98,7 +103,7 @@ pub async fn create_post(
     if text.is_none() && req.event_id.is_none() {
         return Err(AppError::Validation("text or event_id is required".into()));
     }
-    if text.is_some_and(|t| t.len() > MAX_TEXT_LEN) {
+    if text.is_some_and(|t| t.chars().count() > MAX_TEXT_LEN) {
         return Err(AppError::Validation(format!(
             "text must be at most {MAX_TEXT_LEN} chars"
         )));
@@ -269,7 +274,7 @@ pub async fn create_comment(
     if text.is_empty() {
         return Err(AppError::Validation("text is required".into()));
     }
-    if text.len() > MAX_TEXT_LEN {
+    if text.chars().count() > MAX_TEXT_LEN {
         return Err(AppError::Validation(format!(
             "text must be at most {MAX_TEXT_LEN} chars"
         )));
@@ -286,7 +291,9 @@ pub async fn create_comment(
             INSERT INTO post_comments (post_id, author_id, text) VALUES ($1, $2, $3) \
             RETURNING id, post_id, author_id, text, created_at \
          ) \
-         SELECT c.id, c.post_id, c.author_id, u.name AS author_name, c.text, c.created_at \
+         SELECT c.id, c.post_id, c.author_id, \
+            CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
+            c.text, c.created_at \
          FROM c JOIN users u ON u.id = c.author_id",
     )
     .bind(id)
@@ -309,7 +316,9 @@ pub async fn create_comment(
 /// `GET /api/posts/:id/comments` — oldest first (public).
 pub async fn comments(State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Vec<CommentView>>, AppError> {
     let items: Vec<CommentView> = sqlx::query_as(
-        "SELECT c.id, c.post_id, c.author_id, u.name AS author_name, c.text, c.created_at \
+        "SELECT c.id, c.post_id, c.author_id, \
+            CASE WHEN u.name_is_placeholder IS NOT FALSE THEN 'Гість' ELSE u.name END AS author_name, \
+            c.text, c.created_at \
          FROM post_comments c JOIN users u ON u.id = c.author_id \
          WHERE c.post_id = $1 ORDER BY c.created_at ASC LIMIT 200",
     )

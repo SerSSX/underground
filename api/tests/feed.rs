@@ -71,6 +71,19 @@ async fn create_event(app: &Router, token: &str, title: &str, category: &str) ->
     v["id"].as_str().unwrap().to_string()
 }
 
+/// TASK-305 F9: only a guest reviews, so a reviewer first holds a place (setup only).
+async fn give_ticket(pool: &PgPool, event: &str, email: &str) {
+    sqlx::query(
+        "INSERT INTO tickets (event_id, owner_id, qr_token, price, status) \
+         SELECT $1::uuid, id, 'UG-' || gen_random_uuid(), 0, 'active' FROM users WHERE email = $2",
+    )
+    .bind(event)
+    .bind(email)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn feed(app: &Router, token: &str) -> Vec<Value> {
     let (status, v) = send(app, build("GET", "/api/feed", Some(token), None)).await;
     assert_eq!(status, StatusCode::OK);
@@ -86,7 +99,7 @@ async fn feed_requires_auth(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn feed_combines_follows_and_interests(pool: PgPool) {
-    let app = make_app(pool);
+    let app = make_app(pool.clone());
     let (me, _) = register(&app, "me@x.co", "Me").await;
     let (followed, followed_id) = register(&app, "fm@x.co", "Followed Maker").await;
     let (rocker, _) = register(&app, "rk@x.co", "Rock Stranger").await;
@@ -123,6 +136,7 @@ async fn feed_combines_follows_and_interests(pool: PgPool) {
     .await;
     // Rock stranger: a Rock event → its announcement matches my interests.
     let rock_event = create_event(&app, &rocker, "Rock Fest", "Rock").await;
+    give_ticket(&pool, &rock_event, "st@x.co").await;
     // Jazz stranger: review on the Rock event (interest match) + own Jazz event (no match).
     send(
         &app,

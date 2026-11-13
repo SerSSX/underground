@@ -43,6 +43,7 @@ pub mod social;
 pub mod staff;
 pub mod state;
 pub mod telemetry;
+pub mod text;
 pub mod tickets;
 pub mod tz;
 pub mod uploads;

@@ -48,11 +48,11 @@ pub async fn create_report(
         ));
     }
     let reason = req.reason.trim();
-    if reason.is_empty() || reason.len() > 200 {
+    if reason.is_empty() || reason.chars().count() > 200 {
         return Err(AppError::Validation("reason is required (max 200 chars)".into()));
     }
     let details = req.details.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    if details.is_some_and(|d| d.len() > 1000) {
+    if details.is_some_and(|d| d.chars().count() > 1000) {
         return Err(AppError::Validation("details too long (max 1000 chars)".into()));
     }
     // The target must actually exist and match its declared type (no reporting ghost ids).

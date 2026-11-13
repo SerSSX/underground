@@ -59,12 +59,90 @@ pub fn is_safe_url(raw: &str, allow_uploads: bool) -> bool {
         .is_some_and(|host| !host.is_empty() && !host.starts_with('@'))
 }
 
+/// Free-text caps, counted in characters (TASK-305 F1).
+pub const TITLE_MAX: usize = 200;
+pub const DESCRIPTION_MAX: usize = 10_000;
+pub const CATEGORY_MAX: usize = 80;
+pub const CITY_MAX: usize = 120;
+pub const VENUE_MAX: usize = 300;
+pub const URL_MAX: usize = 2048;
+/// Most entries in `gallery_urls` and in `links`.
+pub const URL_LIST_MAX: usize = 20;
+
+/// Every free-text field of an event within its cap (F1). Fields not sent are `None`.
+fn validate_event_text(
+    title: Option<&str>,
+    description: Option<&str>,
+    category: Option<&str>,
+    city: Option<&str>,
+    venue_address: Option<&str>,
+) -> Result<(), AppError> {
+    use crate::text::check_len;
+    let fields = [
+        ("title", title, TITLE_MAX),
+        ("description", description, DESCRIPTION_MAX),
+        ("category", category, CATEGORY_MAX),
+        ("city", city, CITY_MAX),
+        ("venue_address", venue_address, VENUE_MAX),
+    ];
+    for (name, value, max) in fields {
+        if let Some(v) = value {
+            check_len(name, v, max)?;
+        }
+    }
+    Ok(())
+}
+
+/// Lengths and counts of the URL fields (F1).
+fn validate_url_sizes(
+    poster_url: Option<&str>,
+    video_url: Option<&str>,
+    gallery_urls: &[String],
+    links: &[String],
+) -> Result<(), AppError> {
+    if gallery_urls.len() > URL_LIST_MAX || links.len() > URL_LIST_MAX {
+        return Err(AppError::Validation(format!(
+            "не більше {URL_LIST_MAX} посилань у списку"
+        )));
+    }
+    let singles = poster_url.into_iter().chain(video_url);
+    let lists = gallery_urls.iter().chain(links).map(String::as_str);
+    for u in singles.chain(lists) {
+        crate::text::check_len("url", u, URL_MAX)?;
+    }
+    Ok(())
+}
+
+/// Clean the free text of an event in place (F8): controls and bidi controls out of the one-line
+/// fields, out of the description too but with its newlines kept.
+fn clean_event_text(title: Option<&mut String>, description: Option<&mut String>, category: Option<&mut String>) {
+    for v in [title, category].into_iter().flatten() {
+        *v = crate::text::clean_line(v);
+    }
+    if let Some(d) = description {
+        *d = crate::text::clean_multiline(d);
+    }
+}
+
+/// Per-user budget for creating and publishing events (F1): every create, and every
+/// draft → published edit (the edit that announces it), share one bucket. Default 30 an hour.
+async fn hit_publish_budget(db: &PgPool, user_id: Uuid) -> Result<(), AppError> {
+    crate::ratelimit::hit(
+        db,
+        &format!("event-publish:{user_id}"),
+        crate::ratelimit::env_limit("EVENT_PUBLISH_LIMIT_PER_USER", 30),
+        3600,
+    )
+    .await
+}
+
 fn validate_urls(
     poster_url: Option<&str>,
     video_url: Option<&str>,
     gallery_urls: &[String],
     links: &[String],
 ) -> Result<(), AppError> {
+    validate_url_sizes(poster_url, video_url, gallery_urls, links)?;
     let ok = poster_url.map_or(true, |u| is_safe_url(u, true))
         && video_url.map_or(true, |u| is_safe_url(u, false))
         && gallery_urls.iter().all(|u| is_safe_url(u, true))
@@ -374,9 +452,18 @@ pub async fn create_event(
         &req.gallery_urls,
         &req.links,
     )?;
-    if req.title.trim().is_empty() {
+    clean_event_text(Some(&mut req.title), req.description.as_mut(), Some(&mut req.category));
+    clean_place_text(&mut req.city, &mut req.venue_address, &mut req.country);
+    if crate::text::is_blank(&req.title) {
         return Err(AppError::Validation("title is required".into()));
     }
+    validate_event_text(
+        Some(&req.title),
+        req.description.as_deref(),
+        Some(&req.category),
+        req.city.as_deref(),
+        req.venue_address.as_deref(),
+    )?;
     validate_time_order(req.starts_at, req.ends_at)?;
     if req.category.trim().is_empty() {
         return Err(AppError::Validation("category is required".into()));
@@ -398,7 +485,7 @@ pub async fn create_event(
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
     validate_place(req.lat, req.lng, req.country.as_deref(), req.country_code.as_deref())?;
-    clean_place_text(&mut req.city, &mut req.venue_address, &mut req.country);
+    hit_publish_budget(&st.db, user.id).await?;
     let event = insert_event(&st.db, user.id, &req).await?;
     // Drafts stay private; only a published event announces itself.
     if event.status == "published" {
@@ -505,7 +592,7 @@ fn city_key(s: Option<&str>) -> String {
 fn clean_place_text(city: &mut Option<String>, venue: &mut Option<String>, country: &mut Option<String>) {
     for field in [city, venue, country] {
         if let Some(v) = field.as_mut() {
-            *v = crate::geo::strip_invisible(v);
+            *v = crate::text::clean_line(&crate::geo::strip_invisible(v));
         }
     }
 }
@@ -540,9 +627,18 @@ pub async fn update_event(
         req.gallery_urls.as_deref().unwrap_or(&[]),
         req.links.as_deref().unwrap_or(&[]),
     )?;
-    if req.title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+    clean_event_text(req.title.as_mut(), req.description.as_mut(), req.category.as_mut());
+    clean_place_text(&mut req.city, &mut req.venue_address, &mut req.country);
+    if req.title.as_deref().is_some_and(crate::text::is_blank) {
         return Err(AppError::Validation("title must not be blank".into()));
     }
+    validate_event_text(
+        req.title.as_deref(),
+        req.description.as_deref(),
+        req.category.as_deref(),
+        req.city.as_deref(),
+        req.venue_address.as_deref(),
+    )?;
     if req.price.is_some_and(|p| p < Decimal::ZERO) {
         return Err(AppError::Validation("price must be >= 0".into()));
     }
@@ -559,7 +655,6 @@ pub async fn update_event(
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
     let point = validate_place(req.lat, req.lng, req.country.as_deref(), req.country_code.as_deref())?;
-    clean_place_text(&mut req.city, &mut req.venue_address, &mut req.country);
     let clear_ends_at = req.clear_ends_at.unwrap_or(false);
     if clear_ends_at && req.ends_at.is_some() {
         return Err(AppError::Validation("ends_at and clear_ends_at are exclusive".into()));
@@ -575,6 +670,9 @@ pub async fn update_event(
     .fetch_one(&st.db)
     .await?;
     let (was_draft, cur_starts, cur_ends) = (cur.was_draft, cur.starts_at, cur.ends_at);
+    if was_draft && req.status.as_deref() == Some("published") {
+        hit_publish_budget(&st.db, user.id).await?;
+    }
     // Only an edit that touches the times is checked (NF3): a legacy row with a bad pair must not block an
     // unrelated edit such as closing booking. Moving the start past a kept end is still caught.
     if req.starts_at.is_some() || req.ends_at.is_some() || clear_ends_at {

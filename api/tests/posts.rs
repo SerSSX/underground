@@ -77,6 +77,19 @@ async fn wall(app: &Router, user_id: &str, token: Option<&str>) -> Vec<Value> {
     v.as_array().unwrap().clone()
 }
 
+/// TASK-305 F9: only a guest reviews, so a reviewer first holds a place (setup only).
+async fn give_ticket(pool: &PgPool, event: &str, email: &str) {
+    sqlx::query(
+        "INSERT INTO tickets (event_id, owner_id, qr_token, price, status) \
+         SELECT $1::uuid, id, 'UG-' || gen_random_uuid(), 0, 'active' FROM users WHERE email = $2",
+    )
+    .bind(event)
+    .bind(email)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn post_requires_auth(pool: PgPool) {
     let app = make_app(pool);
@@ -159,10 +172,11 @@ async fn creating_event_auto_posts_announcement(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn review_auto_posts_and_replaces_on_rereview(pool: PgPool) {
-    let app = make_app(pool);
+    let app = make_app(pool.clone());
     let (maker, _) = register(&app, "m@x.co", "Maker").await;
     let (fan, fan_id) = register(&app, "f@x.co", "Fan").await;
     let event_id = create_event(&app, &maker, "Gig").await;
+    give_ticket(&pool, &event_id, "f@x.co").await;
 
     send(
         &app,

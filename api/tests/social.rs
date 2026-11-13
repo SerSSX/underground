@@ -64,7 +64,9 @@ fn follow_req(method: &str, id: &str, token: Option<&str>) -> Request<Body> {
 #[sqlx::test(migrations = "./migrations")]
 async fn profile_is_public_and_hides_email(pool: PgPool) {
     let app = make_app(pool);
-    let (_, maker_id) = register(&app, "maker@x.co", "Maker").await;
+    // TASK-305 P: a name equal to the email's local part is shown as «Гість», so this account's email
+    // differs from its name (setup only; the assertions are unchanged).
+    let (_, maker_id) = register(&app, "maker.co@x.co", "Maker").await;
 
     let (status, body) = send(&app, get(&format!("/api/users/{maker_id}"), None)).await;
     assert_eq!(status, StatusCode::OK, "profile readable without auth");

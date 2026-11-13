@@ -2,6 +2,7 @@
 //! worker loop, see `main.rs`) fans out an `event_reminder` notification to every
 //! ticket holder ("going") and saver ("interested") of an event that starts soon.
 //! `event_reminders` is a dedup ledger so each (event, user) is reminded once.
+//! Titles copied into notifications are cut to 120 characters (TASK-305 F1).
 
 use sqlx::PgPool;
 
@@ -11,7 +12,7 @@ use sqlx::PgPool;
 pub async fn sweep(db: &PgPool, window_hours: i32) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
         "WITH due AS ( \
-            SELECT id, title FROM events \
+            SELECT id, left(title, 120) AS title FROM events \
             WHERE status = 'published' AND starts_at IS NOT NULL \
               AND starts_at >= now() AND starts_at < now() + make_interval(hours => $1) \
          ), \
@@ -49,7 +50,7 @@ pub async fn sweep(db: &PgPool, window_hours: i32) -> Result<u64, sqlx::Error> {
 pub async fn review_prompt_sweep(db: &PgPool, recency_days: i32) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
         "WITH ended AS ( \
-            SELECT id, title FROM events \
+            SELECT id, left(title, 120) AS title FROM events \
             WHERE status = 'published' \
               AND COALESCE(ends_at, starts_at + interval '3 hours') < now() \
               AND COALESCE(ends_at, starts_at) > now() - make_interval(days => $1) \
@@ -88,7 +89,7 @@ pub async fn review_prompt_sweep(db: &PgPool, recency_days: i32) -> Result<u64, 
 pub async fn selling_fast_sweep(db: &PgPool, threshold_frac: f64, daily_cap: i64) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(
         "WITH low AS ( \
-            SELECT id, title FROM events \
+            SELECT id, left(title, 120) AS title FROM events \
             WHERE status = 'published' AND sales_closed = false \
               AND (starts_at IS NULL OR starts_at >= now()) \
               AND tickets_total > 0 AND tickets_left > 0 \

@@ -142,7 +142,7 @@ async fn age_gating_blocks_underage_and_unknown(pool: PgPool) {
     let ticket_id = t["id"].as_str().unwrap().to_string();
 
     // Transfer can't bypass the age gate: gifting the 16+ ticket to the minor is rejected.
-    let (st, _) = send(
+    let (st, body) = send(
         &app,
         build(
             "POST",
@@ -152,9 +152,14 @@ async fn age_gating_blocks_underage_and_unknown(pool: PgPool) {
         ),
     )
     .await;
+    // TASK-305 F2 (owner-approved change, docs/decisions.md 2026-11-13): the shared refusal, so
+    // the answer does not tell the sender the recipient is a minor.
     assert_eq!(
-        st,
-        StatusCode::CONFLICT,
+        (st, body["error"].as_str()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some(underground_api::tickets::TRANSFER_REFUSED)
+        ),
         "can't gift an age-restricted ticket to a minor"
     );
 
