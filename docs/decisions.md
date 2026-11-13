@@ -54,3 +54,12 @@ accept for DEV with a CAPTCHA (Cloudflare Turnstile, free) before prod, a CAPTCH
 Owner's answer (verbatim): «Прийняти для DEV, капча до проду (Recommended)».
 Consequence: Turnstile on the code-request and forgot-password forms is a prerequisite of Underground's first
 prod release (tracked in docs/STATE.md); the Turnstile site key/secret are created by the owner.
+
+## 2026-11-13 — TASK-304: upload capacity residual accepted for DEV, CAPTCHA on sign-up before prod
+
+Residual after review round 5: three accounts together can keep the 3-place upload waiting room busy (each holds
+one place up to the 60 s body deadline and retries), so others get 503 "too many uploads". Same capacity question
+as the mail residual; closed by a CAPTCHA (Turnstile) on sign-up.
+Owner's answer (verbatim): «Так, як з поштою (Recommended)».
+Consequence: Turnstile goes on sign-up as well as the code-request and forgot-password forms, before Underground's
+first prod release.
