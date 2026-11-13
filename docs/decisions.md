@@ -77,3 +77,22 @@ Owner's answer (verbatim): «Так, погоджую (Recommended)».
 Security review F9: an organiser could review their own event and anyone could review an event they never booked.
 Reading taken: a review needs a ticket (any non-cancelled place) for that event, and the organiser cannot review
 their own event; reviews of cancelled events do not count. Easy to relax if the owner wants open reviews.
+
+## 2026-11-14 — TASK-305: transfer-by-email becomes an offer the recipient accepts
+
+Review of 15926f2 found transfer still an oracle through success vs refusal (two own events with different age
+ratings → whether an account exists and whether its holder is an adult) and that it drops a stranger's ticket into
+anyone's list. Options put to the owner: make it like the gift (recipient accepts; age checked at acceptance;
+sender always sees "sent"), remove transfer-by-email, or leave it on DEV until prod.
+Owner's answer (verbatim): «Як подарунок (Recommended)».
+
+## 2026-11-14 — TASK-305: readings taken without asking (reversible)
+
+- Placeholder names: «Гість» is shown only when the stored name is blank or literally «Гість»; legacy DEV rows whose
+  name was auto-derived from the email (before TASK-302) are backfilled to «Гість» once. A name a person typed is
+  always shown, even if it matches their email's local part. (Review finding: the generated-column rule hid chosen
+  names such as "KyivJazz" for kyivjazz@….)
+- Door check-in opens 6 hours before an event starts; earlier scans answer "too early" with the start date. A
+  checked-in place of an event that has not ended stays under "Upcoming".
+- In-app alerts: a place offered to you (gift or transfer) and a new booking on your event (organiser) create an
+  alert; new chat messages show as an unread badge on Chats, not as alerts.
