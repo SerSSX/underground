@@ -114,16 +114,19 @@ function InboxInner() {
 
   async function send() {
     const body = text.trim();
-    if (!peer || !body) return;
+    if (!peer || !body || sending) return;
     setSending(true);
     setError(null);
+    // Clear at once, so what the user types while this one is in flight is kept (TASK-304 DEV check).
+    setText("");
     try {
       const m = await sendMessage(peer.id, body);
       setMsgs((prev) => [...prev, m]);
-      setText("");
       void loadConvs();
     } catch (e) {
       setError(errorMessage(e));
+      // Give the unsent text back unless the user has already typed something new.
+      setText((t) => (t.trim() ? t : body));
     } finally {
       setSending(false);
     }

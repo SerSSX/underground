@@ -72,6 +72,7 @@ TASK-303 closure MINORs N1–N4 (seed onboarded flag, city whitespace compare, t
 - Mobile chat: an open conversation is a fixed layer sized to `window.visualViewport` (shrinks with the keyboard),
   compose bar at its bottom, the page behind locked; the message list scrolls itself (the old `scrollIntoView` also
   scrolled the window). The send button keeps the keyboard open.
+  Lost draft on fast typing, found on DEV, fixed: `send()` clears the field at once and gives the text back only on failure when nothing new was typed; a second Enter while a send is in flight is ignored.
 - Zoom (owner's request): `maximum-scale=1, user-scalable=no`. **Cost:** people with low vision cannot zoom (WCAG
   1.4.4); iOS Safari ignores `user-scalable=no` and still allows pinch. Fields are 16 px on phones (stops iOS
   focus-zoom), `overflow-x: clip` on html/body as a guard (no real overflow measured at 375 px on home, the event page,
