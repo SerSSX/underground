@@ -30,7 +30,7 @@ pub async fn sweep(db: &PgPool, window_hours: i32) -> Result<u64, sqlx::Error> {
          ) \
          INSERT INTO notifications (user_id, kind, title, body, event_id) \
          SELECT f.user_id, 'event_reminder', d.title, \
-            CASE WHEN COALESCE(up.locale, 'uk') = 'en' THEN 'Event starts soon' \
+            CASE WHEN COALESCE(up.locale, 'uk') <> 'uk' THEN 'Event starts soon' \
                  ELSE 'Подія скоро розпочнеться' END, \
             f.event_id \
          FROM fresh f JOIN due d ON d.id = f.event_id \
@@ -60,7 +60,7 @@ pub async fn review_prompt_sweep(db: &PgPool, recency_days: i32) -> Result<u64, 
          ) \
          INSERT INTO notifications (user_id, kind, title, body, event_id) \
          SELECT tg.user_id, 'review_prompt', tg.title, \
-            CASE WHEN COALESCE(up.locale, 'uk') = 'en' THEN 'How was it? Leave a review' \
+            CASE WHEN COALESCE(up.locale, 'uk') <> 'uk' THEN 'How was it? Leave a review' \
                  ELSE 'Як враження? Залиште відгук' END, \
             tg.event_id \
          FROM targets tg \
@@ -112,7 +112,7 @@ pub async fn selling_fast_sweep(db: &PgPool, threshold_frac: f64, daily_cap: i64
          ) \
          INSERT INTO notifications (user_id, kind, title, body, event_id) \
          SELECT b.user_id, 'selling_fast', b.title, \
-            CASE WHEN COALESCE(up.locale, 'uk') = 'en' THEN 'Selling fast — few tickets left' \
+            CASE WHEN COALESCE(up.locale, 'uk') <> 'uk' THEN 'Selling fast — few tickets left' \
                  ELSE 'Квитки закінчуються — встигни купити' END, \
             b.event_id \
          FROM budget b \

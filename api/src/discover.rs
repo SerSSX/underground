@@ -47,6 +47,22 @@ const MOMENTUM: &str = "(SELECT count(*) FROM tickets t WHERE t.event_id = e.id)
     + (SELECT count(*) FROM event_saves s WHERE s.event_id = e.id) * 0.5 \
     + (SELECT count(*) FROM reviews r WHERE r.event_id = e.id) * 0.3";
 
+/// The viewer's home city in the gazetteer (TASK-303 item 2): a learned (`osm`) row only for a
+/// viewer whose saved country code matches it, a seeded row otherwise; at most one row, so a
+/// name shared by several countries never multiplies the events.
+const VIEWER_CITY: &str = "LEFT JOIN LATERAL (\
+        SELECT c.lat, c.lng, c.country, c.country_code FROM cities c \
+        WHERE lower(c.name) = lower(up.city) \
+          AND (c.country_code = up.country_code OR (up.country_code IS NULL AND c.source = 'seed')) \
+        ORDER BY (c.source = 'seed') DESC LIMIT 1) vc ON true";
+
+/// Same country as the viewer (F10): by ISO code when both sides have one (country names come
+/// in many languages), else by the stored country name as before.
+const SAME_COUNTRY: &str = "(CASE \
+        WHEN COALESCE(up.country_code, vc.country_code) IS NOT NULL AND e.country_code IS NOT NULL \
+            THEN COALESCE(up.country_code, vc.country_code) = e.country_code \
+        ELSE COALESCE(up.country, vc.country) IS NOT NULL AND COALESCE(up.country, vc.country) = e.country END)";
+
 /// Personalized ranking (relevance + geo + momentum + recency), used by `/discover` and the
 /// `for_you` section so both rank identically.
 fn personal_order() -> String {
@@ -54,7 +70,7 @@ fn personal_order() -> String {
         "( (CASE WHEN f.follower_id IS NOT NULL THEN 4 ELSE 0 END) \
         + (CASE WHEN up.categories IS NOT NULL AND e.category = ANY(up.categories) THEN 3 ELSE 0 END) \
         + (CASE WHEN up.city IS NOT NULL AND e.city IS NOT NULL AND lower(up.city) = lower(e.city) THEN 2 ELSE 0 END) \
-        + (CASE WHEN COALESCE(up.country, vc.country) IS NOT NULL AND COALESCE(up.country, vc.country) = e.country THEN 1.5 ELSE 0 END) \
+        + (CASE WHEN {SAME_COUNTRY} THEN 1.5 ELSE 0 END) \
         + (CASE WHEN vc.lat IS NOT NULL AND e.lat IS NOT NULL THEN greatest(0, 5 - ({HAVERSINE}) / 100) ELSE 0 END) \
         + {MOMENTUM} \
         + (CASE WHEN e.starts_at IS NOT NULL \
@@ -93,7 +109,7 @@ async fn section_events(
          FROM events e \
          LEFT JOIN follows f ON f.follower_id = $1 AND f.followee_id = e.organizer_id \
          LEFT JOIN user_prefs up ON up.user_id = $1 \
-         LEFT JOIN cities vc ON lower(vc.name) = lower(up.city) \
+         {VIEWER_CITY} \
          WHERE e.status = 'published' \
            AND ($1::uuid IS NULL OR e.organizer_id IS NULL OR e.organizer_id <> $1) \
            {extra_where} \
@@ -123,7 +139,7 @@ pub async fn discover(
 /// True when a signed-in viewer has any personalization signal (prefs, saves, or follows).
 async fn has_signals(db: &sqlx::PgPool, viewer_id: Uuid) -> Result<bool, AppError> {
     Ok(sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM user_prefs WHERE user_id = $1) \
+        "SELECT EXISTS(SELECT 1 FROM user_prefs WHERE user_id = $1 AND onboarded) \
              OR EXISTS(SELECT 1 FROM event_saves WHERE user_id = $1) \
              OR EXISTS(SELECT 1 FROM follows WHERE follower_id = $1)",
     )

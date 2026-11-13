@@ -233,3 +233,41 @@ contracts and work without them (fields absent → old behaviour).
 
 Keys: 552 (15 plural) = 553 + 5 (zone hint, "{n} підказка", "Email", "до {date}", consent) − 6 ("до", the two consent
 fragments "Реєструючись, ви погоджуєтесь з " and " і ", three zone names). `de` "Tiflis-Zeit" → no longer a key (zone names come from Intl).
+
+## G1 fix batch (api/, 2026-11-13)
+
+From the independent API review and web review F1/F2. Migration `0050_geo_fixes.sql`.
+
+1. PUT keeps the place unless it really changed: a city equal to the stored one (trimmed, any case), the same
+   point, country or code re-sent (Android sends the city on every save) leaves lat/lng/country/code/zone as they are.
+2. Learned (`source='osm'`) cities answer only a client whose `country_code` matches, or whose point is within
+   100 km; seeded rows answer a bare name as before (events, prefs, discovery's viewer city). Learning needs a
+   signed-in user plus a point or a country code (never a bare name), at most `CITY_LEARN_PER_DAY` (20) per user
+   per 24 h (counted from `cities.learned_by/learned_at`, not a rate bucket: a capped learn just does not learn).
+   Uniqueness is now one row per (lower(name), country_code), so a learned name no longer blocks other countries.
+   `/api/cities` rows carry `source`.
+3. Zones from `tzf-rs` 2.3.0 (MIT; bundled data `tzf-dist` 0.0.2026-f, `MIT AND ODbL-1.0`, OSM boundaries — owner
+   accepted ODbL 2026-11-13, docs/decisions.md). Order: polygons → country table (`tz.rs`, at sea / `Etc/*`) →
+   nearest gazetteer city ≤ 300 km → default. Loaded once (≈4 MB embedded), warmed at startup. Border cases tested
+   (Grand Rapids, Tallahassee, Amarillo, Goose Bay, Dawson Creek, Chita, Yuzhno-Sakhalinsk, Saratov, Kyiv, Tokyo,
+   Lisbon) through event create and `/api/geo/timezone` (one function).
+4. Tests for the global upstream cap and a chunked body over 256 KB without Content-Length.
+5. City mode also asks `place:state` (limit 12) and keeps a state only if (osm_type, osm_id) is allow-listed:
+   Tokyo-to `R 1543125` (from OSM knowledge; the 3 allowed live lookups did not return it — verify with the first
+   live "Tokyo" search on DEV). Singapore (`R 17140517`) and Hong Kong (`R 20044132`) are `place=city` already;
+   Macau not checked. Cache keys are `v2|…`; old entries were dropped.
+6. `GeoPlace` gains `osm_type`, `osm_id`, `name_default`, `city_default` (OSM `name`). Languages Photon knows
+   (en/de/fr): two upstream calls (labels + default), merged by OSM id; other languages: one `default` call. The
+   web stores `city_default` (fallback `city` when null — only when the default answer lacked the object). Learned
+   rows use the default name.
+7. `POST /api/auth/register` and the account-creating `POST /api/auth/email/verify-code` take optional `locale`
+   (10 languages; others ignored) and create a prefs row with it, `onboarded = false`. `user_prefs.onboarded` is a
+   column now (existing rows backfilled true). PUT `/api/me/prefs` stores any of the 10 locales, keeps the stored one
+   when `locale` is absent, sets `onboarded`; takes optional `country_code`. Server texts: `uk` → Ukrainian,
+   every other locale → English.
+8. Reverse rounded to 0.01°; TTLs: search 7 d, reverse 24 h, empty 1 h (`geo_cache.expires_at`); learning reads
+   `geo_city_seen` (one row per default name, country, ~1 km point); per-IP miss budget `GEO_MISS_LIMIT_PER_MIN` 20
+   inside the 60; IPv6 keyed by /64; global cap default 120; discovery's same-country boost by `country_code`
+   (name fallback); U+200B–200F, U+202A–202E, U+2066–2069, U+FEFF stripped from geo results, `q`, event
+   city/venue/country and prefs city; `cities (lat, lng)` index; User-Agent from `PUBLIC_BASE_URL`; env vars in
+   docs/configuration-manual.md.

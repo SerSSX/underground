@@ -50,6 +50,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Background workers share the pool. The reminder sweep always runs; the push
     // outbox worker only starts when FCM credentials are configured.
+    // Load the time-zone boundary data off the request path (TASK-303 G1).
+    tokio::task::spawn_blocking(underground_api::tz::warm);
     tokio::spawn(reminder_worker(pool.clone()));
     tokio::spawn(escrow_worker(pool.clone()));
     match FcmConfig::from_env() {

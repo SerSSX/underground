@@ -48,6 +48,9 @@ hex = "0.4"
 # Outbound HTTPS to the OpenStreetMap geocoder (TASK-303 G1): rustls + webpki roots (both
 # already in the tree via sqlx), no system proxy, no native TLS.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Point → IANA time zone (TASK-303 G1 fix batch). Code MIT; the bundled boundary data (tzf-dist)
+# is MIT AND ODbL-1.0, from OpenStreetMap: owner accepted ODbL on 2026-11-13 (docs/decisions.md).
+tzf-rs = { version = "2.3", default-features = false, features = ["bundled"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

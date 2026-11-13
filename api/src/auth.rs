@@ -91,6 +91,8 @@ pub struct RegisterReq {
     pub email: String,
     pub password: String,
     pub name: String,
+    /// The UI language at sign-up (TASK-303): one of `prefs::SUPPORTED_LOCALES`; others ignored.
+    pub locale: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -150,6 +152,7 @@ pub async fn register(
         }
         Err(e) => return Err(AppError::Db(e)),
     };
+    crate::prefs::seed_locale(&st.db, user.id, req.locale.as_deref()).await?;
     let token = issue_token(user.id, &st.jwt_secret)?;
     crate::telemetry::log(&st.db, Some(user.id), "signup", serde_json::json!({})).await;
     Ok((StatusCode::CREATED, Json(AuthResp { token, user })))

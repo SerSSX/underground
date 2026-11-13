@@ -20,6 +20,12 @@
 | `DISPUTE_THRESHOLD_BPS` | `2000` | Поріг скарг власників для авто-`DISPUTED` — BR-002 |
 | `AUTH_LOGIN_RATE_LIMIT` | `10/min` | Ліміт спроб логіну на email/IP (brute-force захист) — BR-017 |
 | `ADMIN_EMAILS` | — | Кома-список email із роллю ADMIN |
+| `GEOCODER_URL` | `https://photon.komoot.io` | Геокодер OpenStreetMap (Photon) для `/api/geo/*` (TASK-303); лише http(s), без логіна/query |
+| `GEO_LIMIT_PER_MIN` | `60` | Запити до `/api/geo/search`, `/reverse`, `/timezone` за хвилину з одного IP (IPv6 — з однієї /64) |
+| `GEO_MISS_LIMIT_PER_MIN` | `20` | Із них звернень до геокодера (промахів кешу) за хвилину з одного IP |
+| `GEO_UPSTREAM_LIMIT_PER_MIN` | `120` | Усього звернень до геокодера за хвилину (fair use Photon); понад — 503 |
+| `CITY_LEARN_PER_DAY` | `20` | Скільки нових міст один користувач може додати в довідник за добу |
+| `PUBLIC_BASE_URL` | `http://localhost:8080` | Публічна адреса API: посилання на завантаження; у `User-Agent` до геокодера |
 
 > Паролі — argon2id (параметри-константи в коді; ніколи не в env/логах) — BR-016.
 

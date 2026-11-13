@@ -88,6 +88,8 @@ pub async fn request_code(
 pub struct VerifyCodeReq {
     pub email: String,
     pub code: String,
+    /// The UI language, applied only when this call creates the account (TASK-303).
+    pub locale: Option<String>,
 }
 
 /// `POST /api/auth/email/verify-code` — sign in with a valid code, creating the account on
@@ -115,7 +117,10 @@ pub async fn verify_code(
         Some(u) => u,
         // Lost a create race, or the email belongs to a blocked account: re-fetch active only.
         None => match users::create_passwordless_user(&st.db, &email).await {
-            Ok(u) => u,
+            Ok(u) => {
+                crate::prefs::seed_locale(&st.db, u.id, req.locale.as_deref()).await?;
+                u
+            }
             Err(_) => users::find_by_email(&st.db, &email)
                 .await?
                 .ok_or(AppError::Unauthorized)?,

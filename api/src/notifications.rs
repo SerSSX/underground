@@ -47,7 +47,7 @@ pub async fn notify_actor(
     let result = sqlx::query(
         "INSERT INTO notifications (user_id, kind, title, body, event_id, actor_id) \
          SELECT $1, $2, (SELECT name FROM users WHERE id = $3) || ' ' || \
-            CASE WHEN COALESCE((SELECT locale FROM user_prefs WHERE user_id = $1), 'uk') = 'en' \
+            CASE WHEN COALESCE((SELECT locale FROM user_prefs WHERE user_id = $1), 'uk') <> 'uk' \
                  THEN $5 ELSE $4 END, \
             $6, $7, $3",
     )
@@ -75,7 +75,7 @@ pub async fn notify_event_match(db: &PgPool, event: &Event) -> Result<u64, sqlx:
     let result = sqlx::query(
         "INSERT INTO notifications (user_id, kind, title, body, event_id) \
          SELECT p.user_id, 'event_match', \
-            CASE WHEN p.locale = 'en' THEN 'New event: ' ELSE 'Нова подія: ' END || $1, $2, $3 \
+            CASE WHEN p.locale <> 'uk' THEN 'New event: ' ELSE 'Нова подія: ' END || $1, $2, $3 \
          FROM user_prefs p \
          WHERE $4 = ANY(p.categories) \
            AND (p.city IS NULL OR $5::text IS NULL OR lower(p.city) = lower($5)) \
@@ -100,7 +100,7 @@ pub async fn notify_followers_new_event(db: &PgPool, event: &Event) -> Result<u6
         "INSERT INTO notifications (user_id, kind, title, body, event_id) \
          SELECT f.follower_id, 'organizer_event', \
             (SELECT name FROM users WHERE id = $1) || \
-            CASE WHEN COALESCE(up.locale, 'uk') = 'en' THEN ' announced an event' ELSE ' оголосив(ла) подію' END, \
+            CASE WHEN COALESCE(up.locale, 'uk') <> 'uk' THEN ' announced an event' ELSE ' оголосив(ла) подію' END, \
             $2, $3 \
          FROM follows f \
          LEFT JOIN user_prefs up ON up.user_id = f.follower_id \

@@ -3,10 +3,15 @@
 //! The browser never talks to Photon itself. `GET /api/geo/search` and `GET /api/geo/reverse`
 //! validate the input, build the outbound URL with a query encoder (user text never reaches the
 //! host or the path), call the upstream with a hard timeout, a body size cap and no redirects,
-//! normalise the answer and cache it for 7 days. A per-client rate limit and a global cap on
-//! upstream calls keep us inside Photon's fair-use policy. Upstream failures are a 503 with a
-//! short message; the upstream body is never passed on.
+//! normalise the answer and cache it (searches 7 days, reverse 24 h, empty answers 1 h). Per-client
+//! limits (all requests, and cache misses) and a global cap on upstream calls keep us inside
+//! Photon's fair-use policy. Upstream failures are a 503 with a short message; the upstream body is
+//! never passed on.
+//!
+//! Every place carries its default OSM name (`name_default`, `city_default`), the one spelling
+//! the web stores and the gazetteer learns, whatever language the visitor searched in.
 
+use std::net::IpAddr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -21,18 +26,36 @@ use crate::ratelimit::{self, ClientIp};
 use crate::state::AppState;
 
 pub const DEFAULT_GEOCODER_URL: &str = "https://photon.komoot.io";
-/// Identifies us to the upstream (fair use asks for it); no personal contact data.
-pub const USER_AGENT: &str = "Underground/1.0 (+https://underground-dev.65-108-87-247.sslip.io)";
+/// Fallback for the User-Agent's contact URL when `PUBLIC_BASE_URL` is unset or not http(s).
+const DEFAULT_PUBLIC_URL: &str = "https://underground-dev.65-108-87-247.sslip.io";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Largest upstream body read; a limit=8 answer is a few KB.
+/// Largest upstream body read; an answer of 12 results is a few KB.
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
-/// Cached answers older than this are never served, and are pruned.
-pub const CACHE_TTL_SECS: i32 = 7 * 24 * 3600;
-/// A cached city may name an event's city only within this distance of the event's point.
+/// How long answers are served from the cache (F5/F8).
+pub const SEARCH_TTL_SECS: i32 = 7 * 24 * 3600;
+pub const REVERSE_TTL_SECS: i32 = 24 * 3600;
+pub const EMPTY_TTL_SECS: i32 = 3600;
+/// A city the geocoder returned can be learned for this long.
+pub const CITY_SEEN_TTL_SECS: i32 = 7 * 24 * 3600;
+/// A seen city may name an event's city only within this distance of the event's point.
 const CITY_RADIUS_KM: f64 = 50.0;
 const MAX_FIELD_CHARS: usize = 200;
+const RESULTS: usize = 8;
 const UNAVAILABLE: &str = "пошук адрес тимчасово недоступний";
-const CITY_TAGS: [&str; 4] = ["place:city", "place:town", "place:village", "place:hamlet"];
+/// Cache key format version: bumped whenever the cached shape or the upstream query changes.
+const KEY_VERSION: &str = "v2";
+const CITY_TAGS: [&str; 5] = [
+    "place:city",
+    "place:town",
+    "place:village",
+    "place:hamlet",
+    // Only for the allow-listed states below; every other state is dropped.
+    "place:state",
+];
+/// OSM objects tagged `place=state` that people know as a city (OSM type, OSM id). Tokyo-to is
+/// a prefecture-level metropolis with no `place=city` object of its own. Singapore and Hong Kong
+/// are `place=city` already (checked live 2026-11-13); Macau is not checked.
+const CITY_STATES: [(&str, i64); 1] = [("R", 1_543_125)];
 
 /// Where the geocoder lives. Production reads `GEOCODER_URL` once; tests inject a local stub
 /// with an `Extension<GeoConfig>` layer on the router.
@@ -81,11 +104,22 @@ fn config(ext: Option<Extension<GeoConfig>>) -> GeoConfig {
         .unwrap_or_else(|| FROM_ENV.get_or_init(GeoConfig::from_env).clone())
 }
 
+/// `Underground/1.0 (+<public URL>)` — identifies us to the upstream (fair use asks for it),
+/// from `PUBLIC_BASE_URL` (F14); never personal contact data.
+pub fn user_agent(public_base_url: Option<&str>) -> String {
+    let url = public_base_url
+        .and_then(|u| reqwest::Url::parse(u.trim()).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some() && u.username().is_empty())
+        .map(|u| u.as_str().trim_end_matches('/').to_string())
+        .unwrap_or_else(|| DEFAULT_PUBLIC_URL.to_string());
+    format!("Underground/1.0 (+{url})")
+}
+
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
-            .user_agent(USER_AGENT)
+            .user_agent(user_agent(std::env::var("PUBLIC_BASE_URL").ok().as_deref()))
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .connect_timeout(DEFAULT_TIMEOUT)
@@ -98,6 +132,7 @@ fn client() -> &'static reqwest::Client {
 /// One normalised geocoder result, as the web client receives it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct GeoPlace {
+    /// Display text in the visitor's language where the geocoder has it.
     pub label: String,
     pub name: Option<String>,
     pub street: Option<String>,
@@ -110,8 +145,20 @@ pub struct GeoPlace {
     pub country_code: Option<String>,
     pub lat: f64,
     pub lng: f64,
-    /// `city` (city/town/village/hamlet) | `address` (street or house) | `place` (anything else).
+    /// `city` (city/town/village/hamlet, and allow-listed states) | `address` | `place`.
     pub kind: String,
+    /// The OSM object: `N` | `W` | `R` and its id.
+    #[serde(default)]
+    pub osm_type: Option<String>,
+    #[serde(default)]
+    pub osm_id: Option<i64>,
+    /// The OSM `name` (local language), the same whatever `lang` was asked for. Null only when the
+    /// geocoder's default-language answer did not include this object.
+    #[serde(default)]
+    pub name_default: Option<String>,
+    /// The locality's OSM `name`: what to store as an event's or a profile's city.
+    #[serde(default)]
+    pub city_default: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -145,10 +192,16 @@ pub async fn search(
     hit_client(&st.db, &ip).await?;
     let kind = if city_only { "city" } else { "address" };
     let bias_key = bias.map_or("-".to_string(), |(a, b)| format!("{a:.1},{b:.1}"));
-    let key = format!("s|{kind}|{lang}|{bias_key}|{}", q.to_lowercase());
+    let key = format!("{KEY_VERSION}|s|{kind}|{lang}|{bias_key}|{}", q.to_lowercase());
     let cfg = config(cfg);
-    let url = search_url(&cfg, &q, lang, bias, city_only);
-    Ok(Json(cached_or_fetch(&st.db, &cfg, &key, url).await?))
+    let lookup = Lookup {
+        key: &key,
+        lang,
+        ttl: SEARCH_TTL_SECS,
+        city_only,
+    };
+    let url = |l: &str| search_url(&cfg, &q, l, bias, city_only);
+    Ok(Json(cached_or_fetch(&st.db, &cfg, &ip, &lookup, url).await?))
 }
 
 /// The Photon search URL. Every user value goes through the query encoder.
@@ -156,8 +209,10 @@ pub fn search_url(cfg: &GeoConfig, q: &str, lang: &str, bias: Option<(f64, f64)>
     let mut url = cfg.endpoint("api");
     {
         let mut qp = url.query_pairs_mut();
+        // City mode asks for more: states that are not allow-listed are dropped afterwards.
+        let limit = if city_only { "12" } else { "8" };
         qp.append_pair("q", q)
-            .append_pair("limit", "8")
+            .append_pair("limit", limit)
             .append_pair("lang", lang);
         if let Some((lat, lng)) = bias {
             qp.append_pair("lat", &lat.to_string())
@@ -182,18 +237,27 @@ pub async fn reverse(
     let (lat, lng) = parse_point(p.lat.as_deref(), p.lng.as_deref())?
         .ok_or_else(|| AppError::Validation("lat and lng are required".into()))?;
     let lang = photon_lang(p.lang.as_deref())?;
-    // ~110 m: enough to name the street, and what is cached and sent upstream.
-    let (lat, lng) = (round_to(lat, 3), round_to(lng, 3));
+    // ~1 km (F5): enough to name the city, and all that is cached or sent upstream.
+    let (lat, lng) = (round_to(lat, 2), round_to(lng, 2));
     hit_client(&st.db, &ip).await?;
-    let key = format!("r|{lang}|{lat:.3},{lng:.3}");
+    let key = format!("{KEY_VERSION}|r|{lang}|{lat:.2},{lng:.2}");
     let cfg = config(cfg);
-    let mut url = cfg.endpoint("reverse");
-    url.query_pairs_mut()
-        .append_pair("lat", &lat.to_string())
-        .append_pair("lon", &lng.to_string())
-        .append_pair("lang", lang)
-        .append_pair("limit", "1");
-    Ok(Json(cached_or_fetch(&st.db, &cfg, &key, url).await?))
+    let lookup = Lookup {
+        key: &key,
+        lang,
+        ttl: REVERSE_TTL_SECS,
+        city_only: false,
+    };
+    let url = |l: &str| {
+        let mut url = cfg.endpoint("reverse");
+        url.query_pairs_mut()
+            .append_pair("lat", &lat.to_string())
+            .append_pair("lon", &lng.to_string())
+            .append_pair("lang", l)
+            .append_pair("limit", "1");
+        url
+    };
+    Ok(Json(cached_or_fetch(&st.db, &cfg, &ip, &lookup, url).await?))
 }
 
 #[derive(Deserialize)]
@@ -234,13 +298,31 @@ fn parse_country_code(raw: Option<&str>) -> Result<Option<String>, AppError> {
     }
 }
 
+/// The rate-limit key for a client (F7): an IPv6 client is keyed by its /64, the block one
+/// subscriber gets, so rotating addresses inside it buys no fresh bucket.
+pub fn ip_key(ip: &ClientIp) -> String {
+    match ip.0.parse::<IpAddr>() {
+        Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+        _ => ip.0.clone(),
+    }
+}
+
 async fn hit_client(db: &PgPool, ip: &ClientIp) -> Result<(), AppError> {
     let max = ratelimit::env_limit("GEO_LIMIT_PER_MIN", 60);
-    ratelimit::hit(db, &format!("geo-ip:{}", ip.0), max, 60).await
+    ratelimit::hit(db, &format!("geo-ip:{}", ip_key(ip)), max, 60).await
 }
 
 fn parse_q(raw: Option<&str>) -> Result<String, AppError> {
-    let q = raw.unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
+    let q = strip_invisible(raw.unwrap_or(""))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let n = q.chars().count();
     if !(2..=120).contains(&n) || q.chars().any(char::is_control) {
         return Err(AppError::Validation("q must be 2 to 120 characters".into()));
@@ -302,32 +384,93 @@ fn round_to(v: f64, decimals: i32) -> f64 {
     }
 }
 
+/// One logical lookup: its cache key, the visitor's upstream language and the answer's TTL.
+struct Lookup<'a> {
+    key: &'a str,
+    lang: &'static str,
+    ttl: i32,
+    city_only: bool,
+}
+
+/// Serve from the cache, else ask the upstream: once in `default` (the OSM names), and when the
+/// visitor's language is one Photon knows, once more in it for the labels.
 async fn cached_or_fetch(
     db: &PgPool,
     cfg: &GeoConfig,
-    key: &str,
-    url: reqwest::Url,
+    ip: &ClientIp,
+    lookup: &Lookup<'_>,
+    url: impl Fn(&str) -> reqwest::Url,
 ) -> Result<Vec<GeoPlace>, AppError> {
-    if let Some(hit) = cache_get(db, key).await? {
+    if let Some(hit) = cache_get(db, lookup.key).await? {
         return Ok(hit);
     }
-    // A global cap on upstream calls; when it is reached the service is "busy" for everyone.
-    let max = ratelimit::env_limit("GEO_UPSTREAM_LIMIT_PER_MIN", 300);
+    // F7: a client may cause at most this many upstream lookups a minute, inside its overall budget.
+    let misses = ratelimit::env_limit("GEO_MISS_LIMIT_PER_MIN", 20);
+    ratelimit::hit(db, &format!("geo-miss:{}", ip_key(ip)), misses, 60).await?;
+    let localized = lookup.lang != "default";
+    upstream_slot(db).await?;
+    if localized {
+        upstream_slot(db).await?;
+    }
+    let default_call = call(cfg, url("default"));
+    let (defaults, labels) = if localized {
+        let (d, l) = tokio::join!(default_call, call(cfg, url(lookup.lang)));
+        (d.ok(), Some(l?))
+    } else {
+        (Some(default_call.await?), None)
+    };
+    let complete = defaults.is_some();
+    let mut places = match labels {
+        Some(labels) => with_default_names(labels, defaults.as_deref().unwrap_or(&[])),
+        None => defaults.unwrap_or_default(),
+    };
+    if lookup.city_only {
+        places.retain(|p| p.kind == "city");
+    }
+    places.truncate(RESULTS);
+    // Without the default names the answer is still shown, but not kept.
+    if complete {
+        cache_put(db, lookup.key, &places, lookup.ttl).await?;
+    }
+    Ok(places)
+}
+
+/// One slot under the global cap on upstream calls; when it is reached the service is "busy".
+async fn upstream_slot(db: &PgPool) -> Result<(), AppError> {
+    let max = ratelimit::env_limit("GEO_UPSTREAM_LIMIT_PER_MIN", 120);
     ratelimit::hit(db, "geo-upstream", max, 60).await.map_err(|e| match e {
         AppError::RateLimited => AppError::Unavailable(UNAVAILABLE.into()),
         other => other,
-    })?;
-    let places = match tokio::time::timeout(cfg.timeout, fetch(cfg, url)).await {
-        Ok(Ok(body)) => normalise(&body).ok_or_else(|| "unexpected answer shape".to_string()),
+    })
+}
+
+/// One upstream request, normalised; any failure is a 503 (logged without the URL).
+async fn call(cfg: &GeoConfig, url: reqwest::Url) -> Result<Vec<GeoPlace>, AppError> {
+    let default_names = url.query_pairs().any(|(k, v)| k == "lang" && v == "default");
+    let result = match tokio::time::timeout(cfg.timeout, fetch(cfg, url)).await {
+        Ok(Ok(body)) => normalise(&body, default_names).ok_or_else(|| "unexpected answer shape".to_string()),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("timed out".to_string()),
-    }
-    .map_err(|e| {
+    };
+    result.map_err(|e| {
         tracing::warn!(error = %e, "geocoder request failed");
         AppError::Unavailable(UNAVAILABLE.into())
-    })?;
-    cache_put(db, key, &places).await?;
-    Ok(places)
+    })
+}
+
+/// The visitor-language answer, with each object's default names taken from the default answer.
+fn with_default_names(labels: Vec<GeoPlace>, defaults: &[GeoPlace]) -> Vec<GeoPlace> {
+    labels
+        .into_iter()
+        .map(|mut p| {
+            let same = defaults
+                .iter()
+                .find(|d| d.osm_id.is_some() && d.osm_id == p.osm_id && d.osm_type == p.osm_type);
+            p.name_default = same.and_then(|d| d.name.clone());
+            p.city_default = same.and_then(|d| d.city.clone());
+            p
+        })
+        .collect()
 }
 
 /// GET the URL; the error is a short description that never contains the URL (user text).
@@ -351,10 +494,18 @@ async fn fetch(cfg: &GeoConfig, url: reqwest::Url) -> Result<Value, String> {
     serde_json::from_slice(&body).map_err(|_| "body is not JSON".to_string())
 }
 
-/// Photon's GeoJSON → our places. `None` when the answer is not a feature collection.
-pub fn normalise(body: &Value) -> Option<Vec<GeoPlace>> {
+/// Photon's GeoJSON → our places. `None` when the answer is not a feature collection. When
+/// `default_names` (a `lang=default` answer), the names are the OSM defaults themselves.
+pub fn normalise(body: &Value, default_names: bool) -> Option<Vec<GeoPlace>> {
     let features = body.get("features")?.as_array()?;
-    Some(features.iter().filter_map(place_from).take(8).collect())
+    let places = features.iter().filter_map(place_from).map(|mut p| {
+        if default_names {
+            p.name_default = p.name.clone();
+            p.city_default = p.city.clone();
+        }
+        p
+    });
+    Some(places.take(12).collect())
 }
 
 fn place_from(feature: &Value) -> Option<GeoPlace> {
@@ -365,7 +516,9 @@ fn place_from(feature: &Value) -> Option<GeoPlace> {
         return None;
     }
     let text = |k: &str| p.get(k).and_then(Value::as_str).map(clean).filter(|s| !s.is_empty());
-    let kind = kind_of(p);
+    let osm_type = text("osm_type").filter(|t| matches!(t.as_str(), "N" | "W" | "R"));
+    let osm_id = p.get("osm_id").and_then(Value::as_i64);
+    let kind = kind_of(p, osm_type.as_deref(), osm_id);
     let name = text("name");
     let country_code = text("countrycode")
         .filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()))
@@ -382,19 +535,43 @@ fn place_from(feature: &Value) -> Option<GeoPlace> {
         lat,
         lng,
         kind: kind.into(),
+        osm_type,
+        osm_id,
+        name_default: None,
+        city_default: None,
     };
     place.label = label_of(&place);
     (!place.label.is_empty()).then_some(place)
 }
 
+/// Remove the zero-width and bidirectional-control characters that make two equal-looking
+/// names differ or reorder text on screen (F11): U+200B–200F, U+202A–202E, U+2066–2069, U+FEFF.
+pub fn strip_invisible(s: &str) -> String {
+    s.chars()
+        .filter(
+            |c| !matches!(*c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'),
+        )
+        .collect()
+}
+
 fn clean(s: &str) -> String {
-    let s: String = s.chars().filter(|c| !c.is_control()).take(MAX_FIELD_CHARS).collect();
+    let s: String = strip_invisible(s)
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_FIELD_CHARS)
+        .collect();
     s.trim().to_string()
 }
 
-fn kind_of(p: &Value) -> &'static str {
+fn kind_of(p: &Value, osm_type: Option<&str>, osm_id: Option<i64>) -> &'static str {
     let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("");
-    if s("osm_key") == "place" && matches!(s("osm_value"), "city" | "town" | "village" | "hamlet") {
+    let allow_listed_state = s("osm_value") == "state"
+        && CITY_STATES
+            .iter()
+            .any(|(t, id)| Some(*t) == osm_type && Some(*id) == osm_id);
+    if s("osm_key") == "place"
+        && (matches!(s("osm_value"), "city" | "town" | "village" | "hamlet") || allow_listed_state)
+    {
         "city"
     } else if !s("housenumber").is_empty() || !s("street").is_empty() || matches!(s("type"), "house" | "street") {
         "address"
@@ -427,25 +604,29 @@ fn label_of(p: &GeoPlace) -> String {
 }
 
 async fn cache_get(db: &PgPool, key: &str) -> Result<Option<Vec<GeoPlace>>, AppError> {
-    let value: Option<Value> = sqlx::query_scalar(
-        "SELECT value FROM geo_cache WHERE key = $1 AND created_at > now() - ($2 * interval '1 second')",
-    )
-    .bind(key)
-    .bind(CACHE_TTL_SECS)
-    .fetch_optional(db)
-    .await?;
+    let value: Option<Value> = sqlx::query_scalar("SELECT value FROM geo_cache WHERE key = $1 AND expires_at > now()")
+        .bind(key)
+        .fetch_optional(db)
+        .await?;
     Ok(value.and_then(|v| serde_json::from_value(v).ok()))
 }
 
-async fn cache_put(db: &PgPool, key: &str, places: &[GeoPlace]) -> Result<(), AppError> {
+/// Keep the answer (an empty one for an hour only) and remember every city in it for learning.
+async fn cache_put(db: &PgPool, key: &str, places: &[GeoPlace], ttl: i32) -> Result<(), AppError> {
+    let ttl = if places.is_empty() { EMPTY_TTL_SECS } else { ttl };
     sqlx::query(
-        "INSERT INTO geo_cache (key, value) VALUES ($1, $2) \
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, created_at = now()",
+        "INSERT INTO geo_cache (key, value, created_at, expires_at) \
+         VALUES ($1, $2, now(), now() + ($3 * interval '1 second')) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, created_at = now(), expires_at = EXCLUDED.expires_at",
     )
     .bind(key)
     .bind(sqlx::types::Json(places))
+    .bind(ttl)
     .execute(db)
     .await?;
+    for place in places.iter().filter(|p| p.kind == "city") {
+        remember_city(db, place).await?;
+    }
     if uuid::Uuid::new_v4().as_bytes()[0] < 4 {
         // ~1 in 64 writes, off the request path, like the rate-limit pruning; failure is harmless.
         let db = db.clone();
@@ -456,35 +637,62 @@ async fn cache_put(db: &PgPool, key: &str, places: &[GeoPlace]) -> Result<(), Ap
     Ok(())
 }
 
-/// Delete cached answers past the TTL. Returns the number of rows deleted.
-pub async fn prune_cache(db: &PgPool) -> Result<u64, sqlx::Error> {
-    let done = sqlx::query("DELETE FROM geo_cache WHERE created_at <= now() - ($1 * interval '1 second')")
-        .bind(CACHE_TTL_SECS)
-        .execute(db)
-        .await?;
-    Ok(done.rows_affected())
+/// One row per (default name, country, ~1 km point) in `geo_city_seen` (F6).
+async fn remember_city(db: &PgPool, place: &GeoPlace) -> Result<(), AppError> {
+    let (Some(name), Some(cc)) = (place.name_default.as_deref(), place.country_code.as_deref()) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO geo_city_seen (name_key, country_code, lat_key, lng_key, place) VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (name_key, country_code, lat_key, lng_key) DO UPDATE SET place = EXCLUDED.place, seen_at = now()",
+    )
+    .bind(name.to_lowercase())
+    .bind(cc)
+    .bind((place.lat * 100.0).round() as i32)
+    .bind((place.lng * 100.0).round() as i32)
+    .bind(sqlx::types::Json(place))
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
-/// A `city` result with this name from a cached geocoder answer (one the geocoder really
-/// returned within the TTL): the only source the gazetteer learns new cities from. With a
-/// `near` point the nearest match within 50 km wins; without one the match must be
-/// unambiguous (one country), narrowed by `country_code` when given.
+/// Delete expired answers and cities seen too long ago. Returns the number of rows deleted.
+pub async fn prune_cache(db: &PgPool) -> Result<u64, sqlx::Error> {
+    let answers = sqlx::query("DELETE FROM geo_cache WHERE expires_at <= now()")
+        .execute(db)
+        .await?;
+    let cities = sqlx::query("DELETE FROM geo_city_seen WHERE seen_at <= now() - ($1 * interval '1 second')")
+        .bind(CITY_SEEN_TTL_SECS)
+        .execute(db)
+        .await?;
+    Ok(answers.rows_affected() + cities.rows_affected())
+}
+
+/// A `city` result with this default name that the geocoder really returned within the TTL:
+/// the only source the gazetteer learns new cities from. A name alone never qualifies: with a
+/// `near` point the nearest match within 50 km wins; with only a `country_code` the match must
+/// be unambiguous inside that country.
 pub async fn cached_city(
     db: &PgPool,
     name: &str,
     country_code: Option<&str>,
     near: Option<(f64, f64)>,
 ) -> Result<Option<GeoPlace>, sqlx::Error> {
+    let cc = country_code
+        .map(|c| c.trim().to_ascii_uppercase())
+        .filter(|c| !c.is_empty());
+    if near.is_none() && cc.is_none() {
+        return Ok(None);
+    }
     let rows: Vec<Value> = sqlx::query_scalar(
-        "SELECT r FROM geo_cache c CROSS JOIN LATERAL jsonb_array_elements(c.value) AS r \
-         WHERE c.created_at > now() - ($1 * interval '1 second') \
-           AND r->>'kind' = 'city' AND lower(r->>'name') = lower($2) \
-           AND ($3::text IS NULL OR r->>'country_code' = upper($3)) \
-         LIMIT 100",
+        "SELECT place FROM geo_city_seen \
+         WHERE name_key = $1 AND ($2::text IS NULL OR country_code = $2) \
+           AND seen_at > now() - ($3 * interval '1 second') \
+         LIMIT 50",
     )
-    .bind(CACHE_TTL_SECS)
-    .bind(name.trim())
-    .bind(country_code.map(str::trim).filter(|c| !c.is_empty()))
+    .bind(strip_invisible(name.trim()).to_lowercase())
+    .bind(cc)
+    .bind(CITY_SEEN_TTL_SECS)
     .fetch_all(db)
     .await?;
     let places: Vec<GeoPlace> = rows
@@ -537,6 +745,24 @@ mod tests {
     }
 
     #[test]
+    fn user_agent_names_the_public_url_only() {
+        assert_eq!(
+            user_agent(Some("https://underground.example/")),
+            "Underground/1.0 (+https://underground.example)"
+        );
+        let fallback = format!("Underground/1.0 (+{DEFAULT_PUBLIC_URL})");
+        for bad in [
+            None,
+            Some(""),
+            Some("ftp://x.io"),
+            Some("not a url"),
+            Some("https://me:pw@x.io"),
+        ] {
+            assert_eq!(user_agent(bad), fallback, "{bad:?}");
+        }
+    }
+
+    #[test]
     fn user_text_stays_inside_one_query_parameter() {
         let q = "a&lang=xx#frag/../../evil?x=1 Київ ü";
         let url = search_url(&cfg("https://photon.komoot.io"), q, "en", Some((50.4, 30.5)), true);
@@ -553,7 +779,7 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .collect();
         assert_eq!(langs, ["en"], "[SEC] no parameter smuggled through q");
-        assert_eq!(pairs.iter().filter(|(k, _)| k == "osm_tag").count(), 4);
+        assert_eq!(pairs.iter().filter(|(k, _)| k == "osm_tag").count(), 5);
     }
 
     #[test]
@@ -576,10 +802,29 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_clients_share_a_bucket_per_64() {
+        let key = |s: &str| ip_key(&ClientIp(s.into()));
+        assert_eq!(key("2001:db8:1:2:aaaa::1"), "2001:db8:1:2::/64");
+        assert_eq!(key("2001:db8:1:2:ffff:1:2:3"), key("2001:db8:1:2::9"));
+        assert_ne!(key("2001:db8:1:3::1"), key("2001:db8:1:2::1"));
+        assert_eq!(key("::ffff:198.51.100.7"), "198.51.100.7");
+        assert_eq!(key("198.51.100.7"), "198.51.100.7");
+        assert_eq!(key("unknown"), "unknown");
+    }
+
+    #[test]
+    fn invisible_characters_are_stripped() {
+        assert_eq!(strip_invisible("Ky\u{200B}iv\u{202E}\u{2066}\u{FEFF}"), "Kyiv");
+        assert_eq!(strip_invisible("Київ"), "Київ");
+        assert_eq!(clean("  Lis\u{200D}bon\u{0007} "), "Lisbon");
+    }
+
+    #[test]
     fn normalises_photon_features() {
         let body = json!({"type": "FeatureCollection", "features": [
-            {"properties": {"osm_key": "place", "osm_value": "city", "type": "city", "name": "Lisbon",
-                "country": "Portugal", "countrycode": "pt"}, "geometry": {"coordinates": [-9.1366, 38.7078]}},
+            {"properties": {"osm_type": "R", "osm_id": 5400890, "osm_key": "place", "osm_value": "city",
+                "type": "city", "name": "Lisbon", "country": "Portugal", "countrycode": "pt"},
+             "geometry": {"coordinates": [-9.1366, 38.7078]}},
             {"properties": {"osm_key": "building", "type": "house", "street": "вулиця Бориса Грінченка",
                 "housenumber": "3-А", "name": "АТП", "city": "Київ", "country": "Україна", "countrycode": "UA"},
              "geometry": {"coordinates": [30.5203, 50.4502]}},
@@ -588,18 +833,39 @@ mod tests {
             {"properties": {"name": "Broken"}, "geometry": {"coordinates": [500.0, 2.0]}},
             {"properties": {"name": "No geometry"}}
         ]});
-        let places = normalise(&body).unwrap();
+        let places = normalise(&body, false).unwrap();
         assert_eq!(places.len(), 3, "invalid coordinates are dropped");
         assert_eq!(places[0].kind, "city");
         assert_eq!(places[0].city.as_deref(), Some("Lisbon"));
         assert_eq!(places[0].country_code.as_deref(), Some("PT"));
+        assert_eq!(
+            (places[0].osm_type.as_deref(), places[0].osm_id),
+            (Some("R"), Some(5_400_890))
+        );
+        assert_eq!(places[0].name_default, None, "a localized answer has no default names");
         assert_eq!((places[0].lat, places[0].lng), (38.7078, -9.1366));
         assert_eq!(places[0].label, "Lisbon, Portugal");
         assert_eq!(places[1].kind, "address");
         assert_eq!(places[1].label, "АТП, вулиця Бориса Грінченка 3-А, Київ, Україна");
         assert_eq!(places[2].kind, "place");
         assert_eq!(places[2].name.as_deref(), Some("Museum"), "control characters stripped");
-        assert!(normalise(&json!({"error": "x"})).is_none());
+        assert!(normalise(&json!({"error": "x"}), false).is_none());
+        let defaults = normalise(&body, true).unwrap();
+        assert_eq!(defaults[1].city_default.as_deref(), Some("Київ"));
+        assert_eq!(defaults[0].name_default.as_deref(), Some("Lisbon"));
+    }
+
+    #[test]
+    fn only_allow_listed_states_are_cities() {
+        let state = |osm_id: i64, name: &str| {
+            json!({"properties": {"osm_type": "R", "osm_id": osm_id, "osm_key": "place", "osm_value": "state",
+                "type": "state", "name": name, "countrycode": "XX"}, "geometry": {"coordinates": [1.0, 1.0]}})
+        };
+        let body = json!({"features": [state(1_543_125, "東京都"), state(165_475, "California")]});
+        let places = normalise(&body, true).unwrap();
+        assert_eq!(places[0].kind, "city");
+        assert_eq!(places[0].city.as_deref(), Some("東京都"));
+        assert_eq!(places[1].kind, "place", "an ordinary state is not a city");
     }
 
     fn city(cc: &str, lat: f64, lng: f64) -> GeoPlace {
@@ -615,7 +881,29 @@ mod tests {
             lat,
             lng,
             kind: "city".into(),
+            osm_type: Some("R".into()),
+            osm_id: Some(1),
+            name_default: Some("Lisboa".into()),
+            city_default: Some("Lisboa".into()),
         }
+    }
+
+    #[test]
+    fn default_names_come_from_the_same_osm_object() {
+        let mut other = city("PT", 1.0, 1.0);
+        other.osm_id = Some(2);
+        other.name = Some("Elsewhere".into());
+        let mut label = city("PT", 38.7, -9.1);
+        label.name_default = None;
+        label.city_default = None;
+        let mut default = label.clone();
+        default.name = Some("Lisboa".into());
+        default.city = Some("Lisboa".into());
+        let merged = with_default_names(vec![label.clone()], &[other, default]);
+        assert_eq!(merged[0].name.as_deref(), Some("Lisbon"));
+        assert_eq!(merged[0].name_default.as_deref(), Some("Lisboa"));
+        let missing = with_default_names(vec![label], &[]);
+        assert_eq!(missing[0].name_default, None);
     }
 
     #[test]

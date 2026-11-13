@@ -246,6 +246,7 @@ pub async fn insert_event(db: &PgPool, organizer_id: Uuid, req: &CreateEventReq)
             point: req.lat.zip(req.lng),
             country: non_empty(req.country.as_deref()),
             country_code: non_empty(req.country_code.as_deref()),
+            learner: Some(organizer_id),
         },
     )
     .await?;
@@ -397,6 +398,7 @@ pub async fn create_event(
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
     validate_place(req.lat, req.lng, req.country.as_deref(), req.country_code.as_deref())?;
+    clean_place_text(&mut req.city, &mut req.venue_address, &mut req.country);
     let event = insert_event(&st.db, user.id, &req).await?;
     // Drafts stay private; only a published event announces itself.
     if event.status == "published" {
@@ -463,6 +465,44 @@ pub struct UpdateEventReq {
     pub clear_ends_at: Option<bool>,
 }
 
+/// The stored event fields an edit is checked against.
+#[derive(sqlx::FromRow)]
+struct EditBase {
+    was_draft: bool,
+    starts_at: Option<DateTime<Utc>>,
+    ends_at: Option<DateTime<Utc>>,
+    city: Option<String>,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    country: Option<String>,
+    country_code: Option<String>,
+}
+
+/// Whether an edit really moves the event (TASK-303 G1 fix batch, item 1): a different city
+/// (ignoring case and surrounding spaces), a different point, country or country code. A client
+/// that re-sends the stored place unchanged moves nothing.
+fn place_changed(req: &UpdateEventReq, point: Option<(f64, f64)>, cur: &EditBase) -> bool {
+    let norm = |s: Option<&str>| s.map(|v| v.trim().to_lowercase()).unwrap_or_default();
+    let city = req.city.is_some() && norm(req.city.as_deref()) != norm(cur.city.as_deref());
+    let new_point = point.is_some_and(|(a, b)| match cur.lat.zip(cur.lng) {
+        Some((c, d)) => (a - c).abs() > 1e-7 || (b - d).abs() > 1e-7,
+        None => true,
+    });
+    let country = non_empty(req.country.as_deref()).is_some_and(|c| Some(c) != cur.country.as_deref().map(str::trim));
+    let code = non_empty(req.country_code.as_deref())
+        .is_some_and(|c| !cur.country_code.as_deref().is_some_and(|k| k.eq_ignore_ascii_case(c)));
+    city || new_point || country || code
+}
+
+/// Zero-width and bidi-control characters out of the free-text place fields (F11).
+fn clean_place_text(city: &mut Option<String>, venue: &mut Option<String>, country: &mut Option<String>) {
+    for field in [city, venue, country] {
+        if let Some(v) = field.as_mut() {
+            *v = crate::geo::strip_invisible(v);
+        }
+    }
+}
+
 /// 404 for an unknown event, 403 unless `user_id` is its organiser.
 pub async fn require_owner(db: &PgPool, event_id: Uuid, user_id: Uuid) -> Result<(), AppError> {
     let organizer: Option<Option<Uuid>> = sqlx::query_scalar("SELECT organizer_id FROM events WHERE id = $1")
@@ -512,6 +552,7 @@ pub async fn update_event(
     validate_age_rating(req.age_rating.as_deref())?;
     validate_timezone(req.timezone.as_deref())?;
     let point = validate_place(req.lat, req.lng, req.country.as_deref(), req.country_code.as_deref())?;
+    clean_place_text(&mut req.city, &mut req.venue_address, &mut req.country);
     let clear_ends_at = req.clear_ends_at.unwrap_or(false);
     if clear_ends_at && req.ends_at.is_some() {
         return Err(AppError::Validation("ends_at and clear_ends_at are exclusive".into()));
@@ -519,15 +560,14 @@ pub async fn update_event(
     // Track a draft→published transition so publishing a draft announces it (once); read the
     // current times so the end-after-start rule applies to the RESULT of this edit (N1), e.g.
     // moving the start past an end that is kept.
-    let (was_draft, cur_starts, cur_ends, cur_city): (
-        bool,
-        Option<DateTime<Utc>>,
-        Option<DateTime<Utc>>,
-        Option<String>,
-    ) = sqlx::query_as("SELECT status = 'draft', starts_at, ends_at, city FROM events WHERE id = $1")
-        .bind(id)
-        .fetch_one(&st.db)
-        .await?;
+    let cur: EditBase = sqlx::query_as(
+        "SELECT status = 'draft' AS was_draft, starts_at, ends_at, city, lat, lng, country, country_code \
+         FROM events WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&st.db)
+    .await?;
+    let (was_draft, cur_starts, cur_ends) = (cur.was_draft, cur.starts_at, cur.ends_at);
     // Only an edit that touches the times is checked (NF3): a legacy row with a bad pair must not block an
     // unrelated edit such as closing booking. Moving the start past a kept end is still caught.
     if req.starts_at.is_some() || req.ends_at.is_some() || clear_ends_at {
@@ -535,14 +575,16 @@ pub async fn update_event(
         validate_time_order(req.starts_at.or(cur_starts), new_ends)?;
     }
     // A new place re-settles the whole geo, NULLs included: coordinates, country and code always
-    // describe the current city, never the previous one. No place in the request: untouched.
-    let moved = req.city.is_some() || point.is_some() || req.country.is_some() || req.country_code.is_some();
+    // describe the current city, never the previous one. A place re-sent unchanged (Android sends
+    // the city on every save) or no place at all leaves geo and zone untouched.
+    let moved = place_changed(&req, point, &cur);
     let geo = if moved {
         let place = crate::cities::PlaceInput {
-            city: req.city.as_deref().or(cur_city.as_deref()),
+            city: req.city.as_deref().or(cur.city.as_deref()),
             point,
             country: non_empty(req.country.as_deref()),
             country_code: non_empty(req.country_code.as_deref()),
+            learner: Some(user.id),
         };
         crate::cities::locate(&st.db, &place).await?
     } else {

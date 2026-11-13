@@ -1,11 +1,39 @@
-//! Coordinates → IANA time zone (TASK-303 G1), without a polygon database.
+//! Coordinates → IANA time zone (TASK-303 G1).
 //!
-//! The precise lat/lng → zone crates (`tzf-rs`, `rtz`) embed time-zone boundary data derived
-//! from OpenStreetMap, licensed ODbL-1.0, which is outside the dependency licence allowlist
-//! (MIT/Apache/BSD/ISC/Zlib/Unicode). So the zone comes from the place's ISO country code:
-//! one zone for a single-zone country, and the nearest reference city for a country that
-//! spans several zones. Zone names are IANA tzdb identifiers (public domain); the tables
-//! below are our own. An explicit zone sent by the organiser always wins over this guess.
+//! The answer comes from `tzf-rs`: time-zone boundary polygons from OpenStreetMap (ODbL-1.0,
+//! accepted by the owner on 2026-11-13). Where the polygons give no land zone (open sea, or an
+//! `Etc/*` ocean zone), the place's ISO country code decides: one zone for a single-zone
+//! country, the nearest reference city for a country that spans several zones. Zone names are
+//! IANA tzdb identifiers (public domain); the fallback tables below are our own. An explicit
+//! zone sent by the organiser always wins over either.
+
+use std::sync::OnceLock;
+
+fn finder() -> &'static tzf_rs::DefaultFinder {
+    static FINDER: OnceLock<tzf_rs::DefaultFinder> = OnceLock::new();
+    FINDER.get_or_init(tzf_rs::DefaultFinder::new)
+}
+
+/// Load the boundary data now (it takes a moment) rather than on the first request.
+pub fn warm() {
+    let _ = finder();
+}
+
+/// The land zone at a point from the boundary polygons; `None` at sea, for an `Etc/*` ocean
+/// zone, or for a name the bundled tz database cannot parse.
+pub fn zone_at_point(lat: f64, lng: f64) -> Option<&'static str> {
+    if !(lat.is_finite() && lng.is_finite()) {
+        return None;
+    }
+    let zone = finder().get_tz_name(lng, lat);
+    let usable = !zone.is_empty() && !zone.starts_with("Etc/") && zone.parse::<chrono_tz::Tz>().is_ok();
+    usable.then_some(zone)
+}
+
+/// The zone at a point: the polygons first, then the country fallback.
+pub fn zone_for_point(country_code: Option<&str>, lat: f64, lng: f64) -> Option<&'static str> {
+    zone_at_point(lat, lng).or_else(|| country_code.and_then(|cc| zone_for(cc, lat, lng)))
+}
 
 /// Countries with one zone (or several zones that always share one offset).
 #[rustfmt::skip]
@@ -173,8 +201,8 @@ pub fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     2.0 * 6371.0 * a.sqrt().min(1.0).asin()
 }
 
-/// IANA zone for a point in the country `country_code` (ISO 3166-1 alpha-2, any case).
-/// `None` for a country the tables do not know.
+/// Fallback only: IANA zone for a point in the country `country_code` (ISO 3166-1 alpha-2, any
+/// case) from the tables above. `None` for a country the tables do not know.
 pub fn zone_for(country_code: &str, lat: f64, lng: f64) -> Option<&'static str> {
     let cc = country_code.trim().to_ascii_uppercase();
     let nearest = MULTI
@@ -233,6 +261,35 @@ mod tests {
         }
         assert_eq!(zone_for("AQ", -75.0, 0.0), None, "unknown country → no guess");
         assert_eq!(zone_for("", 50.0, 30.0), None);
+    }
+
+    #[test]
+    fn polygons_place_border_cities_in_their_zone() {
+        let cases = [
+            (50.4501, 30.5234, "Europe/Kyiv"),
+            (35.6762, 139.6503, "Asia/Tokyo"),
+            (38.7223, -9.1393, "Europe/Lisbon"),
+            (42.9634, -85.6681, "America/Detroit"),       // Grand Rapids
+            (30.4383, -84.2807, "America/New_York"),      // Tallahassee
+            (35.2220, -101.8313, "America/Chicago"),      // Amarillo
+            (53.3017, -60.3261, "America/Goose_Bay"),     // Goose Bay
+            (55.7596, -120.2353, "America/Dawson_Creek"), // Dawson Creek
+            (52.0317, 113.5010, "Asia/Chita"),            // Chita
+            (46.9591, 142.7380, "Asia/Sakhalin"),         // Yuzhno-Sakhalinsk
+            (51.5331, 46.0342, "Europe/Saratov"),         // Saratov
+        ];
+        for (lat, lng, want) in cases {
+            assert_eq!(zone_at_point(lat, lng), Some(want), "{lat},{lng}");
+            assert_eq!(zone_for_point(None, lat, lng), Some(want));
+        }
+    }
+
+    #[test]
+    fn the_sea_falls_back_to_the_country() {
+        assert_eq!(zone_at_point(-30.0, -140.0), None, "mid-Pacific: no land zone");
+        assert_eq!(zone_for_point(None, -30.0, -140.0), None);
+        assert_eq!(zone_for_point(Some("PF"), -30.0, -140.0), Some("Pacific/Gambier"));
+        assert_eq!(zone_at_point(f64::NAN, 0.0), None);
     }
 
     #[test]
