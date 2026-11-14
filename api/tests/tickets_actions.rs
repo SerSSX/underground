@@ -212,11 +212,18 @@ async fn transfer_validation(pool: PgPool) {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::ACCEPTED, "to self: the same answer");
+    // Owner decision 2026-11-14: an offer to one's own email is refused (was 202, "the same
+    // answer"); the place is already the sender's and nothing would reach them.
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "to self: refused");
+    assert_eq!(
+        json_body(resp).await["error"],
+        underground_api::tickets::OFFER_TO_SELF_REFUSED
+    );
     let resp = app
         .oneshot(build("GET", "/api/me/tickets", Some(&owner), None))
         .await
         .unwrap();
     let mine = json_body(resp).await;
     assert_eq!(mine.as_array().unwrap().len(), 1, "still the sender's");
+    assert_eq!(mine[0]["status"], "active", "no offer was made");
 }

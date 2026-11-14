@@ -267,15 +267,14 @@ async fn r2_transfer_answer_never_depends_on_the_email(pool: PgPool) {
     let cancel_path = format!("/api/tickets/{ticket}/gift");
     let cancel = || call(&app, "DELETE", &cancel_path, Some(&ot), None);
 
-    let emails = [
-        "nobody@x.co",
-        "minor@x.co",
-        "nodob@x.co",
-        "adult@x.co",
-        "ADULT@x.co ",
-        "owner@x.co",
-    ];
-    // Every email once (8), then ten timed pairs (20): 28 calls, inside the 30/h sender bucket.
+    let emails = ["nobody@x.co", "minor@x.co", "nodob@x.co", "adult@x.co", "ADULT@x.co "];
+    // The sender's own address is refused (owner decision 2026-11-14), so it is not one of the
+    // emails whose answer must match; it costs one call from the bucket.
+    let ((s, body), _) = send("owner@x.co").await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(ticket_state(&pool, ticket).await, (owner, "active".into()), "own email");
+    // Every email once (5), then ten timed pairs (20), plus the call above: 26 calls, inside the
+    // 30/h sender bucket.
     let mut times = std::collections::HashMap::<&str, Vec<Duration>>::new();
     let timed = std::iter::repeat_n(["nobody@x.co", "adult@x.co"], 10).flatten();
     for (i, email) in emails.into_iter().chain(timed).enumerate() {
@@ -459,7 +458,14 @@ async fn ux7_gift_offers_and_chats(pool: PgPool) {
     assert_eq!(s, StatusCode::CREATED);
     assert_eq!(offer_token(&app, &ft).await.as_deref(), g["claim_token"].as_str());
     assert_eq!(gift(ids[1], "nobody@x.co").await.0, StatusCode::CREATED);
-    assert_eq!(gift(ids[2], "owner@x.co").await.0, StatusCode::CREATED);
+    // Owner decision 2026-11-14: a gift to one's own email is refused (was 201).
+    assert_eq!(
+        gift(ids[2], "owner@x.co").await,
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "error": underground_api::tickets::OFFER_TO_SELF_REFUSED })
+        )
+    );
     assert_eq!(alerts(&app, &ft).await.len(), 1);
     assert!(alerts(&app, &ot).await.is_empty(), "no alert to oneself");
     let (s, _) = call(
