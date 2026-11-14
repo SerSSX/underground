@@ -1,6 +1,6 @@
 # TASK-306 — users can block other users
 
-Status: IN PROGRESS (2026-11-14). Lane: TASK, SENSITIVE (authorization between users). Brief mode: pro — the
+Status: ON DEV (2026-11-14, dffe72a, migration 53); prod waits for the owner's command. Lane: TASK, SENSITIVE (authorization between users). Brief mode: pro — the
 owner's yes settles the go; what a block does is the common reading below, recorded here.
 
 ## Request (verbatim)
@@ -54,3 +54,12 @@ Table: `TASK-306-abuse-cases.md` (124 rows, written by a separate identity befor
 filter only after a dedicated test was added). Assumptions accepted: AB49 reads right after the 204; setup by SQL
 inserts; AB66 compares field names; the AB57/AB97 race is stood in by a direct `notify_actor` call (read-time hiding
 covers the rest). Conflict on AB22: the recorded rule (docs/decisions.md 2026-11-14, a typed name is shown) wins.
+
+## Review and DEV (2026-11-14)
+
+Review (separate identity): NO-GO on one MAJOR — the uk/de text said the blocked person "won't find out", while they
+do see the 403s; now «Ми їй про це не повідомимо». Fixed in ce1e5e5 with three smaller ones (no push of an alert
+written during the block after an unblock; erasure locks the account row first; the inbox list reloads after an
+unblock). Closure check (separate identity): all four closed, two tests added (dffe72a), 49 pass. CI green on
+dffe72a; DEV deploy smoke green. Browser on DEV, WebKit iPhone 13: `web/e2e/block-webkit.mjs` 15/15 (written by the
+implementer, a flow check on top of the independent API suite), `web/e2e/chat-webkit.mjs` 14/14.
