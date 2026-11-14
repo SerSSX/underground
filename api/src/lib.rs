@@ -4,6 +4,7 @@
 pub mod admin;
 pub mod audit;
 pub mod auth;
+pub mod blocks;
 pub mod cities;
 pub mod config;
 pub mod cors;

@@ -22,13 +22,15 @@ pub struct PendingPush {
 /// Notifications not yet pushed, fanned out to every registered device of each
 /// recipient, oldest first. `limit` bounds the number of NOTIFICATIONS (not rows):
 /// each selected notification fans out to ALL its devices, so the watermark the worker
-/// applies per notification can never strand undelivered devices beyond a batch edge.
+/// applies per notification can never strand undelivered devices beyond a batch edge. An alert whose actor
+/// the recipient blocked is never selected (TASK-306 D8).
 pub async fn pending(db: &PgPool, limit: i64) -> Result<Vec<PendingPush>, sqlx::Error> {
     sqlx::query_as(
         "SELECT n.id AS notification_id, d.token, d.platform, n.title, n.body, n.kind, n.event_id \
          FROM ( \
             SELECT id, user_id, title, body, kind, event_id, created_at \
-            FROM notifications WHERE pushed_at IS NULL \
+            FROM notifications nn WHERE nn.pushed_at IS NULL \
+              AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = nn.user_id AND ub.blocked_id = nn.actor_id) \
             ORDER BY created_at ASC LIMIT $1 \
          ) n \
          JOIN device_tokens d ON d.user_id = n.user_id \

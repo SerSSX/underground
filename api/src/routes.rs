@@ -5,7 +5,7 @@ use tower_http::services::ServeDir;
 
 use crate::state::AppState;
 use crate::{
-    admin, audit, auth, cities, devices, discover, emailcode, events, eventsocial, gdpr, geo, kyc, messages,
+    admin, audit, auth, blocks, cities, devices, discover, emailcode, events, eventsocial, gdpr, geo, kyc, messages,
     notifications, orders, organizer, passwords, payments, payouts, posts, prefs, promos, reports, reviews, social,
     staff, telemetry, tickets, uploads, webhooks,
 };
@@ -59,6 +59,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/users/:id", get(social::get_profile))
         .route("/api/users/:id/events", get(social::user_events))
         .route("/api/users/:id/follow", post(social::follow).delete(social::unfollow))
+        .route("/api/users/:id/block", post(blocks::block).delete(blocks::unblock))
+        .route("/api/me/blocks", get(blocks::my_blocks))
         .route("/api/users/:id/followers", get(social::followers))
         .route("/api/users/:id/following", get(social::following))
         .route("/api/users/:id/posts", get(posts::user_posts))
@@ -69,6 +71,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/posts/:id/comments",
             get(posts::comments).post(posts::create_comment),
+        )
+        .route(
+            "/api/posts/:id/comments/:comment_id",
+            axum::routing::delete(posts::delete_comment),
         )
         .route("/api/reports", post(reports::create_report))
         .route("/api/admin/reports", get(reports::list_reports))

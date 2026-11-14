@@ -32,6 +32,9 @@ pub struct PublicProfile {
     pub rating_count: i64,
     /// Whether the (optional) caller follows this user; `false` for anonymous callers.
     pub is_following: bool,
+    /// Whether the caller blocked this user (TASK-306); `false` for anonymous callers. Never says whether
+    /// this user blocked the caller.
+    pub is_blocked: bool,
 }
 
 /// The profile as anyone else sees it. TASK-305: the name is the display name (a placeholder that
@@ -46,10 +49,12 @@ async fn fetch_profile(db: &PgPool, id: Uuid, viewer: Option<Uuid>) -> Result<Op
                 WHERE e.organizer_id = u.id AND e.status <> 'cancelled' AND {counted}) AS rating_avg, \
             (SELECT count(*) FROM reviews r JOIN events e ON e.id = r.event_id \
                 WHERE e.organizer_id = u.id AND e.status <> 'cancelled' AND {counted}) AS rating_count, \
-            EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = u.id) AS is_following \
+            EXISTS(SELECT 1 FROM follows WHERE follower_id = $2 AND followee_id = u.id) AS is_following, \
+            {is_blocked} AS is_blocked \
          FROM users u WHERE u.id = $1 AND u.blocked = false",
         name = crate::users::DISPLAY_NAME_SQL,
         counted = crate::reviews::COUNTED_REVIEW_SQL,
+        is_blocked = crate::blocks::blocked_by("$2", "u.id"),
     );
     sqlx::query_as(&sql).bind(id).bind(viewer).fetch_optional(db).await
 }
@@ -89,11 +94,15 @@ pub async fn follow(
     if !exists {
         return Err(AppError::NotFound);
     }
+    // TASK-306 S3: no follow either way while a block stands, and none commits after a block did.
+    let mut tx = st.db.begin().await?;
+    crate::blocks::ensure_not_blocked(&mut tx, user.id, id).await?;
     let res = sqlx::query("INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
         .bind(user.id)
         .bind(id)
-        .execute(&st.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     // Only notify on a fresh follow (not a repeat).
     if res.rows_affected() == 1 {
         notifications::notify_actor(

@@ -70,6 +70,7 @@ pub async fn delete_me(
         "DELETE FROM reviews WHERE author_id = $1",
         "DELETE FROM messages WHERE sender_id = $1 OR recipient_id = $1",
         "DELETE FROM follows WHERE follower_id = $1 OR followee_id = $1",
+        "DELETE FROM user_blocks WHERE blocker_id = $1 OR blocked_id = $1",
         "DELETE FROM event_saves WHERE user_id = $1",
         "DELETE FROM device_tokens WHERE user_id = $1",
         "DELETE FROM notifications WHERE user_id = $1",
@@ -137,6 +138,12 @@ struct ExportOrder {
     created_at: DateTime<Utc>,
 }
 
+#[derive(Serialize, sqlx::FromRow)]
+struct ExportBlock {
+    user_id: Uuid,
+    blocked_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// `GET /api/me/export` — GDPR Art. 20 portability: the caller's own data as JSON.
 pub async fn export_me(user: CurrentUser, State(st): State<AppState>) -> Result<Json<Value>, AppError> {
     let profile = crate::users::find_by_id(&st.db, user.id)
@@ -156,7 +163,16 @@ pub async fn export_me(user: CurrentUser, State(st): State<AppState>) -> Result<
     .bind(user.id)
     .fetch_all(&st.db)
     .await?;
+    // TASK-306 S8: the people this account blocked (not who blocked it).
+    let blocks: Vec<ExportBlock> = sqlx::query_as(
+        "SELECT blocked_id AS user_id, created_at AS blocked_at FROM user_blocks WHERE blocker_id = $1 \
+         ORDER BY created_at DESC",
+    )
+    .bind(user.id)
+    .fetch_all(&st.db)
+    .await?;
     Ok(Json(json!({
+        "blocks": blocks,
         "profile": profile,
         "events": events,
         "tickets": tickets,

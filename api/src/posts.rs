@@ -53,7 +53,9 @@ const POST_VIEW_COLS: &str = concat!(
         e.title AS event_title, e.poster_url AS event_poster, e.category AS event_category, \
         e.starts_at AS event_starts_at, \
         (SELECT count(*) FROM post_likes pl WHERE pl.post_id = p.id) AS likes_count, \
-        (SELECT count(*) FROM post_comments pc WHERE pc.post_id = p.id) AS comments_count, \
+        (SELECT count(*) FROM post_comments pc WHERE pc.post_id = p.id \
+            AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = $2 AND ub.blocked_id = pc.author_id)) \
+            AS comments_count, \
         EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $2) AS liked_by_me, \
         p.created_at"
 );
@@ -169,6 +171,7 @@ pub async fn feed(user: CurrentUser, State(st): State<AppState>) -> Result<Json<
          LEFT JOIN user_prefs up ON up.user_id = $1 \
          WHERE p.author_id <> $1 \
            AND u.blocked = false \
+           AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = $1 AND ub.blocked_id = p.author_id) \
            AND (f.follower_id IS NOT NULL OR e.category = ANY(up.categories)) \
          ORDER BY p.created_at DESC LIMIT 50"
     );
@@ -206,11 +209,15 @@ pub async fn like(user: CurrentUser, State(st): State<AppState>, Path(id): Path<
         .fetch_optional(&st.db)
         .await?
         .ok_or(AppError::NotFound)?;
+    // TASK-306 S5: no like either way between people one of whom blocked the other.
+    let mut tx = st.db.begin().await?;
+    crate::blocks::ensure_not_blocked(&mut tx, user.id, owner).await?;
     let res = sqlx::query("INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
         .bind(id)
         .bind(user.id)
-        .execute(&st.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     // Only notify on a fresh like (not a repeat) — the post's author.
     if res.rows_affected() == 1 {
         notify_post_owner(
@@ -294,6 +301,9 @@ pub async fn create_comment(
         .fetch_optional(&st.db)
         .await?
         .ok_or(AppError::NotFound)?;
+    // TASK-306 S5: no comment either way between people one of whom blocked the other.
+    let mut tx = st.db.begin().await?;
+    crate::blocks::ensure_not_blocked(&mut tx, user.id, owner).await?;
     let comment: CommentView = sqlx::query_as(concat!(
         "WITH c AS ( \
             INSERT INTO post_comments (post_id, author_id, text) VALUES ($1, $2, $3) \
@@ -309,8 +319,9 @@ pub async fn create_comment(
     .bind(id)
     .bind(user.id)
     .bind(text)
-    .fetch_one(&st.db)
+    .fetch_one(&mut *tx)
     .await?;
+    tx.commit().await?;
     notify_post_owner(
         &st.db,
         owner,
@@ -323,8 +334,13 @@ pub async fn create_comment(
     Ok((StatusCode::CREATED, Json(comment)))
 }
 
-/// `GET /api/posts/:id/comments` — oldest first (public).
-pub async fn comments(State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Vec<CommentView>>, AppError> {
+/// `GET /api/posts/:id/comments` — oldest first (public). A signed-in reader does not see comments by
+/// people they blocked (TASK-306 S5); the limit counts only what they see.
+pub async fn comments(
+    viewer: Option<CurrentUser>,
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<CommentView>>, AppError> {
     let items: Vec<CommentView> = sqlx::query_as(concat!(
         "SELECT c.id, c.post_id, c.author_id, \
             ",
@@ -332,10 +348,37 @@ pub async fn comments(State(st): State<AppState>, Path(id): Path<Uuid>) -> Resul
         " AS author_name, \
             c.text, c.created_at \
          FROM post_comments c JOIN users u ON u.id = c.author_id \
-         WHERE c.post_id = $1 ORDER BY c.created_at ASC LIMIT 200"
+         WHERE c.post_id = $1 \
+           AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = $2 AND ub.blocked_id = c.author_id) \
+         ORDER BY c.created_at ASC LIMIT 200"
     ))
     .bind(id)
+    .bind(viewer.map(|v| v.id))
     .fetch_all(&st.db)
     .await?;
     Ok(Json(items))
+}
+
+/// `DELETE /api/posts/:id/comments/:comment_id` — by the comment's author or the post's author
+/// (TASK-306: a person can clear comments under their own post, e.g. from someone they blocked). 204;
+/// 404 when there is no such comment under that post or the caller may not delete it.
+pub async fn delete_comment(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Path((post_id, comment_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, AppError> {
+    let deleted = sqlx::query(
+        "DELETE FROM post_comments c USING posts p \
+         WHERE c.id = $1 AND c.post_id = $2 AND p.id = c.post_id \
+           AND (c.author_id = $3 OR p.author_id = $3)",
+    )
+    .bind(comment_id)
+    .bind(post_id)
+    .bind(user.id)
+    .execute(&st.db)
+    .await?;
+    if deleted.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }

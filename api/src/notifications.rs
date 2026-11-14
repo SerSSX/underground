@@ -50,7 +50,7 @@ struct NotificationRow {
 /// Emit a social notification to `target` triggered by `actor`. The title is
 /// `"<actor name> <suffix>"`, with the suffix chosen by the recipient's locale
 /// (TASK-017 M5). Self-triggered actions are a no-op (you don't get notified about
-/// your own like/comment/follow).
+/// your own like/comment/follow), and so is an action by someone the target blocked (TASK-306 S4).
 pub async fn notify_actor(
     db: &PgPool,
     target: Uuid,
@@ -72,7 +72,8 @@ pub async fn notify_actor(
                 FROM users u WHERE u.id = $3) || ' ' || \
             CASE WHEN COALESCE((SELECT locale FROM user_prefs WHERE user_id = $1), 'uk') <> 'uk' \
                  THEN $5 ELSE $4 END, \
-            $6, $7, $3"
+            $6, $7, $3 \
+         WHERE NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = $1 AND ub.blocked_id = $3)"
     ))
     .bind(target)
     .bind(kind)
@@ -99,14 +100,15 @@ pub async fn notify_event_match(db: &PgPool, event: &Event) -> Result<u64, sqlx:
         None => event.category.clone(),
     };
     let result = sqlx::query(
-        "INSERT INTO notifications (user_id, kind, title, body, event_id) \
+        "INSERT INTO notifications (user_id, kind, title, body, event_id, actor_id) \
          SELECT p.user_id, 'event_match', \
-            CASE WHEN p.locale <> 'uk' THEN 'New event: ' ELSE 'Нова подія: ' END || $1, $2, $3 \
+            CASE WHEN p.locale <> 'uk' THEN 'New event: ' ELSE 'Нова подія: ' END || $1, $2, $3, $6 \
          FROM user_prefs p \
          WHERE $4 = ANY(p.categories) \
            AND (p.city IS NULL OR $5::text IS NULL OR lower(p.city) = lower($5)) \
            AND ($6::uuid IS NULL OR p.user_id <> $6) \
-           AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = p.user_id AND f.followee_id = $6)",
+           AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = p.user_id AND f.followee_id = $6) \
+           AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = p.user_id AND ub.blocked_id = $6)",
     )
     .bind(crate::text::truncate_chars(&event.title, NOTIFY_TITLE_MAX))
     .bind(body)
@@ -123,17 +125,18 @@ pub async fn notify_event_match(db: &PgPool, event: &Event) -> Result<u64, sqlx:
 /// virality loop. A null organizer matches no followers, so it's a natural no-op.
 pub async fn notify_followers_new_event(db: &PgPool, event: &Event) -> Result<u64, sqlx::Error> {
     let result = sqlx::query(concat!(
-        "INSERT INTO notifications (user_id, kind, title, body, event_id) \
+        "INSERT INTO notifications (user_id, kind, title, body, event_id, actor_id) \
          SELECT f.follower_id, 'organizer_event', \
             (SELECT ",
         crate::display_name_sql!(),
         " \
                 FROM users u WHERE u.id = $1) || \
             CASE WHEN COALESCE(up.locale, 'uk') <> 'uk' THEN ' announced an event' ELSE ' оголосив(ла) подію' END, \
-            $2, $3 \
+            $2, $3, $1 \
          FROM follows f \
          LEFT JOIN user_prefs up ON up.user_id = f.follower_id \
-         WHERE f.followee_id = $1"
+         WHERE f.followee_id = $1 \
+           AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = f.follower_id AND ub.blocked_id = $1)"
     ))
     .bind(event.organizer_id)
     .bind(crate::text::truncate_chars(&event.title, NOTIFY_TITLE_MAX))
@@ -155,7 +158,8 @@ fn event_title_cut_sql() -> String {
 
 /// UX7: `recipient` is offered a place on `ticket_id` by `sender` (a gift to their email, or a
 /// transfer). The alert stores the gift, not its token; [`my_notifications`] shows the claim link
-/// while the offer is open. Runs in the caller's transaction.
+/// while the offer is open. Runs in the caller's transaction. No alert when `recipient` blocked `sender`
+/// (TASK-306 S6): the offer then goes on as one to an unknown email.
 pub async fn notify_place_offer<'e, E: sqlx::PgExecutor<'e>>(
     db: E,
     recipient: Uuid,
@@ -170,7 +174,8 @@ pub async fn notify_place_offer<'e, E: sqlx::PgExecutor<'e>>(
             CASE WHEN COALESCE((SELECT locale FROM user_prefs WHERE user_id = $1), 'uk') <> 'uk' \
                  THEN ' offers you a place' ELSE ' пропонує вам місце' END, \
             {title}, e.id, $2, $3 \
-         FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $4",
+         FROM tickets t JOIN events e ON e.id = t.event_id WHERE t.id = $4 \
+           AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = $1 AND ub.blocked_id = $2)",
         name = crate::users::DISPLAY_NAME_SQL,
         title = event_title_cut_sql(),
     );
@@ -185,7 +190,8 @@ pub async fn notify_place_offer<'e, E: sqlx::PgExecutor<'e>>(
 }
 
 /// UX7: the organiser of `event_id` is told that `booker` booked `places` places, with a link to
-/// the event's manage page. Nothing when the organiser booked their own event. Runs in the
+/// the event's manage page, with the booker as the actor (TASK-306 D9). Nothing when the organiser booked
+/// their own event or blocked the booker. Runs in the
 /// caller's transaction (reserve, paid-order fulfilment).
 pub async fn notify_booking<'e, E: sqlx::PgExecutor<'e>>(
     db: E,
@@ -194,13 +200,14 @@ pub async fn notify_booking<'e, E: sqlx::PgExecutor<'e>>(
     places: i64,
 ) -> Result<(), sqlx::Error> {
     let sql = format!(
-        "INSERT INTO notifications (user_id, kind, title, body, event_id, link) \
+        "INSERT INTO notifications (user_id, kind, title, body, event_id, link, actor_id) \
          SELECT e.organizer_id, 'booking', \
             CASE WHEN COALESCE(p.locale, 'uk') <> 'uk' THEN 'New booking: ' ELSE 'Нове бронювання: ' END || {title}, \
             CASE WHEN COALESCE(p.locale, 'uk') <> 'uk' THEN 'Places: ' ELSE 'Місць: ' END || $3, \
-            e.id, '/organizer/' || e.id \
+            e.id, '/organizer/' || e.id, $2 \
          FROM events e LEFT JOIN user_prefs p ON p.user_id = e.organizer_id \
-         WHERE e.id = $1 AND e.organizer_id IS NOT NULL AND e.organizer_id <> $2",
+         WHERE e.id = $1 AND e.organizer_id IS NOT NULL AND e.organizer_id <> $2 \
+           AND NOT EXISTS (SELECT 1 FROM user_blocks ub WHERE ub.blocker_id = e.organizer_id AND ub.blocked_id = $2)",
         title = event_title_cut_sql(),
     );
     sqlx::query(&sql)
@@ -218,20 +225,23 @@ pub async fn my_notifications(
     user: CurrentUser,
     State(st): State<AppState>,
 ) -> Result<Json<Vec<Notification>>, AppError> {
-    let rows: Vec<NotificationRow> = sqlx::query_as(
+    // TASK-306 S4: alerts whose actor the caller blocked are left out of both parts, before the limit.
+    let rows: Vec<NotificationRow> = sqlx::query_as(&format!(
         "SELECT n.id, n.kind, n.title, n.body, n.event_id, n.actor_id, n.read, n.created_at, n.link, \
             g.id AS open_gift \
          FROM ( \
-            (SELECT id, kind, title, body, event_id, actor_id, read, created_at, link, gift_id \
-             FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100) \
+            (SELECT a.id, a.kind, a.title, a.body, a.event_id, a.actor_id, a.read, a.created_at, a.link, a.gift_id \
+             FROM notifications a WHERE a.user_id = $1 AND NOT {hide_a} ORDER BY a.created_at DESC LIMIT 100) \
             UNION \
             (SELECT x.id, x.kind, x.title, x.body, x.event_id, x.actor_id, x.read, x.created_at, x.link, x.gift_id \
              FROM notifications x JOIN ticket_gifts og ON og.id = x.gift_id \
-             WHERE x.user_id = $1 AND og.status = 'pending' AND og.expires_at > now()) \
+             WHERE x.user_id = $1 AND og.status = 'pending' AND og.expires_at > now() AND NOT {hide_x}) \
          ) n \
          LEFT JOIN ticket_gifts g ON g.id = n.gift_id AND g.status = 'pending' AND g.expires_at > now() \
          ORDER BY n.created_at DESC",
-    )
+        hide_a = crate::blocks::blocked_by("$1", "a.actor_id"),
+        hide_x = crate::blocks::blocked_by("$1", "x.actor_id"),
+    ))
     .bind(user.id)
     .fetch_all(&st.db)
     .await?;
@@ -263,15 +273,20 @@ pub struct UnreadCounts {
 
 /// `GET /api/me/unread` — badge counters for the Inbox tab.
 pub async fn unread_counts(user: CurrentUser, State(st): State<AppState>) -> Result<Json<UnreadCounts>, AppError> {
-    let notifications: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM notifications WHERE user_id = $1 AND read = false")
-            .bind(user.id)
-            .fetch_one(&st.db)
-            .await?;
-    let messages: i64 = sqlx::query_scalar("SELECT count(*) FROM messages WHERE recipient_id = $1 AND read = false")
-        .bind(user.id)
-        .fetch_one(&st.db)
-        .await?;
+    let notifications: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM notifications n WHERE n.user_id = $1 AND n.read = false AND NOT {}",
+        crate::blocks::blocked_by("$1", "n.actor_id")
+    ))
+    .bind(user.id)
+    .fetch_one(&st.db)
+    .await?;
+    let messages: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM messages m WHERE m.recipient_id = $1 AND m.read = false AND NOT {}",
+        crate::blocks::blocked_by("$1", "m.sender_id")
+    ))
+    .bind(user.id)
+    .fetch_one(&st.db)
+    .await?;
     Ok(Json(UnreadCounts {
         notifications,
         messages,

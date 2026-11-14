@@ -91,6 +91,9 @@ pub async fn send_message(
     if today >= per_day_limit() {
         return Err(AppError::RateLimited);
     }
+    // TASK-306: no new message either way while a block stands; the pair lock keeps a send from
+    // committing after a block on the same two people did.
+    crate::blocks::ensure_not_blocked(&mut tx, user.id, req.recipient_id).await?;
     let message: MessageView = sqlx::query_as(
         "INSERT INTO messages (sender_id, recipient_id, text) VALUES ($1, $2, $3) \
          RETURNING id, sender_id, recipient_id, text, read, created_at",
@@ -115,7 +118,8 @@ pub struct Conversation {
     pub unread: i64,
 }
 
-/// `GET /api/me/conversations` — one row per peer, most recent first.
+/// `GET /api/me/conversations` — one row per peer, most recent first; people the caller blocked are left
+/// out (TASK-306 S2).
 pub async fn conversations(user: CurrentUser, State(st): State<AppState>) -> Result<Json<Vec<Conversation>>, AppError> {
     let sql = format!(
         "SELECT c.peer AS peer_id, {name} AS peer_name, u.avatar_url AS peer_avatar, \
@@ -131,8 +135,10 @@ pub async fn conversations(user: CurrentUser, State(st): State<AppState>) -> Res
             ORDER BY peer, m.created_at DESC \
          ) c \
          JOIN users u ON u.id = c.peer \
+         WHERE NOT {hidden} \
          ORDER BY c.created_at DESC",
-        name = crate::users::DISPLAY_NAME_SQL
+        name = crate::users::DISPLAY_NAME_SQL,
+        hidden = crate::blocks::blocked_by("$1", "c.peer"),
     );
     let items: Vec<Conversation> = sqlx::query_as(&sql).bind(user.id).fetch_all(&st.db).await?;
     Ok(Json(items))
