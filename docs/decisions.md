@@ -96,3 +96,15 @@ Owner's answer (verbatim): «Як подарунок (Recommended)».
   checked-in place of an event that has not ended stays under "Upcoming".
 - In-app alerts: a place offered to you (gift or transfer) and a new booking on your event (organiser) create an
   alert; new chat messages show as an unread badge on Chats, not as alerts.
+
+## 2026-11-14 — TASK-307: no ticket offer to one's own email; 3 test assertions changed
+
+Owner reported that a gift to oneself "works" but nothing arrives, and asked to forbid it. Gift and transfer to the
+sender's own address now answer 422 «квиток уже ваш — надішліть його іншій людині» (overrides TASK-305 R2 for the
+sender's own address only). Assertion changes put to the owner (was · now · why):
+1. `api/tests/tickets_actions.rs` transfer_validation: transfer to own email 202 → 422, ticket stays the sender's, active.
+2. `api/tests/task305_round2.rs` r2_transfer_answer_never_depends_on_the_email: own email removed from the
+   same-answer list, asserted separately as 422; the property holds for every other address.
+3. `api/tests/task305_round2.rs` ux7_gift_offers_and_chats: gift to own email 201 → 422.
+Why, all three: the owner's decision above.
+Owner's answer (verbatim): «Так, погоджую».
