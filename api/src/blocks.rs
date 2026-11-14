@@ -74,7 +74,11 @@ async fn is_active(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<bool, sqlx
 /// `POST /api/users/:id/block` — idempotent; 204. Self 422, no such active account 404, the 1001st
 /// block 409 (checked before anything changes). Removes follows both ways; alerts from the blocked
 /// person still waiting for push are never pushed (D8).
-pub async fn block(user: CurrentUser, State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<StatusCode, AppError> {
+pub async fn block(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
     if id == user.id {
         return Err(AppError::Validation("cannot block yourself".into()));
     }
@@ -119,18 +123,24 @@ pub async fn block(user: CurrentUser, State(st): State<AppState>, Path(id): Path
     .bind(id)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE notifications SET pushed_at = now() WHERE user_id = $1 AND actor_id = $2 AND pushed_at IS NULL")
-        .bind(user.id)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE notifications SET pushed_at = now() WHERE user_id = $1 AND actor_id = $2 AND pushed_at IS NULL",
+    )
+    .bind(user.id)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// `DELETE /api/users/:id/block` — idempotent; 204. A block the caller holds is always removed, whatever
 /// became of the other account (D2); with none, 404 when no such active account exists.
-pub async fn unblock(user: CurrentUser, State(st): State<AppState>, Path(id): Path<Uuid>) -> Result<StatusCode, AppError> {
+pub async fn unblock(
+    user: CurrentUser,
+    State(st): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
     if id == user.id {
         return Err(AppError::Validation("cannot unblock yourself".into()));
     }

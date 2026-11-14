@@ -63,7 +63,10 @@ async fn register(app: &Router, email: &str, name: &str) -> (String, Uuid) {
         .method("POST")
         .uri("/api/auth/register")
         .header("content-type", "application/json")
-        .header("x-forwarded-for", format!("10.{}.{}.{}", (n >> 16) & 255, (n >> 8) & 255, n & 255))
+        .header(
+            "x-forwarded-for",
+            format!("10.{}.{}.{}", (n >> 16) & 255, (n >> 8) & 255, n & 255),
+        )
         .body(Body::from(
             json!({"email": email, "password": "password1", "name": name}).to_string(),
         ))
@@ -77,21 +80,32 @@ async fn register(app: &Router, email: &str, name: &str) -> (String, Uuid) {
 }
 
 async fn block(app: &Router, tok: &str, id: Uuid) -> StatusCode {
-    send(app, build("POST", &format!("/api/users/{id}/block"), Some(tok), None)).await.0
+    send(app, build("POST", &format!("/api/users/{id}/block"), Some(tok), None))
+        .await
+        .0
 }
 
 async fn unblock(app: &Router, tok: &str, id: Uuid) -> StatusCode {
-    send(app, build("DELETE", &format!("/api/users/{id}/block"), Some(tok), None)).await.0
+    send(app, build("DELETE", &format!("/api/users/{id}/block"), Some(tok), None))
+        .await
+        .0
 }
 
 async fn follow(app: &Router, tok: &str, id: Uuid) -> StatusCode {
-    send(app, build("POST", &format!("/api/users/{id}/follow"), Some(tok), None)).await.0
+    send(app, build("POST", &format!("/api/users/{id}/follow"), Some(tok), None))
+        .await
+        .0
 }
 
 async fn dm(app: &Router, tok: &str, to: Uuid, text: &str) -> (StatusCode, Value) {
     send(
         app,
-        build("POST", "/api/messages", Some(tok), Some(json!({"recipient_id": to, "text": text}))),
+        build(
+            "POST",
+            "/api/messages",
+            Some(tok),
+            Some(json!({"recipient_id": to, "text": text})),
+        ),
     )
     .await
 }
@@ -107,7 +121,11 @@ async fn get_json(app: &Router, tok: Option<&str>, path: &str) -> Value {
 }
 
 async fn notif_list(app: &Router, tok: &str) -> Vec<Value> {
-    get_json(app, Some(tok), "/api/me/notifications").await.as_array().unwrap().clone()
+    get_json(app, Some(tok), "/api/me/notifications")
+        .await
+        .as_array()
+        .unwrap()
+        .clone()
 }
 
 async fn unread(app: &Router, tok: &str) -> (i64, i64) {
@@ -128,13 +146,22 @@ async fn like(app: &Router, tok: &str, post: Uuid) -> (StatusCode, Value) {
 async fn comment(app: &Router, tok: &str, post: Uuid, text: &str) -> (StatusCode, Value) {
     send(
         app,
-        build("POST", &format!("/api/posts/{post}/comments"), Some(tok), Some(json!({"text": text}))),
+        build(
+            "POST",
+            &format!("/api/posts/{post}/comments"),
+            Some(tok),
+            Some(json!({"text": text})),
+        ),
     )
     .await
 }
 
 async fn comments_of(app: &Router, tok: Option<&str>, post: Uuid) -> Vec<Value> {
-    get_json(app, tok, &format!("/api/posts/{post}/comments")).await.as_array().unwrap().clone()
+    get_json(app, tok, &format!("/api/posts/{post}/comments"))
+        .await
+        .as_array()
+        .unwrap()
+        .clone()
 }
 
 async fn free_event(app: &Router, tok: &str, title: &str, category: &str, city: Option<&str>) -> Uuid {
@@ -156,7 +183,12 @@ async fn free_event(app: &Router, tok: &str, title: &str, category: &str, city: 
 async fn reserve(app: &Router, tok: &str, event: Uuid, qty: i64) -> (StatusCode, Value) {
     send(
         app,
-        build("POST", &format!("/api/events/{event}/reserve"), Some(tok), Some(json!({"quantity": qty}))),
+        build(
+            "POST",
+            &format!("/api/events/{event}/reserve"),
+            Some(tok),
+            Some(json!({"quantity": qty})),
+        ),
     )
     .await
 }
@@ -164,7 +196,12 @@ async fn reserve(app: &Router, tok: &str, event: Uuid, qty: i64) -> (StatusCode,
 async fn put_prefs(app: &Router, tok: &str, categories: Value, city: Value) {
     let (status, v) = send(
         app,
-        build("PUT", "/api/me/prefs", Some(tok), Some(json!({"categories": categories, "city": city}))),
+        build(
+            "PUT",
+            "/api/me/prefs",
+            Some(tok),
+            Some(json!({"categories": categories, "city": city})),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{v}");
@@ -185,7 +222,13 @@ async fn n(pool: &PgPool, sql: &str, a: Uuid, b: Uuid) -> i64 {
 }
 
 async fn block_row(pool: &PgPool, a: Uuid, b: Uuid) -> i64 {
-    n(pool, "SELECT count(*) FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2", a, b).await
+    n(
+        pool,
+        "SELECT count(*) FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2",
+        a,
+        b,
+    )
+    .await
 }
 
 async fn blocks_of(pool: &PgPool, a: Uuid) -> i64 {
@@ -197,7 +240,10 @@ async fn blocks_of(pool: &PgPool, a: Uuid) -> i64 {
 }
 
 async fn all_blocks(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM user_blocks").fetch_one(pool).await.unwrap()
+    sqlx::query_scalar("SELECT count(*) FROM user_blocks")
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 async fn follows_between(pool: &PgPool, a: Uuid, b: Uuid) -> i64 {
@@ -212,11 +258,23 @@ async fn follows_between(pool: &PgPool, a: Uuid, b: Uuid) -> i64 {
 }
 
 async fn msgs(pool: &PgPool, from: Uuid, to: Uuid) -> i64 {
-    n(pool, "SELECT count(*) FROM messages WHERE sender_id = $1 AND recipient_id = $2", from, to).await
+    n(
+        pool,
+        "SELECT count(*) FROM messages WHERE sender_id = $1 AND recipient_id = $2",
+        from,
+        to,
+    )
+    .await
 }
 
 async fn alerts_from(pool: &PgPool, to: Uuid, actor: Uuid) -> i64 {
-    n(pool, "SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2", to, actor).await
+    n(
+        pool,
+        "SELECT count(*) FROM notifications WHERE user_id = $1 AND actor_id = $2",
+        to,
+        actor,
+    )
+    .await
 }
 
 /// `count` plain users inserted directly (no password, never sign in).
@@ -243,7 +301,11 @@ async fn seed_blocks(pool: &PgPool, blocker: Uuid, ids: &[Uuid]) {
 }
 
 async fn admin_ban(pool: &PgPool, id: Uuid) {
-    sqlx::query("UPDATE users SET blocked = true WHERE id = $1").bind(id).execute(pool).await.unwrap();
+    sqlx::query("UPDATE users SET blocked = true WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
 }
 
 async fn clear_rate(pool: &PgPool) {
@@ -251,7 +313,9 @@ async fn clear_rate(pool: &PgPool) {
 }
 
 fn ids_in(list: &[Value], key: &str) -> Vec<String> {
-    list.iter().map(|v| v[key].as_str().unwrap_or_default().to_string()).collect()
+    list.iter()
+        .map(|v| v[key].as_str().unwrap_or_default().to_string())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -320,14 +384,26 @@ async fn ab5_ab6_ab8_ab10_self_unknown_and_banned_targets(pool: PgPool) {
     admin_ban(&pool, banned).await;
 
     // AB5
-    assert_eq!(block(&app, &ta, a).await, StatusCode::UNPROCESSABLE_ENTITY, "AB5 POST self");
-    assert_eq!(unblock(&app, &ta, a).await, StatusCode::UNPROCESSABLE_ENTITY, "AB5 DELETE self");
+    assert_eq!(
+        block(&app, &ta, a).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "AB5 POST self"
+    );
+    assert_eq!(
+        unblock(&app, &ta, a).await,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "AB5 DELETE self"
+    );
     // AB6
     let random = Uuid::new_v4();
     assert_eq!(block(&app, &ta, random).await, StatusCode::NOT_FOUND, "AB6 random");
     assert_eq!(block(&app, &ta, Uuid::nil()).await, StatusCode::NOT_FOUND, "AB6 nil");
     // AB8
-    assert_eq!(block(&app, &ta, banned).await, StatusCode::NOT_FOUND, "AB8 admin-banned");
+    assert_eq!(
+        block(&app, &ta, banned).await,
+        StatusCode::NOT_FOUND,
+        "AB8 admin-banned"
+    );
     // AB10
     assert_eq!(unblock(&app, &ta, Uuid::new_v4()).await, StatusCode::NOT_FOUND, "AB10");
     assert_eq!(all_blocks(&pool).await, 0, "no row from any of these");
@@ -400,11 +476,19 @@ async fn ab19_ab20_a_caller_touches_only_own_rows(pool: PgPool) {
     let (tc, _) = register(&app, "c@x.co", "Carol").await;
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     // AB19
-    assert_eq!(unblock(&app, &tc, b).await, StatusCode::NO_CONTENT, "AB19: C's own no-op");
+    assert_eq!(
+        unblock(&app, &tc, b).await,
+        StatusCode::NO_CONTENT,
+        "AB19: C's own no-op"
+    );
     assert_eq!(block_row(&pool, a, b).await, 1, "AB19: (A,B) still exists");
     // AB20
     for q in ["", "?user_id=", "?blocker_id="] {
-        let path = if q.is_empty() { "/api/me/blocks".to_string() } else { format!("/api/me/blocks{q}{a}") };
+        let path = if q.is_empty() {
+            "/api/me/blocks".to_string()
+        } else {
+            format!("/api/me/blocks{q}{a}")
+        };
         let v = get_json(&app, Some(&tc), &path).await;
         assert_eq!(v, json!([]), "AB20 {path}");
     }
@@ -475,7 +559,11 @@ async fn ab23_ab26_cap_of_1000(pool: PgPool) {
     assert_eq!(follows_between(&pool, a, y).await, 2, "AB24: follows untouched");
 
     // AB25
-    assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT, "AB25: repeat at the cap");
+    assert_eq!(
+        block(&app, &ta, b).await,
+        StatusCode::NO_CONTENT,
+        "AB25: repeat at the cap"
+    );
     assert_eq!(blocks_of(&pool, a).await, 1000);
 
     // AB26
@@ -515,7 +603,11 @@ async fn ab29_same_block_twice_concurrently(pool: PgPool) {
     let (_, b) = register(&app, "b@x.co", "Bob").await;
     for round in 0..10 {
         let (r1, r2) = tokio::join!(block(&app, &ta, b), block(&app, &ta, b));
-        assert_eq!((r1, r2), (StatusCode::NO_CONTENT, StatusCode::NO_CONTENT), "AB29 round {round}");
+        assert_eq!(
+            (r1, r2),
+            (StatusCode::NO_CONTENT, StatusCode::NO_CONTENT),
+            "AB29 round {round}"
+        );
         assert_eq!(block_row(&pool, a, b).await, 1, "AB29 round {round}");
         sqlx::query("DELETE FROM user_blocks").execute(&pool).await.unwrap();
     }
@@ -528,7 +620,11 @@ async fn ab31_toggle_rate_limit(pool: PgPool) {
     let (ta, a) = register(&app, "a@x.co", "Alice").await;
     let (_, b) = register(&app, "b@x.co", "Bob").await;
     for i in 1..=30 {
-        let s = if i % 2 == 1 { block(&app, &ta, b).await } else { unblock(&app, &ta, b).await };
+        let s = if i % 2 == 1 {
+            block(&app, &ta, b).await
+        } else {
+            unblock(&app, &ta, b).await
+        };
         assert_eq!(s, StatusCode::NO_CONTENT, "AB31 call {i}");
     }
     assert_eq!(block_row(&pool, a, b).await, 0, "after call 30 (an unblock)");
@@ -546,7 +642,11 @@ async fn ab34_blocked_person_keeps_using_the_app(pool: PgPool) {
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let (s, _) = send(&app, build("GET", "/api/me", Some(&tb), None)).await;
     assert_eq!(s, StatusCode::OK, "AB34 /api/me");
-    assert_eq!(dm(&app, &tb, c, "hi").await.0, StatusCode::CREATED, "AB34: B messages C");
+    assert_eq!(
+        dm(&app, &tb, c, "hi").await.0,
+        StatusCode::CREATED,
+        "AB34: B messages C"
+    );
     assert_eq!(profile(&app, Some(&tc), b).await.0, StatusCode::OK, "AB34: C sees B");
     let banned: bool = sqlx::query_scalar("SELECT blocked FROM users WHERE id = $1")
         .bind(b)
@@ -577,13 +677,21 @@ async fn ab38_ab39_ab52_ab53_ab80_ab83_ab113_refusals_both_ways(pool: PgPool) {
     let (s, v) = dm(&app, &ta, b, "hi").await;
     assert_eq!(s, StatusCode::FORBIDDEN, "AB39");
     bodies.push(("AB39", v));
-    assert_eq!(msgs(&pool, b, a).await + msgs(&pool, a, b).await, 0, "AB38/AB39: no messages row");
+    assert_eq!(
+        msgs(&pool, b, a).await + msgs(&pool, a, b).await,
+        0,
+        "AB38/AB39: no messages row"
+    );
 
     let (s, v) = send(&app, build("POST", &format!("/api/users/{a}/follow"), Some(&tb), None)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "AB52");
     bodies.push(("AB52", v));
     let upper = a.to_string().to_uppercase();
-    let (s, _) = send(&app, build("POST", &format!("/api/users/{upper}/follow"), Some(&tb), None)).await;
+    let (s, _) = send(
+        &app,
+        build("POST", &format!("/api/users/{upper}/follow"), Some(&tb), None),
+    )
+    .await;
     assert_eq!(s, StatusCode::FORBIDDEN, "AB52 upper-case id");
     let (s, v) = send(&app, build("POST", &format!("/api/users/{b}/follow"), Some(&ta), None)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "AB53");
@@ -596,7 +704,10 @@ async fn ab38_ab39_ab52_ab53_ab80_ab83_ab113_refusals_both_ways(pool: PgPool) {
     let (s, v) = like(&app, &ta, pb).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "AB81");
     bodies.push(("AB81", v));
-    let likes: i64 = sqlx::query_scalar("SELECT count(*) FROM post_likes").fetch_one(&pool).await.unwrap();
+    let likes: i64 = sqlx::query_scalar("SELECT count(*) FROM post_likes")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(likes, 0, "AB80/AB81: no post_likes row");
 
     let (s, v) = comment(&app, &tb, pa, "x").await;
@@ -605,22 +716,41 @@ async fn ab38_ab39_ab52_ab53_ab80_ab83_ab113_refusals_both_ways(pool: PgPool) {
     let (s, v) = comment(&app, &ta, pb, "x").await;
     assert_eq!(s, StatusCode::FORBIDDEN, "AB83");
     bodies.push(("AB83", v));
-    let comments: i64 = sqlx::query_scalar("SELECT count(*) FROM post_comments").fetch_one(&pool).await.unwrap();
+    let comments: i64 = sqlx::query_scalar("SELECT count(*) FROM post_comments")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(comments, 0, "AB82/AB83: no post_comments row");
 
-    assert_eq!(alerts_from(&pool, a, b).await, 0, "AB52/AB80/AB82: no alert for A from B");
+    assert_eq!(
+        alerts_from(&pool, a, b).await,
+        0,
+        "AB52/AB80/AB82: no alert for A from B"
+    );
     assert_eq!(alerts_from(&pool, b, a).await, 0, "no alert for B from A either");
 
     // AB113 / D6: one body for all, {"error": <same string>}, naming nobody.
     let first = bodies[0].1.clone();
-    assert!(first["error"].is_string(), "AB113: {{\"error\": ...}} body, got {first}");
+    assert!(
+        first["error"].is_string(),
+        "AB113: {{\"error\": ...}} body, got {first}"
+    );
     assert_eq!(first.as_object().unwrap().len(), 1, "AB113: only the error key");
     for (row, body) in &bodies {
         assert_eq!(body, &first, "AB113: {row} body differs");
         let text = body.to_string().to_lowercase();
-        assert!(!text.contains(&a.to_string()) && !text.contains(&b.to_string()), "AB113: no id in {row}");
-        assert!(!text.contains("alicename") && !text.contains("bobname"), "AB113: no name in {row}");
-        assert!(!text.contains("block") && !text.contains("заблок"), "AB113: no 'blocked' phrase in {row}");
+        assert!(
+            !text.contains(&a.to_string()) && !text.contains(&b.to_string()),
+            "AB113: no id in {row}"
+        );
+        assert!(
+            !text.contains("alicename") && !text.contains("bobname"),
+            "AB113: no name in {row}"
+        );
+        assert!(
+            !text.contains("block") && !text.contains("заблок"),
+            "AB113: no 'blocked' phrase in {row}"
+        );
     }
 }
 
@@ -658,13 +788,19 @@ async fn ab43_ab47_conversations_and_unread_hide_only_for_blocker(pool: PgPool) 
     assert!(!peers.contains(&b.to_string()), "AB43: B hidden");
     assert!(peers.contains(&c.to_string()), "AB43: C present");
     let conv = get_json(&app, Some(&tb), "/api/me/conversations").await;
-    assert!(ids_in(conv.as_array().unwrap(), "peer_id").contains(&a.to_string()), "AB44");
+    assert!(
+        ids_in(conv.as_array().unwrap(), "peer_id").contains(&a.to_string()),
+        "AB44"
+    );
     assert_eq!(unread(&app, &ta).await.1, 1, "AB45");
     assert_eq!(unread(&app, &tb).await.1, 1, "AB46");
 
     assert_eq!(unblock(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let conv = get_json(&app, Some(&ta), "/api/me/conversations").await;
-    assert!(ids_in(conv.as_array().unwrap(), "peer_id").contains(&b.to_string()), "AB47: B back");
+    assert!(
+        ids_in(conv.as_array().unwrap(), "peer_id").contains(&b.to_string()),
+        "AB47: B back"
+    );
     assert_eq!(unread(&app, &ta).await.1, 3, "AB47");
 }
 
@@ -682,9 +818,15 @@ async fn ab48_mutual_block(pool: PgPool) {
     assert_eq!(dm(&app, &ta, b, "x").await.0, StatusCode::FORBIDDEN, "AB48 A→B");
     assert_eq!(dm(&app, &tb, a, "x").await.0, StatusCode::FORBIDDEN, "AB48 B→A");
     let conv = get_json(&app, Some(&ta), "/api/me/conversations").await;
-    assert!(ids_in(conv.as_array().unwrap(), "peer_id").contains(&b.to_string()), "AB48: A sees B");
+    assert!(
+        ids_in(conv.as_array().unwrap(), "peer_id").contains(&b.to_string()),
+        "AB48: A sees B"
+    );
     let conv = get_json(&app, Some(&tb), "/api/me/conversations").await;
-    assert!(!ids_in(conv.as_array().unwrap(), "peer_id").contains(&a.to_string()), "AB48: B hides A");
+    assert!(
+        !ids_in(conv.as_array().unwrap(), "peer_id").contains(&a.to_string()),
+        "AB48: B hides A"
+    );
 }
 
 /// AB49 (D11): sends racing a block never commit after it.
@@ -719,8 +861,15 @@ async fn ab49_sends_racing_the_block(pool: PgPool) {
             );
         }
         let after_all = msgs(&pool, b, a).await;
-        assert_eq!(right_after, after_all, "AB49 round {round}: a send committed after the block");
-        assert_eq!(dm(&app, &tb, a, "late").await.0, StatusCode::FORBIDDEN, "AB49 round {round}: after");
+        assert_eq!(
+            right_after, after_all,
+            "AB49 round {round}: a send committed after the block"
+        );
+        assert_eq!(
+            dm(&app, &tb, a, "late").await.0,
+            StatusCode::FORBIDDEN,
+            "AB49 round {round}: after"
+        );
         sqlx::query("DELETE FROM user_blocks").execute(&pool).await.unwrap();
     }
 }
@@ -747,16 +896,34 @@ async fn ab51_ab54_ab55_follows_removed_lists_match_counts(pool: PgPool) {
         let followers = get_json(&app, None, &format!("/api/users/{me}/followers")).await;
         let following = get_json(&app, None, &format!("/api/users/{me}/following")).await;
         let (followers, following) = (followers.as_array().unwrap(), following.as_array().unwrap());
-        assert!(!ids_in(followers, "id").contains(&other.to_string()), "AB51 followers of {me}");
-        assert!(!ids_in(following, "id").contains(&other.to_string()), "AB51 following of {me}");
+        assert!(
+            !ids_in(followers, "id").contains(&other.to_string()),
+            "AB51 followers of {me}"
+        );
+        assert!(
+            !ids_in(following, "id").contains(&other.to_string()),
+            "AB51 following of {me}"
+        );
         let p = profile(&app, None, me).await.1;
-        assert_eq!(p["followers_count"].as_i64().unwrap(), followers.len() as i64, "AB51 count ↔ list");
-        assert_eq!(p["following_count"].as_i64().unwrap(), following.len() as i64, "AB51 count ↔ list");
+        assert_eq!(
+            p["followers_count"].as_i64().unwrap(),
+            followers.len() as i64,
+            "AB51 count ↔ list"
+        );
+        assert_eq!(
+            p["following_count"].as_i64().unwrap(),
+            following.len() as i64,
+            "AB51 count ↔ list"
+        );
     }
     let _ = c;
 
     // AB54
-    let (s, _) = send(&app, build("DELETE", &format!("/api/users/{a}/follow"), Some(&tb), None)).await;
+    let (s, _) = send(
+        &app,
+        build("DELETE", &format!("/api/users/{a}/follow"), Some(&tb), None),
+    )
+    .await;
     assert_eq!(s, StatusCode::NO_CONTENT, "AB54");
     // AB55
     assert_eq!(unblock(&app, &ta, b).await, StatusCode::NO_CONTENT);
@@ -774,7 +941,8 @@ async fn ab56_follow_between_blocks(pool: PgPool) {
     assert_eq!(follow(&app, &tb, a).await, StatusCode::NO_CONTENT);
     let list = notif_list(&app, &ta).await;
     assert!(
-        list.iter().any(|n| n["kind"] == "new_follower" && n["actor_id"] == json!(b)),
+        list.iter()
+            .any(|n| n["kind"] == "new_follower" && n["actor_id"] == json!(b)),
         "precondition: A got new_follower"
     );
     assert_eq!(unread(&app, &ta).await.0, 1);
@@ -808,13 +976,19 @@ async fn ab58_event_friends_lists(pool: PgPool) {
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     for (tok, other) in [(&ta, b), (&tb, a)] {
         let v = get_json(&app, Some(tok), &format!("/api/events/{e}/social")).await;
-        assert!(!ids_in(v["friends_going"].as_array().unwrap(), "id").contains(&other.to_string()), "AB58 going");
+        assert!(
+            !ids_in(v["friends_going"].as_array().unwrap(), "id").contains(&other.to_string()),
+            "AB58 going"
+        );
         assert!(
             !ids_in(v["friends_interested"].as_array().unwrap(), "id").contains(&other.to_string()),
             "AB58 interested"
         );
         assert_eq!(v["going_count"], before["going_count"], "AB58 going_count");
-        assert_eq!(v["interested_count"], before["interested_count"], "AB58 interested_count");
+        assert_eq!(
+            v["interested_count"], before["interested_count"],
+            "AB58 interested_count"
+        );
     }
 }
 
@@ -880,7 +1054,11 @@ async fn ab60_ab73_held_alerts_hidden_then_back(pool: PgPool) {
 
     assert_eq!(unblock(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let list = notif_list(&app, &ta).await;
-    assert_eq!(list.iter().filter(|n| n["actor_id"] == json!(b)).count(), 3, "AB73: B's 3 back");
+    assert_eq!(
+        list.iter().filter(|n| n["actor_id"] == json!(b)).count(),
+        3,
+        "AB73: B's 3 back"
+    );
     assert_eq!(unread(&app, &ta).await.0, 4, "AB73: counted again");
 }
 
@@ -896,7 +1074,12 @@ async fn ab61_open_offer_branch_hidden(pool: PgPool) {
     let tid = tickets_of(&pool, b, e).await[0];
     let (s, _) = send(
         &app,
-        build("POST", &format!("/api/tickets/{tid}/gift"), Some(&tb), Some(json!({"email": "a@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{tid}/gift"),
+            Some(&tb),
+            Some(json!({"email": "a@x.co"})),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::CREATED);
@@ -911,12 +1094,16 @@ async fn ab61_open_offer_branch_hidden(pool: PgPool) {
     .unwrap();
     let list = notif_list(&app, &ta).await;
     assert!(
-        list.iter().any(|n| n["actor_id"] == json!(b) && n["kind"] == "place_offer"),
+        list.iter()
+            .any(|n| n["actor_id"] == json!(b) && n["kind"] == "place_offer"),
         "precondition: the open offer is listed beyond the newest 100"
     );
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let list = notif_list(&app, &ta).await;
-    assert!(!list.iter().any(|n| n["actor_id"] == json!(b)), "AB61: B's offer alert absent");
+    assert!(
+        !list.iter().any(|n| n["actor_id"] == json!(b)),
+        "AB61: B's offer alert absent"
+    );
     assert!(!list.iter().any(|n| n["kind"] == "place_offer"), "AB61");
 }
 
@@ -995,18 +1182,31 @@ async fn ab65_ab66_offers_to_blocker_look_like_unknown_email(pool: PgPool) {
     // AB65
     let (s1, raw1) = send_raw(
         &app,
-        build("POST", &format!("/api/tickets/{}/transfer", t[0]), Some(&tb), Some(json!({"email": "a@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{}/transfer", t[0]),
+            Some(&tb),
+            Some(json!({"email": "a@x.co"})),
+        ),
     )
     .await;
     let (s2, raw2) = send_raw(
         &app,
-        build("POST", &format!("/api/tickets/{}/transfer", t[1]), Some(&tb), Some(json!({"email": "nobody@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{}/transfer", t[1]),
+            Some(&tb),
+            Some(json!({"email": "nobody@x.co"})),
+        ),
     )
     .await;
     assert_eq!(s1, StatusCode::ACCEPTED, "AB65");
     assert_eq!(s2, StatusCode::ACCEPTED);
     assert_eq!(raw1, raw2, "AB65: byte-identical to an unknown email");
-    assert_eq!(serde_json::from_slice::<Value>(&raw1).unwrap(), json!({"status": "sent"}));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&raw1).unwrap(),
+        json!({"status": "sent"})
+    );
     let pending: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM ticket_gifts WHERE ticket_id = $1 AND status = 'pending' AND lower(to_email) = 'a@x.co'",
     )
@@ -1019,12 +1219,22 @@ async fn ab65_ab66_offers_to_blocker_look_like_unknown_email(pool: PgPool) {
     // AB66
     let (g1, v1) = send(
         &app,
-        build("POST", &format!("/api/tickets/{}/gift", t[2]), Some(&tb), Some(json!({"email": "a@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{}/gift", t[2]),
+            Some(&tb),
+            Some(json!({"email": "a@x.co"})),
+        ),
     )
     .await;
     let (g2, v2) = send(
         &app,
-        build("POST", &format!("/api/tickets/{}/gift", t[3]), Some(&tb), Some(json!({"email": "other@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{}/gift", t[3]),
+            Some(&tb),
+            Some(json!({"email": "other@x.co"})),
+        ),
     )
     .await;
     assert_eq!(g1, StatusCode::CREATED, "AB66");
@@ -1046,12 +1256,21 @@ async fn ab57_ab97_social_alert_after_block_is_not_written(pool: PgPool) {
     let (_, b) = register(&app, "b@x.co", "Bob").await;
     let (_, c) = register(&app, "c@x.co", "Carol").await;
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
-    for (kind, actor) in [("post_like", b), ("new_follower", b), ("post_comment", b), ("post_like", c)] {
+    for (kind, actor) in [
+        ("post_like", b),
+        ("new_follower", b),
+        ("post_comment", b),
+        ("post_like", c),
+    ] {
         underground_api::notifications::notify_actor(&pool, a, actor, kind, ("x", "x"), None, None)
             .await
             .unwrap();
     }
-    assert_eq!(alerts_from(&pool, a, b).await, 0, "AB57/AB97: no alert row from B after the block");
+    assert_eq!(
+        alerts_from(&pool, a, b).await,
+        0,
+        "AB57/AB97: no alert row from B after the block"
+    );
     assert_eq!(alerts_from(&pool, a, c).await, 1, "control: C's alert written");
 }
 
@@ -1083,7 +1302,10 @@ async fn ab71_queued_push_dropped(pool: PgPool) {
         .unwrap();
     let ids = |v: Vec<underground_api::push::PendingPush>| v.into_iter().map(|p| p.notification_id).collect::<Vec<_>>();
     let before = ids(underground_api::push::pending(&pool, 1000).await.unwrap());
-    assert!(before.contains(&from_b) && before.contains(&from_c), "precondition: both queued");
+    assert!(
+        before.contains(&from_b) && before.contains(&from_c),
+        "precondition: both queued"
+    );
 
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let now = ids(underground_api::push::pending(&pool, 1000).await.unwrap());
@@ -1146,14 +1368,29 @@ async fn ab77_blockers_own_acts_still_alert_b(pool: PgPool) {
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let (s, _) = send(
         &app,
-        build("POST", &format!("/api/tickets/{t_a}/transfer"), Some(&ta), Some(json!({"email": "b@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{t_a}/transfer"),
+            Some(&ta),
+            Some(json!({"email": "b@x.co"})),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::ACCEPTED);
-    assert_eq!(reserve(&app, &ta, eb, 1).await.0, StatusCode::CREATED, "AB77: A books E_B");
+    assert_eq!(
+        reserve(&app, &ta, eb, 1).await.0,
+        StatusCode::CREATED,
+        "AB77: A books E_B"
+    );
     let list = notif_list(&app, &tb).await;
-    assert!(list.iter().any(|n| n["kind"] == "place_offer"), "AB77: B gets the place offer");
-    assert!(list.iter().any(|n| n["kind"] == "booking"), "AB77: B gets the booking alert");
+    assert!(
+        list.iter().any(|n| n["kind"] == "place_offer"),
+        "AB77: B gets the place offer"
+    );
+    assert!(
+        list.iter().any(|n| n["kind"] == "booking"),
+        "AB77: B gets the booking alert"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1180,10 +1417,19 @@ async fn ab85_ab90_comment_lists_hide_per_viewer(pool: PgPool) {
 
     // AB86: the block deletes nothing.
     for tok in [Some(tc.as_str()), None] {
-        assert!(has(&comments_of(&app, tok, pa).await, b), "AB86: B's comment listed for C/anon");
+        assert!(
+            has(&comments_of(&app, tok, pa).await, b),
+            "AB86: B's comment listed for C/anon"
+        );
     }
     let posts = get_json(&app, Some(&tc), &format!("/api/users/{a}/posts")).await;
-    let pv = posts.as_array().unwrap().iter().find(|p| p["id"] == json!(pa)).unwrap().clone();
+    let pv = posts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == json!(pa))
+        .unwrap()
+        .clone();
     assert_eq!(pv["likes_count"], json!(1), "AB86: B's like counted");
     // AB87
     let l = comments_of(&app, Some(&ta), pa).await;
@@ -1199,7 +1445,13 @@ async fn ab85_ab90_comment_lists_hide_per_viewer(pool: PgPool) {
     // AB85
     let (s, _) = send(&app, build("DELETE", &format!("/api/posts/{pa}/like"), Some(&tb), None)).await;
     assert_eq!(s, StatusCode::NO_CONTENT, "AB85");
-    let k = n(&pool, "SELECT count(*) FROM post_likes WHERE post_id = $1 AND user_id = $2", pa, b).await;
+    let k = n(
+        &pool,
+        "SELECT count(*) FROM post_likes WHERE post_id = $1 AND user_id = $2",
+        pa,
+        b,
+    )
+    .await;
     assert_eq!(k, 0, "AB85: like removed");
 }
 
@@ -1282,7 +1534,11 @@ async fn ab93_ab96_feed_hides_blocked_author(pool: PgPool) {
         .unwrap();
     let feed = get_json(&app, Some(&ta), "/api/feed").await;
     let authors = ids_in(feed.as_array().unwrap(), "author_id");
-    assert_eq!(authors.iter().filter(|x| **x == b.to_string()).count(), 2, "precondition: both B posts in feed");
+    assert_eq!(
+        authors.iter().filter(|x| **x == b.to_string()).count(),
+        2,
+        "precondition: both B posts in feed"
+    );
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let feed = get_json(&app, Some(&ta), "/api/feed").await;
     let authors = ids_in(feed.as_array().unwrap(), "author_id");
@@ -1290,7 +1546,10 @@ async fn ab93_ab96_feed_hides_blocked_author(pool: PgPool) {
     assert!(authors.contains(&c.to_string()), "AB93: C's present");
     // AB96
     let posts = get_json(&app, Some(&ta), &format!("/api/users/{b}/posts")).await;
-    assert!(!posts.as_array().unwrap().is_empty(), "AB96: B's wall still readable by A");
+    assert!(
+        !posts.as_array().unwrap().is_empty(),
+        "AB96: B's wall still readable by A"
+    );
     let _ = a;
 }
 
@@ -1357,27 +1616,56 @@ async fn comment_delete_by_comment_author_or_post_author_only(pool: PgPool) {
     let del = |tok: String, post: Uuid, id: Uuid| {
         let app = app.clone();
         async move {
-            send(&app, build("DELETE", &format!("/api/posts/{post}/comments/{id}"), Some(&tok), None)).await.0
+            send(
+                &app,
+                build("DELETE", &format!("/api/posts/{post}/comments/{id}"), Some(&tok), None),
+            )
+            .await
+            .0
         }
     };
     // C (neither the comment's nor the post's author) cannot delete B's comment.
-    assert_eq!(del(tc.clone(), pa, b1).await, StatusCode::NOT_FOUND, "third party → 404");
+    assert_eq!(
+        del(tc.clone(), pa, b1).await,
+        StatusCode::NOT_FOUND,
+        "third party → 404"
+    );
     assert!(exists(b1).await);
     // Wrong post id → 404, even for the post's author and the comment's author.
-    assert_eq!(del(ta.clone(), other, c1).await, StatusCode::NOT_FOUND, "wrong post → 404");
-    assert_eq!(del(tb.clone(), other, b2).await, StatusCode::NOT_FOUND, "wrong post → 404 (author)");
+    assert_eq!(
+        del(ta.clone(), other, c1).await,
+        StatusCode::NOT_FOUND,
+        "wrong post → 404"
+    );
+    assert_eq!(
+        del(tb.clone(), other, b2).await,
+        StatusCode::NOT_FOUND,
+        "wrong post → 404 (author)"
+    );
     assert!(exists(c1).await && exists(b2).await);
     // Unknown comment id → 404.
     assert_eq!(del(ta.clone(), pa, Uuid::new_v4()).await, StatusCode::NOT_FOUND);
     // The post's author deletes someone else's comment; the comment's author deletes their own.
-    assert_eq!(del(ta.clone(), pa, b1).await, StatusCode::NO_CONTENT, "post author → 204");
+    assert_eq!(
+        del(ta.clone(), pa, b1).await,
+        StatusCode::NO_CONTENT,
+        "post author → 204"
+    );
     assert!(!exists(b1).await);
-    assert_eq!(del(tb.clone(), pa, b2).await, StatusCode::NO_CONTENT, "comment author → 204");
+    assert_eq!(
+        del(tb.clone(), pa, b2).await,
+        StatusCode::NO_CONTENT,
+        "comment author → 204"
+    );
     assert!(!exists(b2).await);
     assert_eq!(del(ta.clone(), pa, c1).await, StatusCode::NO_CONTENT);
     assert!(!exists(c1).await);
     // Anonymous → 401.
-    let (s, _) = send(&app, build("DELETE", &format!("/api/posts/{pa}/comments/{c1}"), None, None)).await;
+    let (s, _) = send(
+        &app,
+        build("DELETE", &format!("/api/posts/{pa}/comments/{c1}"), None, None),
+    )
+    .await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
 
@@ -1397,7 +1685,12 @@ async fn ab99_pending_offer_survives_and_sender_can_revoke(pool: PgPool) {
     let tid = tickets_of(&pool, b, e).await[0];
     let (s, _) = send(
         &app,
-        build("POST", &format!("/api/tickets/{tid}/transfer"), Some(&tb), Some(json!({"email": "a@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{tid}/transfer"),
+            Some(&tb),
+            Some(json!({"email": "a@x.co"})),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::ACCEPTED);
@@ -1408,11 +1701,23 @@ async fn ab99_pending_offer_survives_and_sender_can_revoke(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(gift, "pending", "AB99: offer stays pending");
-    let st: String = sqlx::query_scalar("SELECT status FROM tickets WHERE id = $1").bind(tid).fetch_one(&pool).await.unwrap();
+    let st: String = sqlx::query_scalar("SELECT status FROM tickets WHERE id = $1")
+        .bind(tid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(st, "pending_claim", "AB99");
-    let (s, _) = send(&app, build("DELETE", &format!("/api/tickets/{tid}/gift"), Some(&tb), None)).await;
+    let (s, _) = send(
+        &app,
+        build("DELETE", &format!("/api/tickets/{tid}/gift"), Some(&tb), None),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "AB99: B revokes");
-    let st: String = sqlx::query_scalar("SELECT status FROM tickets WHERE id = $1").bind(tid).fetch_one(&pool).await.unwrap();
+    let st: String = sqlx::query_scalar("SELECT status FROM tickets WHERE id = $1")
+        .bind(tid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(st, "active", "AB99");
 }
 
@@ -1429,14 +1734,27 @@ async fn ab100_blocker_may_claim_by_link(pool: PgPool) {
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let (s, v) = send(
         &app,
-        build("POST", &format!("/api/tickets/{tid}/gift"), Some(&tb), Some(json!({"email": "a@x.co"}))),
+        build(
+            "POST",
+            &format!("/api/tickets/{tid}/gift"),
+            Some(&tb),
+            Some(json!({"email": "a@x.co"})),
+        ),
     )
     .await;
     assert_eq!(s, StatusCode::CREATED);
     let token = v["claim_token"].as_str().unwrap().to_string();
-    let (s, v) = send(&app, build("POST", "/api/tickets/claim", Some(&ta), Some(json!({"token": token})))).await;
+    let (s, v) = send(
+        &app,
+        build("POST", "/api/tickets/claim", Some(&ta), Some(json!({"token": token}))),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "AB100: {v}");
-    let owner: Uuid = sqlx::query_scalar("SELECT owner_id FROM tickets WHERE id = $1").bind(tid).fetch_one(&pool).await.unwrap();
+    let owner: Uuid = sqlx::query_scalar("SELECT owner_id FROM tickets WHERE id = $1")
+        .bind(tid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(owner, a, "AB100: A owns it");
 }
 
@@ -1454,7 +1772,13 @@ async fn ab103_guest_list_keeps_blocked_guest(pool: PgPool) {
     assert_eq!(reserve(&app, &tb, ea, 2).await.0, StatusCode::CREATED);
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let g = get_json(&app, Some(&ta), &format!("/api/events/{ea}/guests")).await;
-    let row = g.as_array().unwrap().iter().find(|x| x["user_id"] == json!(b)).expect("AB103: B listed").clone();
+    let row = g
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["user_id"] == json!(b))
+        .expect("AB103: B listed")
+        .clone();
     assert_eq!(row["name"], "Bob", "AB103");
     assert_eq!(row["places"], json!(2), "AB103");
 }
@@ -1473,12 +1797,25 @@ async fn ab105_reviews_neither_refused_nor_hidden(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
-    let (s, v) = send(&app, build("POST", "/api/reviews", Some(&tb), Some(json!({"event_id": ea, "rating": 2})))).await;
+    let (s, v) = send(
+        &app,
+        build(
+            "POST",
+            "/api/reviews",
+            Some(&tb),
+            Some(json!({"event_id": ea, "rating": 2})),
+        ),
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "AB105: {v}");
     for tok in [Some(ta.as_str()), None] {
         let r = get_json(&app, tok, &format!("/api/events/{ea}/reviews")).await;
         assert!(
-            r["reviews"].as_array().unwrap().iter().any(|x| x["author_id"] == json!(b)),
+            r["reviews"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["author_id"] == json!(b)),
             "AB105: listed"
         );
         assert_eq!(r["count"], json!(1));
@@ -1494,11 +1831,23 @@ async fn ab107_profiles_stay_public(pool: PgPool) {
     let (ta, a) = register(&app, "a@x.co", "Alice").await;
     let (tb, b) = register(&app, "b@x.co", "Bob").await;
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
-    for path in [format!("/api/users/{a}"), format!("/api/users/{a}/events"), format!("/api/users/{a}/posts")] {
-        assert_eq!(send(&app, build("GET", &path, Some(&tb), None)).await.0, StatusCode::OK, "AB107 B {path}");
+    for path in [
+        format!("/api/users/{a}"),
+        format!("/api/users/{a}/events"),
+        format!("/api/users/{a}/posts"),
+    ] {
+        assert_eq!(
+            send(&app, build("GET", &path, Some(&tb), None)).await.0,
+            StatusCode::OK,
+            "AB107 B {path}"
+        );
     }
     for path in [format!("/api/users/{b}"), format!("/api/users/{b}/events")] {
-        assert_eq!(send(&app, build("GET", &path, Some(&ta), None)).await.0, StatusCode::OK, "AB107 A {path}");
+        assert_eq!(
+            send(&app, build("GET", &path, Some(&ta), None)).await.0,
+            StatusCode::OK,
+            "AB107 A {path}"
+        );
     }
 }
 
@@ -1509,7 +1858,10 @@ async fn ab108_reports_open_both_ways(pool: PgPool) {
     let (ta, a) = register(&app, "a@x.co", "Alice").await;
     let (tb, b) = register(&app, "b@x.co", "Bob").await;
     let (tx, _) = register(&app, "x@x.co", "Admin").await;
-    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'x@x.co'").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE users SET role = 'ADMIN' WHERE email = 'x@x.co'")
+        .execute(&pool)
+        .await
+        .unwrap();
     let pa = create_post(&app, &ta, "A's").await;
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     let report = |tok: String, ty: &'static str, id: Uuid| {
@@ -1517,15 +1869,28 @@ async fn ab108_reports_open_both_ways(pool: PgPool) {
         async move {
             send(
                 &app,
-                build("POST", "/api/reports", Some(&tok), Some(json!({"target_type": ty, "target_id": id, "reason": "spam"}))),
+                build(
+                    "POST",
+                    "/api/reports",
+                    Some(&tok),
+                    Some(json!({"target_type": ty, "target_id": id, "reason": "spam"})),
+                ),
             )
             .await
             .0
         }
     };
-    assert_eq!(report(tb.clone(), "user", a).await, StatusCode::CREATED, "AB108 B→user A");
+    assert_eq!(
+        report(tb.clone(), "user", a).await,
+        StatusCode::CREATED,
+        "AB108 B→user A"
+    );
     assert_eq!(report(tb.clone(), "post", pa).await, StatusCode::CREATED, "AB108 B→P_A");
-    assert_eq!(report(ta.clone(), "user", b).await, StatusCode::CREATED, "AB108 A→user B");
+    assert_eq!(
+        report(ta.clone(), "user", b).await,
+        StatusCode::CREATED,
+        "AB108 A→user B"
+    );
     let q = get_json(&app, Some(&tx), "/api/admin/reports").await;
     let targets = ids_in(q.as_array().unwrap(), "target_id");
     for id in [a, pa, b] {
@@ -1568,8 +1933,16 @@ async fn ab110_ab112_ab114_no_field_tells_b(pool: PgPool) {
         let (_, p) = profile(&app, Some(&ta), id.parse().unwrap()).await;
         assert_eq!(p["is_blocked"], json!(true), "AB112: listed → true");
     }
-    assert_eq!(profile(&app, Some(&ta), c).await.1["is_blocked"], json!(false), "AB112: C false");
-    assert_eq!(profile(&app, Some(&tb), a).await.1["is_blocked"], json!(false), "AB112: B→A false");
+    assert_eq!(
+        profile(&app, Some(&ta), c).await.1["is_blocked"],
+        json!(false),
+        "AB112: C false"
+    );
+    assert_eq!(
+        profile(&app, Some(&tb), a).await.1["is_blocked"],
+        json!(false),
+        "AB112: B→A false"
+    );
 
     // AB114: B blocks A while A blocks B; B's own calls still answer 204 with an empty body.
     for method in ["POST", "DELETE", "POST"] {
@@ -1594,12 +1967,25 @@ async fn ab115_no_existence_oracle(pool: PgPool) {
     let (_, banned) = register(&app, "ban@x.co", "Ban").await;
     let (te, erased) = register(&app, "era@x.co", "Era").await;
     admin_ban(&pool, banned).await;
-    let (s, v) = send(&app, build("DELETE", "/api/me", Some(&te), Some(json!({"password": "password1"})))).await;
+    let (s, v) = send(
+        &app,
+        build("DELETE", "/api/me", Some(&te), Some(json!({"password": "password1"}))),
+    )
+    .await;
     assert_eq!(s, StatusCode::NO_CONTENT, "erase: {v}");
-    for (id, label) in [(active, "active"), (banned, "banned"), (erased, "erased (AB7)"), (Uuid::new_v4(), "random")] {
+    for (id, label) in [
+        (active, "active"),
+        (banned, "banned"),
+        (erased, "erased (AB7)"),
+        (Uuid::new_v4(), "random"),
+    ] {
         let profile_404 = profile(&app, Some(&ta), id).await.0 == StatusCode::NOT_FOUND;
         let block_status = block(&app, &ta, id).await;
-        assert_eq!(block_status == StatusCode::NOT_FOUND, profile_404, "AB115 {label}: block {block_status}");
+        assert_eq!(
+            block_status == StatusCode::NOT_FOUND,
+            profile_404,
+            "AB115 {label}: block {block_status}"
+        );
         if label != "active" {
             assert_eq!(block_status, StatusCode::NOT_FOUND, "AB115 {label}");
         }
@@ -1628,22 +2014,35 @@ async fn ab118_ab123_ab124_export_lists_blocks_made(pool: PgPool) {
     assert_eq!(blocks.len(), 2, "AB123: exactly two");
     for e in blocks {
         let o = e.as_object().unwrap();
-        assert!(o.contains_key("user_id") && o.contains_key("blocked_at"), "AB123: id and time");
+        assert!(
+            o.contains_key("user_id") && o.contains_key("blocked_at"),
+            "AB123: id and time"
+        );
         assert!(!o.contains_key("email"), "AB123: no email");
     }
     let ids = ids_in(blocks, "user_id");
     assert!(ids.contains(&b.to_string()) && ids.contains(&c.to_string()));
-    assert!(!ex["blocks"].to_string().contains(&d.to_string()), "AB123: nothing about D's block");
+    assert!(
+        !ex["blocks"].to_string().contains(&d.to_string()),
+        "AB123: nothing about D's block"
+    );
 
     // AB118
     let ex_b = get_json(&app, Some(&tb), "/api/me/export").await;
     assert_eq!(ex_b["blocks"], json!([]), "AB118: B's export has no block");
-    assert!(!ex_b.to_string().contains(&a.to_string()), "AB118: nothing about A anywhere");
+    assert!(
+        !ex_b.to_string().contains(&a.to_string()),
+        "AB118: nothing about A anywhere"
+    );
 
     // AB124
     assert_eq!(unblock(&app, &ta, c).await, StatusCode::NO_CONTENT);
     let ex = get_json(&app, Some(&ta), "/api/me/export").await;
-    assert_eq!(ids_in(ex["blocks"].as_array().unwrap(), "user_id"), vec![b.to_string()], "AB124");
+    assert_eq!(
+        ids_in(ex["blocks"].as_array().unwrap(), "user_id"),
+        vec![b.to_string()],
+        "AB124"
+    );
 }
 
 /// AB121: erasure removes blocks both ways.
@@ -1657,11 +2056,25 @@ async fn ab121_erasure_removes_blocks_both_ways(pool: PgPool) {
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     assert_eq!(block(&app, &ta, c).await, StatusCode::NO_CONTENT);
     assert_eq!(block(&app, &td, a).await, StatusCode::NO_CONTENT);
-    let (s, v) = send(&app, build("DELETE", "/api/me", Some(&ta), Some(json!({"password": "password1"})))).await;
+    let (s, v) = send(
+        &app,
+        build("DELETE", "/api/me", Some(&ta), Some(json!({"password": "password1"}))),
+    )
+    .await;
     assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
-    let left = n(&pool, "SELECT count(*) FROM user_blocks WHERE blocker_id = $1 OR blocked_id = $2", a, a).await;
+    let left = n(
+        &pool,
+        "SELECT count(*) FROM user_blocks WHERE blocker_id = $1 OR blocked_id = $2",
+        a,
+        a,
+    )
+    .await;
     assert_eq!(left, 0, "AB121: no row with A");
-    assert_eq!(get_json(&app, Some(&td), "/api/me/blocks").await, json!([]), "AB121: D's list drops A");
+    assert_eq!(
+        get_json(&app, Some(&td), "/api/me/blocks").await,
+        json!([]),
+        "AB121: D's list drops A"
+    );
     assert_eq!(blocks_of(&pool, d).await, 0, "AB121: D's cap count dropped");
 }
 
@@ -1675,7 +2088,11 @@ async fn ab122_erasure_of_blocked_frees_cap(pool: PgPool) {
     seed_blocks(&pool, a, &seeded).await;
     assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
     assert_eq!(blocks_of(&pool, a).await, 1000);
-    let (s, _) = send(&app, build("DELETE", "/api/me", Some(&tb), Some(json!({"password": "password1"})))).await;
+    let (s, _) = send(
+        &app,
+        build("DELETE", "/api/me", Some(&tb), Some(json!({"password": "password1"}))),
+    )
+    .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
     let list = get_json(&app, Some(&ta), "/api/me/blocks").await;
     let list = list.as_array().unwrap();
