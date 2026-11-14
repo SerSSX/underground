@@ -65,7 +65,7 @@ let registered = false;
 
 try {
   // 1. Register.
-  await page.goto(`${BASE}/register?next=${encodeURIComponent("/account")}`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/register?next=${encodeURIComponent("/account")}`, { waitUntil: "domcontentloaded" });
   await page.fill("#name", `E2E Chat ${stamp}`);
   await page.fill("#email", email);
   await page.fill("#pw", password);
@@ -77,15 +77,18 @@ try {
   // 2. An event with an organiser to write to.
   let eventId = process.env.EVENT || null;
   if (!eventId) {
-    await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+    await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector('a[href^="/events/"]', { timeout: 30000 });
     const hrefs = [...new Set(await page.$$eval('a[href^="/events/"]', (as) => as.map((a) => a.getAttribute("href"))))].slice(0, 12);
     for (const h of hrefs) {
-      await page.goto(`${BASE}${h}`, { waitUntil: "networkidle" });
+      await page.goto(`${BASE}${h}`, { waitUntil: "domcontentloaded" });
+      await page.waitForSelector(".organizer-card, .empty", { timeout: 15000 }).catch(() => {});
       if (await page.locator('.organizer-card a[href^="/inbox?to="]').count()) { eventId = h.match(UUID)?.[0] ?? null; break; }
     }
   }
   if (!check("find an event with an organiser card", !!eventId)) throw new Error("no event with an organiser on the home page; pass EVENT=<id>");
-  await page.goto(`${BASE}/events/${eventId}`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/events/${eventId}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".organizer-card .organizer-link", { timeout: 15000 });
   const organizerName = (await page.locator(".organizer-card .organizer-link .strong").first().innerText()).trim();
   const msgLink = page.locator('.organizer-card a[href^="/inbox?to="]');
   const organizerId = (await msgLink.getAttribute("href"))?.match(UUID)?.[0];
@@ -124,7 +127,8 @@ try {
   check("chat header links to the profile", headHref === `/u/${organizerId}`, String(headHref));
 
   // 6. Organiser card → public page.
-  await page.goto(`${BASE}/events/${eventId}`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/events/${eventId}`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".organizer-card .organizer-link", { timeout: 15000 });
   await page.locator(".organizer-card .organizer-link").tap();
   await page.waitForURL(new RegExp(`/u/${organizerId}$`), { timeout: 10000 }).catch(() => {});
   check("organiser card opens /u/<organiser id>", page.url().endsWith(`/u/${organizerId}`), page.url());
@@ -133,7 +137,8 @@ try {
   check("profile page offers «Написати»", (await page.locator(`a[href="/inbox?to=${organizerId}"]`).count()) > 0);
 
   // 7. Unknown profile.
-  await page.goto(`${BASE}/u/00000000-0000-4000-8000-000000000000`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/u/00000000-0000-4000-8000-000000000000`, { waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".empty h1", { timeout: 15000 }).catch(() => {});
   check("unknown profile shows the friendly not-found", (await page.locator(".empty h1").count()) === 1);
 
   check("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | ").slice(0, 300));
