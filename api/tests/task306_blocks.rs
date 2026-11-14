@@ -2101,3 +2101,66 @@ async fn ab122_erasure_of_blocked_frees_cap(pool: PgPool) {
     let y = seed_users(&pool, 1).await[0];
     assert_eq!(block(&app, &ta, y).await, StatusCode::NO_CONTENT, "AB122: cap freed");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Review closure (ce1e5e5)
+// ---------------------------------------------------------------------------------------------
+
+/// D8 closure: an alert from B written while A's block stood (its insert saw no block) is still
+/// waiting for push; after A unblocks B it must not be selected for push.
+#[sqlx::test(migrations = "./migrations")]
+async fn closure_no_push_after_unblock_of_alert_written_during_block(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (ta, a) = register(&app, "a@x.co", "Alice").await;
+    let (_, b) = register(&app, "b@x.co", "Bob").await;
+    let (_, c) = register(&app, "c@x.co", "Carol").await;
+    sqlx::query("INSERT INTO device_tokens (token, user_id) VALUES ('dev-a', $1)")
+        .bind(a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(block(&app, &ta, b).await, StatusCode::NO_CONTENT);
+    let insert = |actor: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Uuid>(
+                "INSERT INTO notifications (user_id, kind, title, actor_id) VALUES ($1, 'post_like', 't', $2) RETURNING id",
+            )
+            .bind(a)
+            .bind(actor)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let nb = insert(b).await;
+    let nc = insert(c).await;
+    assert_eq!(unblock(&app, &ta, b).await, StatusCode::NO_CONTENT);
+    let got: Vec<Uuid> = underground_api::push::pending(&pool, 1000)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.notification_id)
+        .collect();
+    assert!(
+        !got.contains(&nb),
+        "D8: alert from B written during the block not pushed after unblock"
+    );
+    assert!(got.contains(&nc), "control: C's alert still selected");
+}
+
+/// AB7 closure: blocking an erased account is 404 and leaves no block row (AB115 checks the 404 only).
+#[sqlx::test(migrations = "./migrations")]
+async fn closure_block_of_erased_account_leaves_no_row(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (ta, a) = register(&app, "a@x.co", "Alice").await;
+    let (te, erased) = register(&app, "era@x.co", "Era").await;
+    let (s, v) = send(
+        &app,
+        build("DELETE", "/api/me", Some(&te), Some(json!({"password": "password1"}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "erase: {v}");
+    assert_eq!(block(&app, &ta, erased).await, StatusCode::NOT_FOUND, "AB7: 404");
+    assert_eq!(block_row(&pool, a, erased).await, 0, "AB7: no row");
+}
