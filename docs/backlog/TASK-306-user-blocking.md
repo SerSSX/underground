@@ -47,3 +47,10 @@ Table: `TASK-306-abuse-cases.md` (124 rows, written by a separate identity befor
   delete any comment under it (`DELETE /api/posts/:id/comments/:comment_id`). API only for now: the web has no
   comment UI yet.
 - Conflict 4, unblocking an admin-banned person: **accepted** (D2) — an existing block is always removable.
+
+## Tests (690ef4e, written by a separate identity) — triage 2026-11-14
+
+`api/tests/task306_blocks.rs`: 47 passed. Control-presence: 17 named controls plus 4 extra, all killed (notify_actor's
+filter only after a dedicated test was added). Assumptions accepted: AB49 reads right after the 204; setup by SQL
+inserts; AB66 compares field names; the AB57/AB97 race is stood in by a direct `notify_actor` call (read-time hiding
+covers the rest). Conflict on AB22: the recorded rule (docs/decisions.md 2026-11-14, a typed name is shown) wins.
