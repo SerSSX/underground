@@ -212,7 +212,8 @@ pub async fn notify_booking<'e, E: sqlx::PgExecutor<'e>>(
     Ok(())
 }
 
-/// `GET /api/me/notifications` — newest first (capped at 100).
+/// `GET /api/me/notifications` — newest first: the newest 100, plus every place offer to the caller
+/// that is still open, however old (TASK-305 round 3: its claim link is only reachable here).
 pub async fn my_notifications(
     user: CurrentUser,
     State(st): State<AppState>,
@@ -222,7 +223,10 @@ pub async fn my_notifications(
             g.id AS open_gift \
          FROM notifications n \
          LEFT JOIN ticket_gifts g ON g.id = n.gift_id AND g.status = 'pending' AND g.expires_at > now() \
-         WHERE n.user_id = $1 ORDER BY n.created_at DESC LIMIT 100",
+         WHERE n.user_id = $1 \
+           AND (g.id IS NOT NULL OR n.id IN ( \
+                SELECT id FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)) \
+         ORDER BY n.created_at DESC",
     )
     .bind(user.id)
     .fetch_all(&st.db)

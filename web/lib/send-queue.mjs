@@ -57,3 +57,37 @@ export function createSendQueue(h) {
     get waiting() { return waiting.length; },
   };
 }
+
+/**
+ * Unsent texts kept per conversation (TASK-305 round 3): when a send fails, the texts of conversations that are
+ * not open are kept here, oldest first, and handed back when that conversation is opened again, so switching
+ * chats never loses them.
+ * @param {Map<string, string>} drafts conversation (peer id) → kept text
+ * @param {{ peerId: string; body: string }[]} failed the failed items, oldest first
+ * @param {string | null | undefined} openPeerId the conversation open now (its texts are not stashed)
+ * @returns {string} the open conversation's own failed texts, joined, for the caller to put back in the field
+ */
+export function stashFailed(drafts, failed, openPeerId) {
+  const here = [];
+  for (const o of failed) {
+    if (o.peerId === openPeerId) {
+      here.push(o.body);
+    } else {
+      const prev = drafts.get(o.peerId);
+      drafts.set(o.peerId, prev ? `${prev} ${o.body}` : o.body);
+    }
+  }
+  return here.join(" ");
+}
+
+/**
+ * The kept text of a conversation, removed from `drafts` (it goes back into the field once).
+ * @param {Map<string, string>} drafts
+ * @param {string} peerId
+ * @returns {string}
+ */
+export function takeDraft(drafts, peerId) {
+  const d = drafts.get(peerId) ?? "";
+  drafts.delete(peerId);
+  return d;
+}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSendQueue } from "./send-queue.mjs";
+import { createSendQueue, stashFailed, takeDraft } from "./send-queue.mjs";
 
 /** A send whose calls stay pending until the test settles them. */
 function controlled() {
@@ -63,4 +63,18 @@ test("a throwing onSent does not report the sent item as failed", async () => {
   assert.equal(failed, null);
   assert.equal(q.busy, true, "y is in flight");
   assert.deepEqual(c.calls.map((x) => x.item), ["x", "y"]);
+});
+
+test("failed texts of a conversation that is not open are kept for it and given back once, oldest first", () => {
+  const drafts = new Map();
+  const failed = [
+    { peerId: "A", body: "a1" },
+    { peerId: "B", body: "b1" },
+    { peerId: "A", body: "a2" },
+  ];
+  assert.equal(stashFailed(drafts, failed, "B"), "b1", "the open chat's text comes back at once");
+  assert.equal(stashFailed(drafts, [{ peerId: "A", body: "a3" }], "C"), "");
+  assert.equal(takeDraft(drafts, "A"), "a1 a2 a3", "chat A gets all of its texts, in order");
+  assert.equal(takeDraft(drafts, "A"), "", "only once");
+  assert.equal(takeDraft(drafts, "B"), "", "nothing was kept for the open chat");
 });

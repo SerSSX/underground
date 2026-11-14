@@ -142,6 +142,8 @@ async fn escrow_worker(pool: sqlx::PgPool) {
     let mut tick = tokio::time::interval(Duration::from_secs(ESCROW_INTERVAL_SECS));
     loop {
         tick.tick().await;
+        // First, so a failed settings read below never skips it.
+        prune_telemetry(&pool).await;
         let days = match payments::load_settings(&pool).await {
             Ok(s) => s.clearing_window_days,
             Err(e) => {
@@ -156,6 +158,17 @@ async fn escrow_worker(pool: sqlx::PgPool) {
             Ok(_) => {}
             Err(e) => tracing::warn!(error = %e, "escrow sweep failed"),
         }
+    }
+}
+
+/// TASK-305 round 3: client telemetry is kept `TELEMETRY_RETENTION_DAYS`; older rows go hourly, in
+/// batches, at most 10 seconds per run (the escrow worker's tick).
+async fn prune_telemetry(pool: &sqlx::PgPool) {
+    let days = underground_api::telemetry::retention_days();
+    match underground_api::telemetry::prune(pool, days, Duration::from_secs(10)).await {
+        Ok(n) if n > 0 => tracing::info!(deleted = n, days, "telemetry pruned"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "telemetry prune failed"),
     }
 }
 

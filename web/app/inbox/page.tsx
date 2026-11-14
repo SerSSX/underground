@@ -7,7 +7,7 @@ import {
   myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getEvent, getToken, errorMessage,
   isUuid, alertHref, type NotificationDto, type ConversationDto, type MessageDto, type EventDto,
 } from "../../lib/api";
-import { createSendQueue } from "../../lib/send-queue.mjs";
+import { createSendQueue, stashFailed, takeDraft } from "../../lib/send-queue.mjs";
 import { unreadChanged } from "../../lib/unread";
 import { useLang, tr, tf } from "../../lib/i18n";
 import { useSession } from "../../lib/session";
@@ -153,6 +153,14 @@ function InboxInner() {
     if (tab === "alerts" && alerts?.some((n) => !n.read)) void markNotificationsRead().then(unreadChanged).catch(() => {});
   }, [tab, alerts]);
 
+  // Unsent texts of conversations that were not open when their send failed, given back when they are opened.
+  const unsent = useRef(new Map<string, string>());
+  useEffect(() => {
+    if (!peer) return;
+    const kept = takeDraft(unsent.current, peer.id);
+    if (kept) setText((t) => (t.trim() ? `${kept} ${t}` : kept));
+  }, [peer]);
+
   // The open conversation, for the send queue's callbacks (they outlive the render that created them).
   const peerRef = useRef<Peer | null>(null);
   peerRef.current = peer;
@@ -170,8 +178,9 @@ function InboxInner() {
       },
       onFailed: (failed, e) => {
         setError(errorMessage(e));
-        // Give the unsent text back, oldest first, ahead of anything typed since, so nothing is lost.
-        const here = failed.filter((o) => o.peerId === peerRef.current?.id).map((o) => o.body).join(" ");
+        // Give the unsent text back, oldest first, ahead of anything typed since, so nothing is lost. Texts for
+        // another chat (the user switched while they were queued) wait for that chat (TASK-305 round 3).
+        const here = stashFailed(unsent.current, failed, peerRef.current?.id);
         if (here) setText((t) => (t.trim() ? `${here} ${t}` : here));
       },
     });

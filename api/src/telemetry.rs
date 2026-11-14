@@ -15,6 +15,57 @@ use crate::auth::{CurrentAdmin, CurrentUser};
 use crate::error::AppError;
 use crate::state::AppState;
 
+/// Anonymous client events stored per UTC day, overridable by env (TASK-305 round 3). Over it a
+/// call answers as before and stores nothing, so nobody can fill the table without signing in.
+fn daily_anon_cap() -> i64 {
+    crate::ratelimit::env_limit("TELEMETRY_DAILY_ANON", 20_000)
+}
+
+/// Days an event is kept, overridable by env (TASK-305 round 3).
+pub fn retention_days() -> i64 {
+    crate::ratelimit::env_limit("TELEMETRY_RETENTION_DAYS", 30)
+}
+
+/// Rows one prune statement deletes; [`prune`] repeats it until done or out of time.
+const PRUNE_BATCH: i64 = 5_000;
+
+/// Delete events older than `days`, in batches, for at most `budget` (TASK-305 round 3).
+/// Returns the number of rows deleted. Uses `telemetry_events_created_idx`.
+pub async fn prune(db: &PgPool, days: i64, budget: std::time::Duration) -> Result<u64, sqlx::Error> {
+    let started = std::time::Instant::now();
+    let mut total = 0;
+    loop {
+        let done = sqlx::query(
+            "DELETE FROM telemetry_events WHERE id IN ( \
+                SELECT id FROM telemetry_events WHERE created_at < now() - ($1 * interval '1 day') LIMIT $2)",
+        )
+        .bind(days as i32)
+        .bind(PRUNE_BATCH)
+        .execute(db)
+        .await?
+        .rows_affected();
+        total += done;
+        if done < PRUNE_BATCH as u64 || started.elapsed() >= budget {
+            return Ok(total);
+        }
+    }
+}
+
+/// True while today's (UTC) anonymous events are under the cap. Counts at most `cap` rows
+/// (`telemetry_events_anon_day_idx`), so the check stays cheap however full the day is.
+async fn anon_room_today(db: &PgPool) -> Result<bool, sqlx::Error> {
+    let cap = daily_anon_cap();
+    let today: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT 1 FROM telemetry_events \
+            WHERE user_id IS NULL AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' \
+            LIMIT $1) s",
+    )
+    .bind(cap)
+    .fetch_one(db)
+    .await?;
+    Ok(today < cap)
+}
+
 /// Best-effort event log. Deliberately infallible from the caller's side: a
 /// telemetry write must never break the action it measures.
 pub async fn log(db: &PgPool, user_id: Option<Uuid>, name: &str, props: Value) {
@@ -66,7 +117,12 @@ pub async fn log_event(
     if req.props.to_string().len() > PROPS_MAX {
         return Err(AppError::Validation(format!("props: не більше {PROPS_MAX} байтів")));
     }
-    log(&st.db, user.map(|u| u.id), name, req.props).await;
+    let user_id = user.map(|u| u.id);
+    if user_id.is_none() && !anon_room_today(&st.db).await? {
+        // Over today's anonymous cap: the same answer, nothing stored.
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    log(&st.db, user_id, name, req.props).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

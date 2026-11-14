@@ -792,7 +792,7 @@ export async function sendMessage(recipientId: string, text: string): Promise<Me
 // ---- organiser: guests, door scan, staff (TASK-302) ----
 /** One attendee of an event: the organiser sees only the name and the number of places (brief 2026-11-11). */
 export interface GuestDto {
-  /** The guest's user id, for «Написати» (TASK-305). Not sent by the API yet: the button shows once it is. */
+  /** The guest's user id, for «Написати» (TASK-305). The API sends it on every row (organiser only). */
   user_id?: string | null;
   name: string;
   places: number;

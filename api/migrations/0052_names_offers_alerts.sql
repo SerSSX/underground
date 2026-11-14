@@ -7,12 +7,14 @@
 -- reads it, so it is dropped in a later contract migration, not here. (Postgres 16 cannot change
 -- a generation expression in place, and dropping it now would break that rollback.)
 --
--- Backfill, once: rows created before TASK-302 (2026-11-12) whose name the old rule matched were
--- named from the email automatically (password-less sign-up used the email's local part); they
--- become «Гість», so the new rule cannot show part of an email. Rows created since then keep
--- whatever name was typed, even one equal to the email's local part. Idempotent.
+-- Backfill, once: password-less rows created before TASK-302 (2026-11-12) whose name the old rule
+-- matched were named from the email automatically (that sign-up used the email's local part);
+-- they become «Гість», so the new rule cannot show part of an email. A password account typed
+-- its own name at registration, and rows created since then keep whatever was typed, even a
+-- name equal to the email's local part (docs/decisions.md 2026-11-14). Idempotent.
 UPDATE users SET name = 'Гість'
 WHERE created_at < TIMESTAMPTZ '2026-11-12 00:00:00+00'
+  AND password_hash IS NULL
   AND name_is_placeholder IS NOT FALSE
   AND name <> 'Гість';
 
@@ -23,3 +25,8 @@ WHERE created_at < TIMESTAMPTZ '2026-11-12 00:00:00+00'
 -- cannot reconstruct a working claim link).
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS link TEXT;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS gift_id UUID REFERENCES ticket_gifts(id) ON DELETE CASCADE;
+
+-- TASK-305 round 3: telemetry retention deletes by age, and the anonymous daily cap counts
+-- today's rows without a user.
+CREATE INDEX IF NOT EXISTS telemetry_events_created_idx ON telemetry_events (created_at);
+CREATE INDEX IF NOT EXISTS telemetry_events_anon_day_idx ON telemetry_events (created_at) WHERE user_id IS NULL;

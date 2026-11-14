@@ -504,21 +504,46 @@ async fn ensure_not_disputed(tx: &mut sqlx::PgConnection, ticket_id: Uuid) -> Re
 /// is active (TASK-305 F2: checked before anything about the recipient is looked at); 409 when
 /// its event is cancelled or over, or it is under dispute. Money policy (BACK-1): a transfer
 /// gifts ENTRY only — the purchaser keeps the order/escrow relationship and the right to dispute.
+///
+/// A ticket whose earlier offer expired unclaimed counts as active again (TASK-305 round 3, as a
+/// gift does): the expired offer is closed and the new one is made. An offer still open is 404.
 async fn own_transferable_ticket(tx: &mut sqlx::PgConnection, ticket_id: Uuid, owner: Uuid) -> Result<(), AppError> {
     let sql = format!(
-        "SELECT {gone} FROM tickets t JOIN events e ON e.id = t.event_id \
-         WHERE t.id = $1 AND t.owner_id = $2 AND t.status = 'active' FOR UPDATE OF t",
+        "SELECT t.status, {gone} FROM tickets t JOIN events e ON e.id = t.event_id \
+         WHERE t.id = $1 AND t.owner_id = $2 AND t.status IN ('active', 'pending_claim') FOR UPDATE OF t",
         gone = event_gone_sql()
     );
-    let gone: Option<bool> = sqlx::query_scalar(&sql)
+    let row: Option<(String, bool)> = sqlx::query_as(&sql)
         .bind(ticket_id)
         .bind(owner)
         .fetch_optional(&mut *tx)
         .await?;
-    if gone.ok_or(AppError::NotFound)? {
+    let (status, gone) = row.ok_or(AppError::NotFound)?;
+    if status == "pending_claim" && !reclaim_expired_offer(tx, ticket_id).await? {
+        return Err(AppError::NotFound);
+    }
+    if gone {
         return Err(AppError::Conflict(EVENT_GONE.into()));
     }
     ensure_not_disputed(tx, ticket_id).await
+}
+
+/// The most characters an offer's email may have (RFC 5321 path limit).
+pub const OFFER_EMAIL_MAX: usize = 254;
+
+/// The one answer for an email that is not a single valid address (gift and transfer, TASK-305
+/// round 3). It is decided from the text alone, never from whether an account has it.
+pub const OFFER_EMAIL_REFUSED: &str = "вкажіть одну коректну адресу email";
+
+/// The recipient email of an offer, trimmed and lower-cased: one address of at most
+/// [`OFFER_EMAIL_MAX`] characters, or 422 [`OFFER_EMAIL_REFUSED`]. It is stored in
+/// `ticket_gifts.to_email`, so its size is bounded here.
+fn offer_email(raw: &str) -> Result<String, AppError> {
+    let email = crate::auth::normalize_email(raw);
+    if email.chars().count() > OFFER_EMAIL_MAX || !crate::mail::is_single_address(&email) {
+        return Err(AppError::Validation(OFFER_EMAIL_REFUSED.into()));
+    }
+    Ok(email)
 }
 
 /// The account a place offer to `email` alerts: an active, not deleted account other than the
@@ -561,7 +586,7 @@ pub async fn transfer_ticket(
     let mut tx = st.db.begin().await?;
     // Lock order ticket → event, the same as `return_ticket`.
     own_transferable_ticket(&mut tx, ticket_id, user.id).await?;
-    let email = crate::auth::normalize_email(&req.email);
+    let email = offer_email(&req.email)?;
     // One lookup, and the same writes for every email; only the alert row depends on it.
     let recipient = offer_recipient(&mut tx, &email, user.id).await?;
     let offer = create_offer(&mut tx, &st.jwt_secret, ticket_id, user.id, &email).await?;
@@ -656,6 +681,26 @@ async fn create_offer(
     })
 }
 
+/// A `pending_claim` ticket whose outstanding offer has expired: the offer is marked expired and
+/// true is returned (the caller makes a new one). False while the offer is still open. Runs under
+/// the ticket lock.
+async fn reclaim_expired_offer(tx: &mut sqlx::PgConnection, ticket_id: Uuid) -> Result<bool, AppError> {
+    let expired: bool = sqlx::query_scalar(
+        "SELECT COALESCE(bool_or(expires_at < now()), false) \
+         FROM ticket_gifts WHERE ticket_id = $1 AND status = 'pending'",
+    )
+    .bind(ticket_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if expired {
+        sqlx::query("UPDATE ticket_gifts SET status = 'expired' WHERE ticket_id = $1 AND status = 'pending'")
+            .bind(ticket_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    Ok(expired)
+}
+
 /// Ensure a ticket can be gifted now: its event is not cancelled, blocked or over (TASK-305 R6,
 /// as for a transfer), not under dispute, and the ticket is either `active` or a `pending_claim`
 /// whose outstanding gift already expired (reclaimed for re-gifting).
@@ -672,20 +717,9 @@ async fn ensure_giftable(
     match status {
         "active" => Ok(()),
         "pending_claim" => {
-            let expired: bool = sqlx::query_scalar(
-                "SELECT COALESCE(bool_or(expires_at < now()), false) \
-                 FROM ticket_gifts WHERE ticket_id = $1 AND status = 'pending'",
-            )
-            .bind(ticket_id)
-            .fetch_one(&mut *tx)
-            .await?;
-            if !expired {
+            if !reclaim_expired_offer(tx, ticket_id).await? {
                 return Err(AppError::Conflict("квиток уже надіслано в подарунок".into()));
             }
-            sqlx::query("UPDATE ticket_gifts SET status = 'expired' WHERE ticket_id = $1 AND status = 'pending'")
-                .bind(ticket_id)
-                .execute(&mut *tx)
-                .await?;
             Ok(())
         }
         _ => Err(AppError::Conflict("квиток уже використаний або повернений".into())),
@@ -708,10 +742,7 @@ pub async fn gift_ticket(
         3600,
     )
     .await?;
-    let email = req.email.trim().to_lowercase();
-    if email.is_empty() {
-        return Err(AppError::Validation("email отримувача обов'язковий".into()));
-    }
+    let email = offer_email(&req.email)?;
     let mut tx = st.db.begin().await?;
     let sql = format!(
         "SELECT t.status, {gone} FROM tickets t JOIN events e ON e.id = t.event_id \

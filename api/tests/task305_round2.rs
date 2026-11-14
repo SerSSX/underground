@@ -201,12 +201,16 @@ async fn r1_backfill_renames_only_old_auto_names(pool: PgPool) {
         ("old.blank@x.co", " ", "2026-10-01", "Гість"),
         ("old.typed@x.co", "Olena", "2026-11-01", "Olena"),
         ("new.local@x.co", "new.local", "2026-11-12T00:00:01Z", "new.local"),
+        // Round 3 (B5): a password account typed its name, even one equal to its local part.
+        ("old.pw@x.co", "old.pw", "2026-11-01", "old.pw"),
     ];
     for (email, name, at, _) in rows {
-        sqlx::query("INSERT INTO users (email, name, created_at) VALUES ($1, $2, $3::timestamptz)")
+        let password = email.starts_with("old.pw").then_some("$argon2id$typed");
+        sqlx::query("INSERT INTO users (email, name, created_at, password_hash) VALUES ($1, $2, $3::timestamptz, $4)")
             .bind(email)
             .bind(name)
             .bind(at)
+            .bind(password)
             .execute(&pool)
             .await
             .unwrap();
@@ -229,8 +233,8 @@ async fn r1_backfill_renames_only_old_auto_names(pool: PgPool) {
 
 // ------------------------------------------------------------------------------------- R2
 
-/// R2: after the ownership check the sender's answer is the same 202 body for every email —
-/// unknown, a minor, an adult, the sender, a malformed one — and takes about as long.
+/// R2: after the ownership check the sender's answer is the same 202 body for every valid address —
+/// unknown, a minor, an adult, the sender — and takes about as long. (Malformed addresses: B1.)
 #[sqlx::test(migrations = "./migrations")]
 async fn r2_transfer_answer_never_depends_on_the_email(pool: PgPool) {
     let app = make_app(pool.clone());
@@ -270,8 +274,6 @@ async fn r2_transfer_answer_never_depends_on_the_email(pool: PgPool) {
         "adult@x.co",
         "ADULT@x.co ",
         "owner@x.co",
-        "",
-        "not an email",
     ];
     // Every email once (8), then ten timed pairs (20): 28 calls, inside the 30/h sender bucket.
     let mut times = std::collections::HashMap::<&str, Vec<Duration>>::new();
@@ -858,4 +860,228 @@ async fn ux2_door_opens_six_hours_before(pool: PgPool) {
     .await;
     assert_eq!((s, v["valid"].clone()), (StatusCode::OK, json!(true)), "{v}");
     assert_eq!(ticket_state(&pool, t1).await.1, "used");
+}
+
+// ------------------------------------------------------------------------------- round 3
+
+async fn gift_rows(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM ticket_gifts")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// B1: an offer's email is one valid address of at most 254 characters; anything else is the same
+/// 422 for transfer and gift, whatever accounts exist, and nothing is stored (a 2 MB email included).
+#[sqlx::test(migrations = "./migrations")]
+async fn b1_offer_email_is_one_bounded_address(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "org@x.co", "Org").await;
+    let (owner, ot) = user(&pool, "owner@x.co", "Owner").await;
+    user(&pool, "friend@x.co", "Friend").await;
+    let ev = event(&app, &org, json!({})).await;
+    let ticket = reserve(&app, &ot, ev).await;
+    let huge = format!("{}@x.co", "a".repeat(2_000_000));
+    let long = format!("{}@x.co", "b".repeat(250));
+    let bad = [
+        "",
+        "   ",
+        "not an email",
+        "friend@x.co,owner@x.co",
+        "friend@x.co owner@x.co",
+        "<friend@x.co>",
+        long.as_str(),
+        huge.as_str(),
+    ];
+    let refused = (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({"error": underground_api::tickets::OFFER_EMAIL_REFUSED}),
+    );
+    for action in ["transfer", "gift"] {
+        let path = format!("/api/tickets/{ticket}/{action}");
+        for email in bad {
+            let got = call(&app, "POST", &path, Some(&ot), Some(json!({ "email": email }))).await;
+            assert_eq!(got, refused, "[SEC] {action} {:?}", &email[..email.len().min(40)]);
+        }
+        assert_eq!(gift_rows(&pool).await, 0, "[SEC] {action}: nothing stored");
+        assert_eq!(ticket_state(&pool, ticket).await, (owner, "active".into()));
+    }
+    // A valid address still works, and its stored form is trimmed and lower-cased.
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/tickets/{ticket}/gift"),
+        Some(&ot),
+        Some(json!({"email":"  Friend@X.co "})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let stored: String = sqlx::query_scalar("SELECT to_email FROM ticket_gifts")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, "friend@x.co");
+}
+
+/// B2a: events older than the retention go, newer ones stay; the hourly worker calls the prune.
+#[sqlx::test(migrations = "./migrations")]
+async fn b2_telemetry_retention(pool: PgPool) {
+    sqlx::query(
+        "INSERT INTO telemetry_events (name, created_at) \
+         SELECT 'old', now() - interval '31 days' FROM generate_series(1, 12001) \
+         UNION ALL SELECT 'new', now() - interval '29 days' FROM generate_series(1, 3)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let deleted = underground_api::telemetry::prune(&pool, 30, Duration::from_secs(30))
+        .await
+        .unwrap();
+    assert_eq!(deleted, 12001, "all old rows, across several batches");
+    let left: Vec<(String, i64)> =
+        sqlx::query_as("SELECT name, count(*) FROM telemetry_events GROUP BY name ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(left, [("new".to_string(), 3)]);
+    assert_eq!(underground_api::telemetry::retention_days(), 30);
+    let main = include_str!("../src/main.rs");
+    assert!(
+        main.contains("prune_telemetry(&pool).await;") && main.contains("telemetry::prune(pool, days"),
+        "the escrow worker prunes telemetry"
+    );
+}
+
+/// B2b: over today's anonymous cap a call answers as before but stores nothing; a signed-in
+/// caller's events still count.
+#[sqlx::test(migrations = "./migrations")]
+async fn b2_anonymous_telemetry_has_a_daily_cap(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, t) = user(&pool, "u@x.co", "U").await;
+    sqlx::query(
+        "INSERT INTO telemetry_events (name, created_at) \
+         SELECT 'yesterday', now() - interval '2 days' FROM generate_series(1, 5)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let body = json!({"name":"share"}).to_string();
+    let anon = |ip: &str| {
+        raw(
+            &app,
+            request("POST", "/api/telemetry", None, Some(body.clone()), Some(ip)),
+        )
+    };
+    assert_eq!(anon("192.0.2.1").await.0, StatusCode::NO_CONTENT);
+    let count = |name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM telemetry_events WHERE name = $1")
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(count("share").await, 1, "under the cap: stored");
+    sqlx::query("INSERT INTO telemetry_events (name) SELECT 'filler' FROM generate_series(1, 20000 - 1)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        anon("192.0.2.2").await.0,
+        StatusCode::NO_CONTENT,
+        "same answer over the cap"
+    );
+    assert_eq!(count("share").await, 1, "[SEC] over the cap: nothing stored");
+    let signed = raw(
+        &app,
+        request(
+            "POST",
+            "/api/telemetry",
+            Some(&t),
+            Some(body.clone()),
+            Some("192.0.2.3"),
+        ),
+    )
+    .await;
+    assert_eq!(signed.0, StatusCode::NO_CONTENT);
+    assert_eq!(count("share").await, 2, "a signed-in event is not capped");
+}
+
+/// B3: an open place offer stays in the alert list (with its link) however many newer alerts
+/// there are.
+#[sqlx::test(migrations = "./migrations")]
+async fn b3_open_offer_is_always_listed(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "org@x.co", "Org").await;
+    let (_, ot) = user(&pool, "owner@x.co", "Owner").await;
+    let (friend, ft) = user(&pool, "friend@x.co", "Friend").await;
+    let ev = event(&app, &org, json!({})).await;
+    let ticket = reserve(&app, &ot, ev).await;
+    let (s, _) = call(
+        &app,
+        "POST",
+        &format!("/api/tickets/{ticket}/transfer"),
+        Some(&ot),
+        Some(json!({"email":"friend@x.co"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    sqlx::query(
+        "INSERT INTO notifications (user_id, kind, title, created_at) \
+         SELECT $1, 'booking', 'n' || i, now() + i * interval '1 second' FROM generate_series(1, 120) i",
+    )
+    .bind(friend)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let list = alerts(&app, &ft).await;
+    assert_eq!(list.len(), 101, "the newest 100 and the open offer");
+    assert!(
+        offer_token(&app, &ft).await.is_some(),
+        "[SEC] the claim link is still reachable"
+    );
+    // Once the offer is cancelled it is an ordinary old alert again.
+    call(&app, "DELETE", &format!("/api/tickets/{ticket}/gift"), Some(&ot), None).await;
+    assert_eq!(alerts(&app, &ft).await.len(), 100);
+}
+
+/// B6: a ticket whose earlier offer expired can be transferred again (as a gift can); while the
+/// offer is open it cannot.
+#[sqlx::test(migrations = "./migrations")]
+async fn b6_transfer_after_an_expired_offer(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "org@x.co", "Org").await;
+    let (owner, ot) = user(&pool, "owner@x.co", "Owner").await;
+    let ev = event(&app, &org, json!({})).await;
+    let ticket = reserve(&app, &ot, ev).await;
+    let path = format!("/api/tickets/{ticket}/transfer");
+    let send = |email: &'static str| call(&app, "POST", &path, Some(&ot), Some(json!({ "email": email })));
+    assert_eq!(send("first@x.co").await.0, StatusCode::ACCEPTED);
+    assert_eq!(
+        send("second@x.co").await.0,
+        StatusCode::NOT_FOUND,
+        "the first offer is still open"
+    );
+    sqlx::query("UPDATE ticket_gifts SET expires_at = now() - interval '1 minute' WHERE ticket_id = $1")
+        .bind(ticket)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(send("second@x.co").await.0, StatusCode::ACCEPTED);
+    let gifts: Vec<(String, String)> =
+        sqlx::query_as("SELECT to_email, status FROM ticket_gifts WHERE ticket_id = $1 ORDER BY created_at")
+            .bind(ticket)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        gifts,
+        [
+            ("first@x.co".to_string(), "expired".to_string()),
+            ("second@x.co".to_string(), "pending".to_string())
+        ]
+    );
+    assert_eq!(ticket_state(&pool, ticket).await, (owner, "pending_claim".into()));
 }
