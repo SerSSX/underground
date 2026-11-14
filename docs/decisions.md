@@ -108,3 +108,11 @@ sender's own address only). Assertion changes put to the owner (was · now · wh
 3. `api/tests/task305_round2.rs` ux7_gift_offers_and_chats: gift to own email 201 → 422.
 Why, all three: the owner's decision above.
 Owner's answer (verbatim): «Так, погоджую».
+
+## 2026-11-14 — Project closed; DEV removed from the server
+
+Owner (verbatim gist): «закриваю проект ... повертати цю ідею немає сенсу, бо ніяким чином я її не просуну ... зносю з
+сервера бекенд і всі контейнери, які пов'язані з андерграундом, щоб все ... працювало, крім андерграунду».
+Why: a two-sided, city-bound event product with no distribution channel and no marketing budget. The code stays on
+GitHub (SerSSX/underground); the DEV stand, its database and images are deleted from 65.108.87.247 (DEV data only;
+there never was a prod).
