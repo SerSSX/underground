@@ -46,3 +46,11 @@ tickets/QR, localization, address search, password change.)
 - Telemetry limit is DB-backed (one `rate_events` row per call): **turned into a review question** for the round-2 reviewer (pruning of `rate_events`).
 - Android: `POST /api/tickets/:id/transfer` now answers 202 `{"status":"sent"}`; `EventApi.kt:200` expects `TicketDto`. **Blocks the next APK** (the APK is held anyway); recorded in STATE.
 - Web gap found in triage: alerts opened only `/events/<id>`, so a place offer could not be accepted from the web. **Fixed**: `web/lib/alert-href.mjs` follows the alert's own `link` when it is a plain path on this site.
+
+## Round 3 (a770792): reviewer NO-GO B1-B6 fixed; assumptions triaged 2026-11-14
+
+- Anonymous telemetry cap counted per UTC day, check-then-insert not atomic (may slightly overshoot): **accepted** — a soft cap on a disk-fill guard; overshoot is bounded by the per-IP limit.
+- Retention clears at most 10 s per hourly tick: **accepted**.
+- Transfer while an offer is still open answers 404 where gift answers 409: **accepted** (only the held Android build calls transfer); noted for the Android update.
+- Spec corrected: a guest's `user_id` goes to the event's organiser only (code is stricter than the round-2 spec text).
+- Open MINOR after this round: `discover.rs` MOMENTUM counts every review, due 2026-11-21.
