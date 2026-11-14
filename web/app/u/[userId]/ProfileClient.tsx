@@ -4,14 +4,14 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  getProfile, userEvents, followUser, unfollowUser, getToken, isOver, isUuid, errorMessage, ApiError,
+  getProfile, userEvents, followUser, unfollowUser, blockUser, unblockUser, getToken, isOver, isUuid, errorMessage, ApiError,
   type EventDto, type PublicProfile,
 } from "../../../lib/api";
-import { useLang, tr, tp } from "../../../lib/i18n";
+import { useLang, tr, tf, tp } from "../../../lib/i18n";
 import { useSession } from "../../../lib/session";
 import { initials } from "../../../lib/ui";
 import EventCard from "../../components/EventCard";
-import { CircleCheck, Compass, MessageCircle, Pencil, UserPlus, Check } from "../../components/Icon";
+import { CircleCheck, Compass, MessageCircle, Pencil, UserPlus, Check, Ban } from "../../components/Icon";
 
 /** True for "this person does not exist (or is blocked)": the API's 404, or a malformed id it refuses. */
 function isMissing(e: unknown): boolean {
@@ -89,6 +89,31 @@ export default function ProfileClient({ userId, initialProfile }: { userId: stri
     }
   }
 
+  // TASK-306: blocking stops messages, follows, likes and comments between the two of you and hides this person's
+  // alerts and posts from you. They are not told.
+  async function toggleBlock() {
+    if (!profile) return;
+    if (!getToken()) { router.push(`/login?next=${encodeURIComponent(`/u/${profile.id}`)}`); return; }
+    const was = !!profile.is_blocked;
+    if (!was && !window.confirm(tf(lang,
+      "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.",
+      "Block {name}? Neither of you will be able to message the other, follows between you are removed, and you will get no alerts from them. They are not told.",
+      { name: profile.name }))) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (was) await unblockUser(profile.id);
+      else await blockUser(profile.id);
+      // A block removed follows both ways: read the counters again rather than guess them.
+      const fresh = await getProfile(profile.id).catch(() => null);
+      setProfile(fresh ?? { ...profile, is_blocked: !was, is_following: false });
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="container">
       <section className="card profile-head">
@@ -115,6 +140,13 @@ export default function ProfileClient({ userId, initialProfile }: { userId: stri
                 <span className="badge">{tr(lang, "Це ваш профіль", "This is your profile")}</span>
                 <Link className="btn secondary sm" href="/account"><Pencil className="ico sm" aria-hidden />{tr(lang, "Редагувати", "Edit")}</Link>
               </>
+            ) : profile.is_blocked ? (
+              <>
+                <span className="badge">{tr(lang, "Ви заблокували цю людину", "You blocked this person")}</span>
+                <button className="btn secondary sm" onClick={() => void toggleBlock()} disabled={busy}>
+                  {tr(lang, "Розблокувати", "Unblock")}
+                </button>
+              </>
             ) : (
               <>
                 <Link className="btn sm" href={chatHref}>
@@ -124,6 +156,11 @@ export default function ProfileClient({ userId, initialProfile }: { userId: stri
                   {profile.is_following ? <Check className="ico sm" aria-hidden /> : <UserPlus className="ico sm" aria-hidden />}
                   {profile.is_following ? tr(lang, "Ви підписані", "Following") : tr(lang, "Підписатися", "Follow")}
                 </button>
+                {me && (
+                  <button className="btn quiet sm" onClick={() => void toggleBlock()} disabled={busy}>
+                    <Ban className="ico sm" aria-hidden />{tr(lang, "Заблокувати", "Block")}
+                  </button>
+                )}
               </>
             )}
           </div>

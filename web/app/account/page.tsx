@@ -10,6 +10,7 @@ import { categoryLabel, initials } from "../../lib/ui";
 import CityInput from "../components/CityInput";
 import Modal from "../components/Modal";
 import LanguagePicker from "../components/LanguagePicker";
+import BlockedList from "./BlockedList";
 import { Toast, useToast } from "../components/Toast";
 import { LayoutGrid, Ticket, LogOut, Download, Trash2, Camera, Check, Globe, ChevronRight, KeyRound, Eye, Heart } from "../components/Icon";
 
@@ -208,6 +209,8 @@ export default function AccountPage() {
           </button>
         </form>
       </section>
+
+      <BlockedList />
 
       <section className="card section">
         <h2 style={{ fontSize: 17, marginBottom: 12 }}>{tr(lang, "Дані й акаунт", "Data and account")}</h2>

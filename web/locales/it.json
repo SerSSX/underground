@@ -699,5 +699,14 @@
   "пошук адрес тимчасово недоступний": "la ricerca degli indirizzi è temporaneamente non disponibile",
   "текст містить недопустимий символ (NUL)": "il testo contiene un carattere non consentito",
   "Ще рано: подія починається {date} о {time}": "Troppo presto: l’evento inizia il {date} alle {time}",
-  "Текст задовгий: не більше {max} символів": "Il testo è troppo lungo: al massimo {max} caratteri"
+  "Текст задовгий: не більше {max} символів": "Il testo è troppo lungo: al massimo {max} caratteri",
+  "Заблоковані": "Persone bloccate",
+  "Ви не пишете одне одному й не бачите їхніх сповіщень. Вони про це не знають.": "Non potete scrivervi e non vedi le sue notifiche. Non viene avvisata.",
+  "Ви нікого не блокували.": "Non hai bloccato nessuno.",
+  "Розблокувати": "Sblocca",
+  "Цій людині зараз не можна написати.": "Al momento non puoi scrivere a questa persona.",
+  "Ви заблокували цю людину: повідомлення не надсилаються.": "Hai bloccato questa persona: nessun messaggio in nessuna direzione.",
+  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.": "Bloccare {name}? Nessuno dei due potrà scrivere all’altro, i follow tra voi vengono rimossi e non riceverai sue notifiche. Non viene avvisata.",
+  "Ви заблокували цю людину": "Hai bloccato questa persona",
+  "Заблокувати": "Blocca"
 }

@@ -35,6 +35,10 @@
   "Спробуйте інші дати чи категорію — або створіть свою подію, і її побачать інші.": "Try other dates or a category — or create your own event for others to find.",
   "Скинути фільтри": "Reset filters",
   "Створити подію": "Create event",
+  "Заблоковані": "Blocked people",
+  "Ви не пишете одне одному й не бачите їхніх сповіщень. Вони про це не знають.": "You can't message each other and you don't see their alerts. They are not told.",
+  "Ви нікого не блокували.": "You haven't blocked anyone.",
+  "Розблокувати": "Unblock",
   "Профіль збережено": "Profile saved",
   "Фото оновлено": "Photo updated",
   "Інтереси збережено": "Interests saved",
@@ -315,6 +319,7 @@
   "Почати розмову": "Start a conversation",
   "Організатори подій, на які ви йдете або які зберегли.": "Organisers of events you're going to or have saved.",
   "Щодо «{title}»: ": "About “{title}”: ",
+  "Цій людині зараз не можна написати.": "You can't message this person right now.",
   "Сповіщення": "Alerts",
   "Поки без розмов": "No conversations yet",
   "Маєте питання до організатора? Натисніть «Написати» на сторінці події.": "Got a question for an organiser? Tap Message on the event page.",
@@ -322,6 +327,7 @@
   "До списку": "Back to list",
   "Подія: {title}": "Event: {title}",
   "Напишіть перше повідомлення — організатор побачить його тут.": "Write the first message — the organiser will see it here.",
+  "Ви заблокували цю людину: повідомлення не надсилаються.": "You blocked this person: no messages either way.",
   "Повідомлення…": "Message…",
   "Надіслати": "Send",
   "Оберіть розмову зліва": "Pick a conversation",
@@ -517,6 +523,7 @@
   "Не зараз": "Not now",
   "Такого профілю немає": "Profile not found",
   "Можливо, посилання застаріло або акаунт видалено.": "The link may be out of date, or the account was deleted.",
+  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.": "Block {name}? Neither of you will be able to message the other, follows between you are removed, and you will get no alerts from them. They are not told.",
   "{n} підписник": {
     "one": "{n} follower",
     "other": "{n} followers"
@@ -526,8 +533,10 @@
     "other": "{n} reviews"
   },
   "Це ваш профіль": "This is your profile",
+  "Ви заблокували цю людину": "You blocked this person",
   "Ви підписані": "Following",
   "Підписатися": "Follow",
+  "Заблокувати": "Block",
   "Найближчі події": "Upcoming events",
   "Найближчих подій немає.": "No upcoming events.",
   "Минула подія: {n}": {

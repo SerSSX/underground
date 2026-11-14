@@ -742,6 +742,8 @@ export interface PublicProfile {
   rating_count: number;
   /** Whether the signed-in caller follows this user; false for anonymous callers. */
   is_following?: boolean;
+  /** Whether the signed-in caller blocked this user (TASK-306); false for anonymous callers. */
+  is_blocked?: boolean;
 }
 function userPath(id: string, rest = ""): string {
   if (!isUuid(id)) throw new ApiError(404, "Не знайдено");
@@ -759,6 +761,24 @@ export async function followUser(id: string): Promise<void> {
 }
 export async function unfollowUser(id: string): Promise<void> {
   await apiSend("DELETE", userPath(id, "/follow"));
+}
+
+// ---- blocking (TASK-306) ----
+/** One person the caller blocked (`GET /api/me/blocks`). */
+export interface BlockedUserDto {
+  id: string;
+  name: string;
+  avatar_url: string | null;
+  blocked_at: string;
+}
+export async function blockUser(id: string): Promise<void> {
+  await apiSend("POST", userPath(id, "/block"));
+}
+export async function unblockUser(id: string): Promise<void> {
+  await apiSend("DELETE", userPath(id, "/block"));
+}
+export async function myBlocks(): Promise<BlockedUserDto[]> {
+  return apiGet<BlockedUserDto[]>("/api/me/blocks");
 }
 
 // ---- direct messages ----

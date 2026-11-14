@@ -5,7 +5,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   myNotifications, markNotificationsRead, myConversations, messageThread, sendMessage, getProfile, getEvent, getToken, errorMessage,
-  isUuid, alertHref, type NotificationDto, type ConversationDto, type MessageDto, type EventDto,
+  isUuid, alertHref, unblockUser, ApiError, type NotificationDto, type ConversationDto, type MessageDto, type EventDto,
 } from "../../lib/api";
 import { createSendQueue, stashFailed, takeDraft } from "../../lib/send-queue.mjs";
 import { unreadChanged } from "../../lib/unread";
@@ -38,6 +38,8 @@ function InboxInner() {
   const textRef = useRef("");
   useEffect(() => { textRef.current = text; }, [text]);
   const [about, setAbout] = useState<About | null>(null);
+  // TASK-306: the open chat's person is someone the user blocked: no compose bar, an unblock button instead.
+  const [peerBlocked, setPeerBlocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const list = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -94,6 +96,25 @@ function InboxInner() {
     if (c) setPeer({ id: c.peer_id, name: c.peer_name, avatar: c.peer_avatar });
     else getProfile(to).then((p) => setPeer({ id: p.id, name: p.name, avatar: p.avatar_url })).catch(() => {});
   }, [params, convs, me, lang, router]);
+
+  useEffect(() => {
+    setPeerBlocked(false);
+    if (!peer) return;
+    let stop = false;
+    getProfile(peer.id).then((p) => { if (!stop) setPeerBlocked(!!p.is_blocked); }).catch(() => {});
+    return () => { stop = true; };
+  }, [peer]);
+
+  async function unblockPeer() {
+    if (!peer) return;
+    setError(null);
+    try {
+      await unblockUser(peer.id);
+      setPeerBlocked(false);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
 
   useEffect(() => {
     setMsgs([]);
@@ -166,6 +187,9 @@ function InboxInner() {
   peerRef.current = peer;
   // Messages go one at a time and in order: a Send tap while one is in flight is queued and goes right after it,
   // never dropped and never sent twice (TASK-305 review; lib/send-queue.mjs).
+  // The language now, for the queue's callbacks (created once, they would otherwise keep the first render's).
+  const langRef = useRef(lang);
+  langRef.current = lang;
   const outbox = useRef<ReturnType<typeof createSendQueue<Outgoing, MessageDto>> | null>(null);
   if (!outbox.current) {
     outbox.current = createSendQueue<Outgoing, MessageDto>({
@@ -177,7 +201,10 @@ function InboxInner() {
         void loadConvs();
       },
       onFailed: (failed, e) => {
-        setError(errorMessage(e));
+        // 403 here means a block between the two (TASK-306). Said the same way whoever blocked whom.
+        setError(e instanceof ApiError && e.status === 403
+          ? tr(langRef.current, "Цій людині зараз не можна написати.", "You can't message this person right now.")
+          : errorMessage(e));
         // Give the unsent text back, oldest first, ahead of anything typed since, so nothing is lost. Texts for
         // another chat (the user switched while they were queued) wait for that chat (TASK-305 round 3).
         const here = stashFailed(unsent.current, failed, peerRef.current?.id);
@@ -285,12 +312,19 @@ function InboxInner() {
                       </div>
                     ))}
                   </div>
+                  {peerBlocked ? (
+                    <div className="chat-compose" role="status">
+                      <span className="muted small grow">{tr(lang, "Ви заблокували цю людину: повідомлення не надсилаються.", "You blocked this person: no messages either way.")}</span>
+                      <button type="button" className="btn secondary sm" onClick={() => void unblockPeer()}>{tr(lang, "Розблокувати", "Unblock")}</button>
+                    </div>
+                  ) : (
                   <form className="chat-compose" onSubmit={onCompose}>
                     <label className="sr-only" htmlFor="msg">{tr(lang, "Повідомлення", "Message")}</label>
                     <input id="msg" ref={input} className="input" value={text} maxLength={2000} onChange={(e) => { textRef.current = e.target.value; setText(e.target.value); }} onFocus={onFieldFocus} placeholder={tr(lang, "Повідомлення…", "Message…")} autoComplete="off" enterKeyHint="send" />
                     {/* Disabled only while empty: a disabled default button also blocks the keyboard's Send key. */}
                     <button type="submit" className="btn icon" disabled={!text.trim()} aria-label={tr(lang, "Надіслати", "Send")} title={tr(lang, "Надіслати", "Send")}><Send className="ico sm" aria-hidden /></button>
                   </form>
+                  )}
                 </>
               ) : (
                 <div className="empty" style={{ margin: 24, border: 0 }}><p>{tr(lang, "Оберіть розмову зліва", "Pick a conversation")}</p></div>
