@@ -116,6 +116,8 @@ export const SERVER_MESSAGES = {
   "у події немає дати початку — відгуки недоступні": "the event has no start date — reviews aren't available",
   // TASK-305 round 3 (api/src/tickets.rs OFFER_EMAIL_REFUSED, gift and transfer)
   "вкажіть одну коректну адресу email": "enter one valid email address",
+  // owner 2026-11-14 (api/src/tickets.rs OFFER_TO_SELF_REFUSED, gift and transfer to one's own email)
+  "квиток уже ваш — надішліть його іншій людині": "this ticket is already yours — send it to someone else",
   "фото профілю має бути зображенням, завантаженим на сайт": "the profile photo must be a picture uploaded to the site",
   "пошук адрес тимчасово недоступний": "address search is temporarily unavailable",
   "текст містить недопустимий символ (NUL)": "the text contains a character that isn't allowed",

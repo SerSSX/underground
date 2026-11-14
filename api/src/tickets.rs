@@ -547,6 +547,24 @@ fn offer_email(raw: &str) -> Result<String, AppError> {
     Ok(email)
 }
 
+/// The one answer to an offer sent to the sender's own address (gift and transfer; owner
+/// 2026-11-14: the place is already theirs, and nothing would reach them). Comparing with the
+/// caller's own email tells them nothing about other accounts.
+pub const OFFER_TO_SELF_REFUSED: &str = "квиток уже ваш — надішліть його іншій людині";
+
+/// 422 when `email` (already normalised by `offer_email`) is the caller's own address.
+async fn ensure_not_own_email(tx: &mut sqlx::PgConnection, user: Uuid, email: &str) -> Result<(), AppError> {
+    let own: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND lower(email) = $2)")
+        .bind(user)
+        .bind(email)
+        .fetch_one(&mut *tx)
+        .await?;
+    if own {
+        return Err(AppError::Validation(OFFER_TO_SELF_REFUSED.into()));
+    }
+    Ok(())
+}
+
 /// The account a place offer to `email` alerts: an active, not deleted account other than the
 /// sender, found in one query (TASK-305 R2). Its age and place cap are not looked at here; they
 /// are checked when the recipient accepts (`claim_ticket`).
@@ -563,8 +581,9 @@ async fn offer_recipient(tx: &mut sqlx::PgConnection, email: &str, sender: Uuid)
 /// `POST /api/tickets/:id/transfer` — the owner offers an active ticket to an email
 /// (owner decision 2026-11-14: a transfer is an offer the recipient accepts, like a gift).
 ///
-/// The caller's own ticket is checked first (404 / 409 as for any action on it). After that the
-/// answer is always 202 `{"status":"sent"}`, whatever the email, and the same thing happens to the
+/// The caller's own ticket is checked first (404 / 409 as for any action on it), then the email
+/// (422 when malformed or the caller's own). After that the answer is always 202
+/// `{"status":"sent"}`, whatever the email, and the same thing happens to the
 /// ticket: a pending offer (a gift without a link for the sender) that the sender sees and can
 /// cancel with `DELETE /api/tickets/:id/gift`. Only when the email belongs to another account does
 /// that account also get an in-app alert with the claim link; it accepts through
@@ -588,7 +607,8 @@ pub async fn transfer_ticket(
     // Lock order ticket → event, the same as `return_ticket`.
     own_transferable_ticket(&mut tx, ticket_id, user.id).await?;
     let email = offer_email(&req.email)?;
-    // One lookup, and the same writes for every email; only the alert row depends on it.
+    ensure_not_own_email(&mut tx, user.id, &email).await?;
+    // One lookup, and the same writes for every other email; only the alert row depends on it.
     let recipient = offer_recipient(&mut tx, &email, user.id).await?;
     let offer = create_offer(&mut tx, &st.jwt_secret, ticket_id, user.id, &email).await?;
     if let Some(recipient) = recipient {
@@ -771,6 +791,7 @@ pub async fn gift_ticket(
         .await?;
     let (status, gone) = row.ok_or(AppError::NotFound)?;
     ensure_giftable(&mut tx, ticket_id, &status, gone).await?;
+    ensure_not_own_email(&mut tx, user.id, &email).await?;
     let recipient = offer_recipient(&mut tx, &email, user.id).await?;
     let Offer {
         gift_id,
