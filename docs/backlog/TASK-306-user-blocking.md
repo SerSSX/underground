@@ -31,3 +31,19 @@ A blocks B. Admin bans (`users.blocked`) stay a separate thing; this is a person
 - Web: on a profile, «Заблокувати» / «Розблокувати» with a confirmation; a chat with a blocked person shows why
   the box is closed and an unblock button; a «Заблоковані» list in the profile with unblock. All 8 languages.
 - Android: not in this task; the app ignores the new field. To do at the Android step.
+
+## Abuse-case triage by the orchestrator, 2026-11-14
+
+Table: `TASK-306-abuse-cases.md` (124 rows, written by a separate identity before the code).
+
+- Assumptions: 409 at the cap with nothing changed (D1); one rate bucket `block:{user}` for block and unblock, 30 a
+  minute (D5); a repeated block keeps its first time (D3); the list includes targets banned later (D4); the comment
+  count matches the comment list (D10); 400 for a malformed id; a claim link still works between them (AB100, AB101);
+  staff rights are untouched (AB109); a new account of the same person is not blocked (AB50): **all accepted**.
+- Conflict 1, event alerts: **accepted** — no `event_match` or `organizer_event` alert to A for B's events; both
+  kinds now store the organiser as `actor_id`, so older ones hide too.
+- Conflict 2, booking alerts had no actor: **accepted** — new ones store the booker; older ones (DEV only) stay.
+- Conflict 3, B's old comments stay under A's posts for others: **resolved by a new rule** — a post's author can
+  delete any comment under it (`DELETE /api/posts/:id/comments/:comment_id`). API only for now: the web has no
+  comment UI yet.
+- Conflict 4, unblocking an admin-banned person: **accepted** (D2) — an existing block is always removable.
