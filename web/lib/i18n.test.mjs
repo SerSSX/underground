@@ -200,6 +200,9 @@ test("TASK-305: rate-limit wording, the sign-up variant, the early-scan pattern 
   assert.notEqual(serverText("de", "забагато спроб, спробуйте пізніше", "signup"), "Забагато спроб з вашої мережі. Спробуйте за годину.", "translated");
   assert.equal(serverText("uk", "Ще рано: подія починається 14.11.2026 о 19:00"), "Ще рано: подія починається 14.11.2026 о 19:00");
   assert.equal(serverText("en", "Ще рано: подія починається 01.07.2030 о 20:00"), "Too early: the event starts on 01.07.2030 at 20:00", "the API's own format");
+  // TASK-305 round 3: the offer-email refusal (api tickets::OFFER_EMAIL_REFUSED) is mapped in every language.
+  assert.equal(serverText("en", "вкажіть одну коректну адресу email"), "enter one valid email address");
+  assert.notEqual(serverText("de", "вкажіть одну коректну адресу email"), "вкажіть одну коректну адресу email", "never shown untranslated");
   assert.equal(serverText("en", "Ще рано: подія починається завтра."), "Too early: the event starts завтра", "any other form passes through");
   assert.equal(serverText("uk", "title: не більше 140 символів"), "Текст задовгий: не більше 140 символів", "no English field name");
   const iso = serverText("en", "Ще рано: подія починається 2026-11-14T17:00:00Z");

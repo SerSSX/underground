@@ -221,11 +221,15 @@ pub async fn my_notifications(
     let rows: Vec<NotificationRow> = sqlx::query_as(
         "SELECT n.id, n.kind, n.title, n.body, n.event_id, n.actor_id, n.read, n.created_at, n.link, \
             g.id AS open_gift \
-         FROM notifications n \
+         FROM ( \
+            (SELECT id, kind, title, body, event_id, actor_id, read, created_at, link, gift_id \
+             FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100) \
+            UNION \
+            (SELECT x.id, x.kind, x.title, x.body, x.event_id, x.actor_id, x.read, x.created_at, x.link, x.gift_id \
+             FROM notifications x JOIN ticket_gifts og ON og.id = x.gift_id \
+             WHERE x.user_id = $1 AND og.status = 'pending' AND og.expires_at > now()) \
+         ) n \
          LEFT JOIN ticket_gifts g ON g.id = n.gift_id AND g.status = 'pending' AND g.expires_at > now() \
-         WHERE n.user_id = $1 \
-           AND (g.id IS NOT NULL OR n.id IN ( \
-                SELECT id FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100)) \
          ORDER BY n.created_at DESC",
     )
     .bind(user.id)

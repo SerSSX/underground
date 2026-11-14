@@ -114,6 +114,8 @@ export const SERVER_MESSAGES = {
   "організатор не може оцінювати власну подію": "the organiser can't review their own event",
   "відгук може залишити лише гість події": "only the event's guests can leave a review",
   "у події немає дати початку — відгуки недоступні": "the event has no start date — reviews aren't available",
+  // TASK-305 round 3 (api/src/tickets.rs OFFER_EMAIL_REFUSED, gift and transfer)
+  "вкажіть одну коректну адресу email": "enter one valid email address",
   "фото профілю має бути зображенням, завантаженим на сайт": "the profile photo must be a picture uploaded to the site",
   "пошук адрес тимчасово недоступний": "address search is temporarily unavailable",
   "текст містить недопустимий символ (NUL)": "the text contains a character that isn't allowed",

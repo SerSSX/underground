@@ -944,6 +944,22 @@ async fn b2_telemetry_retention(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(left, [("new".to_string(), 3)]);
+    // N3: the daily counters of pruned days go too.
+    sqlx::query(
+        "INSERT INTO telemetry_daily (day, total) VALUES \
+         ((now() AT TIME ZONE 'UTC')::date - 31, 5), ((now() AT TIME ZONE 'UTC')::date - 29, 5)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    underground_api::telemetry::prune(&pool, 30, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let days: i64 = sqlx::query_scalar("SELECT count(*) FROM telemetry_daily")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(days, 1, "only the counter inside the retention stays");
     assert_eq!(underground_api::telemetry::retention_days(), 30);
     let main = include_str!("../src/main.rs");
     assert!(
@@ -952,61 +968,109 @@ async fn b2_telemetry_retention(pool: PgPool) {
     );
 }
 
-/// B2b: over today's anonymous cap a call answers as before but stores nothing; a signed-in
-/// caller's events still count.
-#[sqlx::test(migrations = "./migrations")]
-async fn b2_anonymous_telemetry_has_a_daily_cap(pool: PgPool) {
-    let app = make_app(pool.clone());
-    let (_, t) = user(&pool, "u@x.co", "U").await;
+async fn set_today(pool: &PgPool, total: i32, anon: i32) {
     sqlx::query(
-        "INSERT INTO telemetry_events (name, created_at) \
-         SELECT 'yesterday', now() - interval '2 days' FROM generate_series(1, 5)",
+        "INSERT INTO telemetry_daily (day, total, anon) VALUES ((now() AT TIME ZONE 'UTC')::date, $1, $2) \
+         ON CONFLICT (day) DO UPDATE SET total = $1, anon = $2",
     )
-    .execute(&pool)
+    .bind(total)
+    .bind(anon)
+    .execute(pool)
     .await
     .unwrap();
+}
+
+async fn stored(pool: &PgPool, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM telemetry_events WHERE name = $1")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// B2b / N1 / N3: over today's caps a call answers as before but stores nothing — the anonymous
+/// sub-cap (20 000) for anonymous callers, and the global cap (40 000) for everyone, signed-in
+/// callers included. (Round 3 said "a signed-in event is not capped"; the closure check, N1,
+/// changed that.) The caps come from the day's counter row, not from counting events.
+#[sqlx::test(migrations = "./migrations")]
+async fn b2_telemetry_daily_caps(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, t) = user(&pool, "u@x.co", "U").await;
     let body = json!({"name":"share"}).to_string();
-    let anon = |ip: &str| {
+    let post = |token: Option<&str>, ip: &str| {
         raw(
             &app,
-            request("POST", "/api/telemetry", None, Some(body.clone()), Some(ip)),
+            request("POST", "/api/telemetry", token, Some(body.clone()), Some(ip)),
         )
     };
-    assert_eq!(anon("192.0.2.1").await.0, StatusCode::NO_CONTENT);
-    let count = |name: &'static str| {
-        let pool = pool.clone();
-        async move {
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM telemetry_events WHERE name = $1")
-                .bind(name)
-                .fetch_one(&pool)
-                .await
-                .unwrap()
-        }
-    };
-    assert_eq!(count("share").await, 1, "under the cap: stored");
-    sqlx::query("INSERT INTO telemetry_events (name) SELECT 'filler' FROM generate_series(1, 20000 - 1)")
+    // Events already stored today do not slow the call down or count by themselves (N3: no scan).
+    sqlx::query("INSERT INTO telemetry_events (name) SELECT 'filler' FROM generate_series(1, 30000)")
         .execute(&pool)
         .await
         .unwrap();
+    assert_eq!(post(None, "192.0.2.1").await.0, StatusCode::NO_CONTENT);
     assert_eq!(
-        anon("192.0.2.2").await.0,
-        StatusCode::NO_CONTENT,
-        "same answer over the cap"
+        stored(&pool, "share").await,
+        1,
+        "under the caps: stored, whatever the table holds"
     );
-    assert_eq!(count("share").await, 1, "[SEC] over the cap: nothing stored");
-    let signed = raw(
-        &app,
-        request(
+
+    set_today(&pool, 100, 20_000).await;
+    assert_eq!(post(None, "192.0.2.2").await.0, StatusCode::NO_CONTENT, "same answer");
+    assert_eq!(
+        stored(&pool, "share").await,
+        1,
+        "[SEC] anonymous sub-cap: nothing stored"
+    );
+    assert_eq!(post(Some(&t), "192.0.2.3").await.0, StatusCode::NO_CONTENT);
+    assert_eq!(
+        stored(&pool, "share").await,
+        2,
+        "a signed-in event fits under the global cap"
+    );
+
+    set_today(&pool, 39_999, 0).await;
+    assert_eq!(post(Some(&t), "192.0.2.4").await.0, StatusCode::NO_CONTENT);
+    assert_eq!(stored(&pool, "share").await, 3, "the last slot of the day");
+    assert_eq!(
+        post(Some(&t), "192.0.2.5").await.0,
+        StatusCode::NO_CONTENT,
+        "same answer"
+    );
+    assert_eq!(post(None, "192.0.2.6").await.0, StatusCode::NO_CONTENT);
+    assert_eq!(
+        stored(&pool, "share").await,
+        3,
+        "[SEC] global cap: signed-in and anonymous both refused"
+    );
+    let (total, anon): (i32, i32) = sqlx::query_as("SELECT total, anon FROM telemetry_daily")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((total, anon), (40_000, 0), "a refused call takes no slot");
+}
+
+/// N3: the cap holds under concurrency — 30 calls racing for the last 10 slots store exactly 10.
+#[sqlx::test(migrations = "./migrations")]
+async fn n3_daily_cap_holds_under_concurrency(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, t) = user(&pool, "u@x.co", "U").await;
+    set_today(&pool, 39_990, 0).await;
+    let calls = (0..30).map(|i| {
+        let app = app.clone();
+        let req = request(
             "POST",
             "/api/telemetry",
             Some(&t),
-            Some(body.clone()),
-            Some("192.0.2.3"),
-        ),
-    )
-    .await;
-    assert_eq!(signed.0, StatusCode::NO_CONTENT);
-    assert_eq!(count("share").await, 2, "a signed-in event is not capped");
+            Some(json!({"name":"race"}).to_string()),
+            Some(&format!("198.51.100.{i}")),
+        );
+        tokio::spawn(async move { raw(&app, req).await.0 })
+    });
+    for call in calls.collect::<Vec<_>>() {
+        assert_eq!(call.await.unwrap(), StatusCode::NO_CONTENT);
+    }
+    assert_eq!(stored(&pool, "race").await, 10, "[SEC] no overshoot");
 }
 
 /// B3: an open place offer stays in the alert list (with its link) however many newer alerts
@@ -1084,4 +1148,137 @@ async fn b6_transfer_after_an_expired_offer(pool: PgPool) {
         ]
     );
     assert_eq!(ticket_state(&pool, ticket).await, (owner, "pending_claim".into()));
+}
+
+/// N2: an owner re-offering a ticket whose offer expired, racing the recipient trying that expired
+/// offer, never ends in a server error (both lock the gift before the ticket, so no deadlock).
+#[sqlx::test(migrations = "./migrations")]
+async fn n2_reoffer_and_expired_claim_do_not_deadlock(pool: PgPool) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "org@x.co", "Org").await;
+    let (_, ot) = user(&pool, "owner@x.co", "Owner").await;
+    let (_, ft) = user(&pool, "friend@x.co", "Friend").await;
+    // 14 rounds: each takes two slots of the sender's 30/h gift+transfer bucket.
+    for round in 0..14 {
+        let ev = event(&app, &org, json!({})).await;
+        let ticket = reserve(&app, &ot, ev).await;
+        let (s, g) = call(
+            &app,
+            "POST",
+            &format!("/api/tickets/{ticket}/gift"),
+            Some(&ot),
+            Some(json!({"email":"friend@x.co"})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{g}");
+        sqlx::query("UPDATE ticket_gifts SET expires_at = now() - interval '1 minute' WHERE ticket_id = $1")
+            .bind(ticket)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let token = g["claim_token"].as_str().unwrap().to_string();
+        let transfer = {
+            let req = request(
+                "POST",
+                &format!("/api/tickets/{ticket}/transfer"),
+                Some(&ot),
+                Some(json!({"email":"other@x.co"}).to_string()),
+                None,
+            );
+            let app = app.clone();
+            tokio::spawn(async move { raw(&app, req).await })
+        };
+        let claim = {
+            let req = request(
+                "POST",
+                "/api/tickets/claim",
+                Some(&ft),
+                Some(json!({ "token": token }).to_string()),
+                None,
+            );
+            let app = app.clone();
+            tokio::spawn(async move { raw(&app, req).await })
+        };
+        let (t, c) = (transfer.await.unwrap(), claim.await.unwrap());
+        assert!(!t.0.is_server_error(), "[SEC] round {round}: transfer {t:?}");
+        assert!(!c.0.is_server_error(), "[SEC] round {round}: claim {c:?}");
+    }
+}
+
+/// N2, deterministic: while another transaction holds the pending gift (as a claim or a cancel
+/// does, gift first), a re-offer of that ticket waits on the gift WITHOUT holding the ticket, so
+/// the holder can still lock the ticket next (gift → ticket everywhere: no deadlock).
+#[sqlx::test(migrations = "./migrations")]
+async fn n2_reoffer_takes_the_gift_before_the_ticket(pool: PgPool) {
+    reoffer_lock_order(pool, "transfer").await;
+}
+
+/// N2, the gift path: the same order when an expired offer is gifted again.
+#[sqlx::test(migrations = "./migrations")]
+async fn n2_gift_reoffer_takes_the_gift_before_the_ticket(pool: PgPool) {
+    reoffer_lock_order(pool, "gift").await;
+}
+
+async fn reoffer_lock_order(pool: PgPool, action: &str) {
+    let app = make_app(pool.clone());
+    let (_, org) = user(&pool, "org@x.co", "Org").await;
+    let (_, ot) = user(&pool, "owner@x.co", "Owner").await;
+    let ev = event(&app, &org, json!({})).await;
+    let ticket = reserve(&app, &ot, ev).await;
+    let path = format!("/api/tickets/{ticket}/transfer");
+    let (s, _) = call(&app, "POST", &path, Some(&ot), Some(json!({"email":"first@x.co"}))).await;
+    assert_eq!(s, StatusCode::ACCEPTED);
+    sqlx::query("UPDATE ticket_gifts SET expires_at = now() - interval '1 minute' WHERE ticket_id = $1")
+        .bind(ticket)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // The "claim": holds the gift row.
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM ticket_gifts WHERE ticket_id = $1 AND status = 'pending' FOR UPDATE")
+        .bind(ticket)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let reoffer = {
+        let again = format!("/api/tickets/{ticket}/{action}");
+        let req = request(
+            "POST",
+            &again,
+            Some(&ot),
+            Some(json!({"email":"second@x.co"}).to_string()),
+            None,
+        );
+        let app = app.clone();
+        tokio::spawn(async move { raw(&app, req).await })
+    };
+    // Wait until the re-offer is blocked on a lock.
+    let mut waited = 0;
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        waited += 1;
+        assert!(waited < 500, "the re-offer never waited on the held gift");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The holder takes the ticket next, as a claim does: it must be free.
+    let ticket_lock = sqlx::query("SELECT 1 FROM tickets WHERE id = $1 FOR UPDATE NOWAIT")
+        .bind(ticket)
+        .execute(&mut *holder)
+        .await;
+    assert!(
+        ticket_lock.is_ok(),
+        "[SEC] the re-offer locked the ticket before the gift (deadlock order): {ticket_lock:?}"
+    );
+    holder.rollback().await.unwrap();
+    let (s, body) = reoffer.await.unwrap();
+    assert!(s.is_success(), "{action}: {s} {body}");
 }

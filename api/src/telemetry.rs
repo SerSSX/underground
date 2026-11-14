@@ -16,9 +16,35 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 /// Anonymous client events stored per UTC day, overridable by env (TASK-305 round 3). Over it a
-/// call answers as before and stores nothing, so nobody can fill the table without signing in.
+/// call answers as before and stores nothing.
 fn daily_anon_cap() -> i64 {
     crate::ratelimit::env_limit("TELEMETRY_DAILY_ANON", 20_000)
+}
+
+/// All client events stored per UTC day, signed-in included, overridable by env (TASK-305 round
+/// 3, N1): accounts are free, so only a global cap bounds the table. 40 000 a day at most ~2.3 KB
+/// each, kept 30 days, is about 2.8 GB at worst.
+fn daily_max() -> i64 {
+    crate::ratelimit::env_limit("TELEMETRY_DAILY_MAX", 40_000)
+}
+
+/// Take one of today's (UTC) slots: true when the event may be stored. One conditional upsert on
+/// the day's counter row (TASK-305 N3): it counts no events, and two calls cannot both take the
+/// last slot. An anonymous call also needs room under the anonymous sub-cap.
+async fn reserve_slot(db: &PgPool, anonymous: bool) -> Result<bool, sqlx::Error> {
+    let taken: Option<i32> = sqlx::query_scalar(
+        "INSERT INTO telemetry_daily AS d (day, total, anon) \
+         VALUES ((now() AT TIME ZONE 'UTC')::date, 1, $1) \
+         ON CONFLICT (day) DO UPDATE SET total = d.total + 1, anon = d.anon + EXCLUDED.anon \
+         WHERE d.total < $2 AND (EXCLUDED.anon = 0 OR d.anon < $3) \
+         RETURNING d.total",
+    )
+    .bind(i32::from(anonymous))
+    .bind(daily_max().min(i64::from(i32::MAX)) as i32)
+    .bind(daily_anon_cap().min(i64::from(i32::MAX)) as i32)
+    .fetch_optional(db)
+    .await?;
+    Ok(taken.is_some())
 }
 
 /// Days an event is kept, overridable by env (TASK-305 round 3).
@@ -46,24 +72,14 @@ pub async fn prune(db: &PgPool, days: i64, budget: std::time::Duration) -> Resul
         .rows_affected();
         total += done;
         if done < PRUNE_BATCH as u64 || started.elapsed() >= budget {
+            // The daily counters of the same days (N3).
+            sqlx::query("DELETE FROM telemetry_daily WHERE day < (now() AT TIME ZONE 'UTC')::date - $1")
+                .bind(days as i32)
+                .execute(db)
+                .await?;
             return Ok(total);
         }
     }
-}
-
-/// True while today's (UTC) anonymous events are under the cap. Counts at most `cap` rows
-/// (`telemetry_events_anon_day_idx`), so the check stays cheap however full the day is.
-async fn anon_room_today(db: &PgPool) -> Result<bool, sqlx::Error> {
-    let cap = daily_anon_cap();
-    let today: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM (SELECT 1 FROM telemetry_events \
-            WHERE user_id IS NULL AND created_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' \
-            LIMIT $1) s",
-    )
-    .bind(cap)
-    .fetch_one(db)
-    .await?;
-    Ok(today < cap)
 }
 
 /// Best-effort event log. Deliberately infallible from the caller's side: a
@@ -102,7 +118,8 @@ fn limit_per_ip() -> i64 {
 /// onboarding completion). Auth is optional; anonymous events carry a null user.
 ///
 /// Anyone can call it, so (TASK-305 R3) the body is capped at [`BODY_LIMIT`] (413), `props` at
-/// [`PROPS_MAX`] serialized (422), and each client IP at 120 calls a minute (429).
+/// [`PROPS_MAX`] serialized (422), and each client IP at 120 calls a minute (429). Over the daily
+/// caps (round 3) the answer is the same 204 and nothing is stored.
 pub async fn log_event(
     user: Option<CurrentUser>,
     State(st): State<AppState>,
@@ -118,8 +135,8 @@ pub async fn log_event(
         return Err(AppError::Validation(format!("props: не більше {PROPS_MAX} байтів")));
     }
     let user_id = user.map(|u| u.id);
-    if user_id.is_none() && !anon_room_today(&st.db).await? {
-        // Over today's anonymous cap: the same answer, nothing stored.
+    if !reserve_slot(&st.db, user_id.is_none()).await? {
+        // Over today's cap (all events, or anonymous ones): the same answer, nothing stored.
         return Ok(StatusCode::NO_CONTENT);
     }
     log(&st.db, user_id, name, req.props).await;

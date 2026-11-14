@@ -25,8 +25,17 @@ WHERE created_at < TIMESTAMPTZ '2026-11-12 00:00:00+00'
 -- cannot reconstruct a working claim link).
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS link TEXT;
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS gift_id UUID REFERENCES ticket_gifts(id) ON DELETE CASCADE;
+-- Open offers are listed beside the newest 100 alerts, and a deleted gift cascades here.
+CREATE INDEX IF NOT EXISTS notifications_gift_idx ON notifications (gift_id) WHERE gift_id IS NOT NULL;
 
--- TASK-305 round 3: telemetry retention deletes by age, and the anonymous daily cap counts
--- today's rows without a user.
+-- TASK-305 round 3: telemetry retention deletes by age.
 CREATE INDEX IF NOT EXISTS telemetry_events_created_idx ON telemetry_events (created_at);
-CREATE INDEX IF NOT EXISTS telemetry_events_anon_day_idx ON telemetry_events (created_at) WHERE user_id IS NULL;
+
+-- TASK-305 round 3 (N1, N3): client events stored per UTC day, all and anonymous. A call reserves
+-- a slot with one conditional upsert (`telemetry::reserve_slot`), so the daily caps hold under
+-- concurrency without counting rows. Old days go with the retention prune.
+CREATE TABLE IF NOT EXISTS telemetry_daily (
+    day   DATE PRIMARY KEY,
+    total INT NOT NULL DEFAULT 0,
+    anon  INT NOT NULL DEFAULT 0
+);

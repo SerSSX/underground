@@ -508,6 +508,7 @@ async fn ensure_not_disputed(tx: &mut sqlx::PgConnection, ticket_id: Uuid) -> Re
 /// A ticket whose earlier offer expired unclaimed counts as active again (TASK-305 round 3, as a
 /// gift does): the expired offer is closed and the new one is made. An offer still open is 404.
 async fn own_transferable_ticket(tx: &mut sqlx::PgConnection, ticket_id: Uuid, owner: Uuid) -> Result<(), AppError> {
+    lock_pending_offers(tx, ticket_id).await?;
     let sql = format!(
         "SELECT t.status, {gone} FROM tickets t JOIN events e ON e.id = t.event_id \
          WHERE t.id = $1 AND t.owner_id = $2 AND t.status IN ('active', 'pending_claim') FOR UPDATE OF t",
@@ -681,6 +682,18 @@ async fn create_offer(
     })
 }
 
+/// Lock a ticket's pending offers before the ticket itself (TASK-305 round 3, N2): accepting and
+/// cancelling lock the gift first, then the ticket, so a re-offer that may close an expired gift
+/// takes them in the same order and the two cannot deadlock. Returns nothing: the caller has not
+/// yet shown it owns the ticket.
+async fn lock_pending_offers(tx: &mut sqlx::PgConnection, ticket_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT 1 FROM ticket_gifts WHERE ticket_id = $1 AND status = 'pending' ORDER BY id FOR UPDATE")
+        .bind(ticket_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
 /// A `pending_claim` ticket whose outstanding offer has expired: the offer is marked expired and
 /// true is returned (the caller makes a new one). False while the offer is still open. Runs under
 /// the ticket lock.
@@ -744,6 +757,8 @@ pub async fn gift_ticket(
     .await?;
     let email = offer_email(&req.email)?;
     let mut tx = st.db.begin().await?;
+    // Lock order gift → ticket, as in claim and revoke (N2).
+    lock_pending_offers(&mut tx, ticket_id).await?;
     let sql = format!(
         "SELECT t.status, {gone} FROM tickets t JOIN events e ON e.id = t.event_id \
          WHERE t.id = $1 AND t.owner_id = $2 FOR UPDATE OF t",
