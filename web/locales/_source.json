@@ -36,7 +36,7 @@
   "Скинути фільтри": "Reset filters",
   "Створити подію": "Create event",
   "Заблоковані": "Blocked people",
-  "Ви не пишете одне одному й не бачите їхніх сповіщень. Вони про це не знають.": "You can't message each other and you don't see their alerts. They are not told.",
+  "Ви не пишете одне одному й не бачите їхніх сповіщень. Ми їм про це не повідомляємо.": "You can't message each other and you don't see their alerts. They are not told.",
   "Ви нікого не блокували.": "You haven't blocked anyone.",
   "Розблокувати": "Unblock",
   "Профіль збережено": "Profile saved",
@@ -523,7 +523,7 @@
   "Не зараз": "Not now",
   "Такого профілю немає": "Profile not found",
   "Можливо, посилання застаріло або акаунт видалено.": "The link may be out of date, or the account was deleted.",
-  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.": "Block {name}? Neither of you will be able to message the other, follows between you are removed, and you will get no alerts from them. They are not told.",
+  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Ми їй про це не повідомимо.": "Block {name}? Neither of you will be able to message the other, follows between you are removed, and you will get no alerts from them. They are not told.",
   "{n} підписник": {
     "one": "{n} follower",
     "other": "{n} followers"

@@ -720,12 +720,12 @@
   "Ще рано: подія починається {date} о {time}": "Za wcześnie: wydarzenie zaczyna się {date} o {time}",
   "Текст задовгий: не більше {max} символів": "Tekst jest za długi: najwyżej {max} znaków",
   "Заблоковані": "Zablokowane osoby",
-  "Ви не пишете одне одному й не бачите їхніх сповіщень. Вони про це не знають.": "Nie możecie do siebie pisać i nie widzisz jej powiadomień. Ta osoba nie zostanie o tym poinformowana.",
+  "Ви не пишете одне одному й не бачите їхніх сповіщень. Ми їм про це не повідомляємо.": "Nie możecie do siebie pisać i nie widzisz jej powiadomień. Ta osoba nie zostanie o tym poinformowana.",
   "Ви нікого не блокували.": "Nikogo nie zablokowano.",
   "Розблокувати": "Odblokuj",
   "Цій людині зараз не можна написати.": "Nie możesz teraz napisać do tej osoby.",
   "Ви заблокували цю людину: повідомлення не надсилаються.": "Zablokowano tę osobę: wiadomości nie są wysyłane w żadną stronę.",
-  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.": "Zablokować: {name}? Nie będziecie mogli do siebie pisać, obserwowanie między wami zostanie usunięte, a powiadomienia od tej osoby nie będą do ciebie trafiać. Ta osoba nie zostanie o tym poinformowana.",
+  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Ми їй про це не повідомимо.": "Zablokować: {name}? Nie będziecie mogli do siebie pisać, obserwowanie między wami zostanie usunięte, a powiadomienia od tej osoby nie będą do ciebie trafiać. Ta osoba nie zostanie o tym poinformowana.",
   "Ви заблокували цю людину": "Zablokowano tę osobę",
   "Заблокувати": "Zablokuj"
 }

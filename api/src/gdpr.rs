@@ -62,6 +62,12 @@ pub async fn delete_me(
     }
 
     let mut tx = st.db.begin().await?;
+    // Lock the account row first (TASK-306 review): a block of this account in flight then waits and sees it
+    // banned, rather than deadlocking with this transaction or leaving a block row on an erased account.
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
     // Delete personal content (the user's own contributions / social graph / device data).
     for sql in [
         "DELETE FROM posts WHERE author_id = $1",

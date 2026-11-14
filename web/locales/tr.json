@@ -701,12 +701,12 @@
   "Ще рано: подія починається {date} о {time}": "Çok erken: etkinlik {date}, saat {time} başlıyor",
   "Текст задовгий: не більше {max} символів": "Metin çok uzun: en fazla {max} karakter",
   "Заблоковані": "Engellenen kişiler",
-  "Ви не пишете одне одному й не бачите їхніх сповіщень. Вони про це не знають.": "Birbirinize mesaj gönderemezsiniz ve onun bildirimlerini görmezsiniz. Bu kişiye haber verilmez.",
+  "Ви не пишете одне одному й не бачите їхніх сповіщень. Ми їм про це не повідомляємо.": "Birbirinize mesaj gönderemezsiniz ve onun bildirimlerini görmezsiniz. Bu kişiye haber verilmez.",
   "Ви нікого не блокували.": "Kimseyi engellemediniz.",
   "Розблокувати": "Engeli kaldır",
   "Цій людині зараз не можна написати.": "Bu kişiye şu anda mesaj gönderemezsiniz.",
   "Ви заблокували цю людину: повідомлення не надсилаються.": "Bu kişiyi engellediniz: iki yönde de mesaj gönderilmez.",
-  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.": "{name} engellensin mi? Birbirinize mesaj gönderemezsiniz, aranızdaki takipler kaldırılır ve bu kişiden bildirim almazsınız. Bu kişiye haber verilmez.",
+  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Ми їй про це не повідомимо.": "{name} engellensin mi? Birbirinize mesaj gönderemezsiniz, aranızdaki takipler kaldırılır ve bu kişiden bildirim almazsınız. Bu kişiye haber verilmez.",
   "Ви заблокували цю людину": "Bu kişiyi engellediniz",
   "Заблокувати": "Engelle"
 }

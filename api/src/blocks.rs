@@ -64,11 +64,14 @@ pub async fn ensure_not_blocked(conn: &mut sqlx::PgConnection, a: Uuid, b: Uuid)
 }
 
 /// An active account: exists, not admin-banned (an erased account is banned too).
+/// Reads the row `FOR KEY SHARE`, so a block waits for an erasure of that account in flight (which locks
+/// the row first, see `gdpr::delete_me`) and then sees it banned, instead of racing it.
 async fn is_active(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND blocked = false)")
+    let banned: Option<bool> = sqlx::query_scalar("SELECT blocked FROM users WHERE id = $1 FOR KEY SHARE")
         .bind(id)
-        .fetch_one(&mut *conn)
-        .await
+        .fetch_optional(&mut *conn)
+        .await?;
+    Ok(banned == Some(false))
 }
 
 /// `POST /api/users/:id/block` — idempotent; 204. Self 422, no such active account 404, the 1001st
@@ -154,6 +157,17 @@ pub async fn unblock(
         .await?;
     if removed.rows_affected() == 0 && !is_active(&mut tx, id).await? {
         return Err(AppError::NotFound);
+    }
+    // D8: an alert from them written in the moment the block was being set (its insert saw no block yet)
+    // is still waiting for push; it must not go out now that the block is lifted.
+    if removed.rows_affected() == 1 {
+        sqlx::query(
+            "UPDATE notifications SET pushed_at = now() WHERE user_id = $1 AND actor_id = $2 AND pushed_at IS NULL",
+        )
+        .bind(user.id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)

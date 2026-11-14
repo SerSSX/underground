@@ -701,12 +701,12 @@
   "Ще рано: подія починається {date} о {time}": "Zu früh: Das Event beginnt am {date} um {time}",
   "Текст задовгий: не більше {max} символів": "Der Text ist zu lang: höchstens {max} Zeichen",
   "Заблоковані": "Blockierte Personen",
-  "Ви не пишете одне одному й не бачите їхніх сповіщень. Вони про це не знають.": "Ihr könnt euch nicht schreiben, und du siehst ihre Benachrichtigungen nicht. Die Person erfährt es nicht.",
+  "Ви не пишете одне одному й не бачите їхніх сповіщень. Ми їм про це не повідомляємо.": "Ihr könnt euch nicht schreiben, und du siehst ihre Benachrichtigungen nicht. Die Person wird nicht benachrichtigt.",
   "Ви нікого не блокували.": "Du hast niemanden blockiert.",
   "Розблокувати": "Entsperren",
   "Цій людині зараз не можна написати.": "Du kannst dieser Person gerade nicht schreiben.",
   "Ви заблокували цю людину: повідомлення не надсилаються.": "Du hast diese Person blockiert: keine Nachrichten in beide Richtungen.",
-  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.": "{name} blockieren? Ihr könnt euch nicht mehr schreiben, gegenseitiges Folgen wird entfernt, und du erhältst keine Benachrichtigungen mehr von dieser Person. Sie erfährt es nicht.",
+  "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Ми їй про це не повідомимо.": "{name} blockieren? Ihr könnt euch nicht mehr schreiben, gegenseitiges Folgen wird entfernt, und du erhältst keine Benachrichtigungen mehr von dieser Person. Sie wird nicht benachrichtigt.",
   "Ви заблокували цю людину": "Du hast diese Person blockiert",
   "Заблокувати": "Blockieren"
 }

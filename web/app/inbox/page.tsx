@@ -111,6 +111,8 @@ function InboxInner() {
     try {
       await unblockUser(peer.id);
       setPeerBlocked(false);
+      // Their conversation was hidden while blocked: bring it back into the list.
+      void loadConvs();
     } catch (e) {
       setError(errorMessage(e));
     }

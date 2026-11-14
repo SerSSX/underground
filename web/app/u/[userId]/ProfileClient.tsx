@@ -96,7 +96,7 @@ export default function ProfileClient({ userId, initialProfile }: { userId: stri
     if (!getToken()) { router.push(`/login?next=${encodeURIComponent(`/u/${profile.id}`)}`); return; }
     const was = !!profile.is_blocked;
     if (!was && !window.confirm(tf(lang,
-      "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Вона про це не дізнається.",
+      "Заблокувати {name}? Ви не зможете писати одне одному, підписки між вами буде скасовано, а сповіщень від цієї людини ви не отримуватимете. Ми їй про це не повідомимо.",
       "Block {name}? Neither of you will be able to message the other, follows between you are removed, and you will get no alerts from them. They are not told.",
       { name: profile.name }))) return;
     setBusy(true);

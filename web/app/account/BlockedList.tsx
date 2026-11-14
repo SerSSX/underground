@@ -35,7 +35,7 @@ export default function BlockedList() {
     <section className="card section" id="blocked">
       <h2 className="row gap" style={{ fontSize: 17, marginBottom: 4 }}><Ban className="ico" />{tr(lang, "Заблоковані", "Blocked people")}</h2>
       <p className="muted small" style={{ marginBottom: 12 }}>
-        {tr(lang, "Ви не пишете одне одному й не бачите їхніх сповіщень. Вони про це не знають.", "You can't message each other and you don't see their alerts. They are not told.")}
+        {tr(lang, "Ви не пишете одне одному й не бачите їхніх сповіщень. Ми їм про це не повідомляємо.", "You can't message each other and you don't see their alerts. They are not told.")}
       </p>
       {error && <div className="alert error" role="alert">{error}</div>}
       {items === null ? (
